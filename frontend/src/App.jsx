@@ -1,72 +1,130 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 
-function App() {
+const API_BASE = "http://127.0.0.1:8000";
 
+function App() {
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null);
   const [target, setTarget] = useState("192.168.127.1");
 
   const [assets, setAssets] = useState([]);
+  const [risks, setRisks] = useState([]);
+  const [controls, setControls] = useState([]);
   const [vulnerabilities, setVulnerabilities] = useState([]);
 
+  // Modals state
+  const [editingAsset, setEditingAsset] = useState(null);
+  const [editingRisk, setEditingRisk] = useState(null);
+  const [showAddControlModal, setShowAddControlModal] = useState(false);
+  const [assigningRiskId, setAssigningRiskId] = useState(null);
+
+  // Form states
+  const [assetForm, setAssetForm] = useState({
+    criticality: "Medium",
+    environment: "Production",
+    exposure: "Internal",
+    owner: "",
+    business_function: ""
+  });
+
+  const [riskForm, setRiskForm] = useState({
+    treatment: "Mitigate",
+    risk_owner: "",
+    due_date: "",
+    status: "Open"
+  });
+
+  const [controlForm, setControlForm] = useState({
+    name: "",
+    description: "",
+    category: "Preventive",
+    framework: "NIST CSF",
+    effectiveness: "Medium",
+    status: "Implemented"
+  });
+
+  // Selected control for assigning
+  const [selectedControlId, setSelectedControlId] = useState("");
+
   // ----------------------------------------
-  // Fetch Asset Inventory
+  // Data Fetching Functions
   // ----------------------------------------
 
   const fetchAssets = async () => {
     try {
-      const response = await fetch("http://127.0.0.1:8000/assets");
-      if (!response.ok) {
-        const errData = await response.json().catch(() => null);
-        console.error("Unable to fetch asset inventory:", errData?.detail || response.statusText);
-        return;
+      const response = await fetch(`${API_BASE}/assets`);
+      if (response.ok) {
+        const data = await response.json();
+        setAssets(data.assets || []);
       }
-      const data = await response.json();
-      setAssets(data.assets || []);
     } catch (error) {
       console.error("Unable to fetch asset inventory:", error);
     }
   };
 
+  const fetchRisks = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/risks`);
+      if (response.ok) {
+        const data = await response.json();
+        setRisks(data.risks || []);
+      }
+    } catch (error) {
+      console.error("Unable to fetch risk register:", error);
+    }
+  };
+
+  const fetchControls = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/controls`);
+      if (response.ok) {
+        const data = await response.json();
+        setControls(data.controls || []);
+      }
+    } catch (error) {
+      console.error("Unable to fetch controls catalog:", error);
+    }
+  };
+
   const fetchVulnerabilities = async () => {
     try {
-      const response = await fetch("http://127.0.0.1:8000/vulnerabilities");
-      if (!response.ok) {
-        const errData = await response.json().catch(() => null);
-        console.error("Unable to fetch vulnerability findings:", errData?.detail || response.statusText);
-        return;
+      const response = await fetch(`${API_BASE}/vulnerabilities`);
+      if (response.ok) {
+        const data = await response.json();
+        setVulnerabilities(data.vulnerabilities || []);
       }
-      const data = await response.json();
-      setVulnerabilities(data.vulnerabilities || []);
     } catch (error) {
       console.error("Unable to fetch vulnerability findings:", error);
     }
   };
 
-  // Fetch assets and vulnerabilities independently on load
+  const refreshAll = async () => {
+    await Promise.all([
+      fetchAssets(),
+      fetchRisks(),
+      fetchControls(),
+      fetchVulnerabilities()
+    ]);
+  };
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchAssets();
-    fetchVulnerabilities();
+    refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-
   // ----------------------------------------
-  // Run Single Asset Scan
+  // Network Scanning
   // ----------------------------------------
 
   const runScan = async () => {
     setScanning(true);
-
     try {
       const response = await fetch(
-        `http://127.0.0.1:8000/scan?target=${encodeURIComponent(target)}`,
-        {
-          method: "POST",
-        }
+        `${API_BASE}/scan?target=${encodeURIComponent(target)}`,
+        { method: "POST" }
       );
-
       const data = await response.json().catch(() => null);
 
       if (!response.ok) {
@@ -76,10 +134,7 @@ function App() {
       }
 
       setResult(data);
-
-      // Await refresh of both tables before scan button re-enables
-      await Promise.all([fetchAssets(), fetchVulnerabilities()]);
-
+      await refreshAll();
     } catch (error) {
       alert("Backend is not running. Please start FastAPI: " + (error?.message || ""));
     } finally {
@@ -87,303 +142,656 @@ function App() {
     }
   };
 
+  // ----------------------------------------
+  // Asset Intelligence Handlers
+  // ----------------------------------------
+
+  const openAssetModal = (asset) => {
+    setEditingAsset(asset);
+    setAssetForm({
+      criticality: asset.criticality || "Medium",
+      environment: asset.environment || "Production",
+      exposure: asset.exposure || "Internal",
+      owner: asset.owner || "",
+      business_function: asset.business_function || ""
+    });
+  };
+
+  const saveAsset = async () => {
+    if (!editingAsset) return;
+    try {
+      const response = await fetch(`${API_BASE}/assets/${editingAsset.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(assetForm)
+      });
+      if (response.ok) {
+        setEditingAsset(null);
+        await refreshAll();
+      } else {
+        const err = await response.json();
+        alert(`Error updating asset: ${err?.detail || "Unknown error"}`);
+      }
+    } catch (error) {
+      alert("Failed to update asset: " + error.message);
+    }
+  };
+
+  // ----------------------------------------
+  // Risk Register Handlers
+  // ----------------------------------------
+
+  const openRiskModal = (risk) => {
+    setEditingRisk(risk);
+    setRiskForm({
+      treatment: risk.treatment || "Mitigate",
+      risk_owner: risk.risk_owner || "",
+      due_date: risk.due_date ? risk.due_date.substring(0, 10) : "",
+      status: risk.status || "Open"
+    });
+  };
+
+  const saveRisk = async () => {
+    if (!editingRisk) return;
+    try {
+      const payload = {
+        treatment: riskForm.treatment,
+        risk_owner: riskForm.risk_owner,
+        status: riskForm.status,
+        due_date: riskForm.due_date ? new Date(riskForm.due_date).toISOString() : null
+      };
+
+      const response = await fetch(`${API_BASE}/risks/${editingRisk.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (response.ok) {
+        setEditingRisk(null);
+        await refreshAll();
+      } else {
+        const err = await response.json();
+        alert(`Error updating risk: ${err?.detail || "Unknown error"}`);
+      }
+    } catch (error) {
+      alert("Failed to update risk: " + error.message);
+    }
+  };
+
+  // ----------------------------------------
+  // Control Assignment Handlers
+  // ----------------------------------------
+
+  const handleAssignControl = async (riskId) => {
+    if (!selectedControlId) return;
+    try {
+      const response = await fetch(`${API_BASE}/risks/${riskId}/controls/${selectedControlId}`, {
+        method: "POST"
+      });
+      if (response.ok) {
+        setAssigningRiskId(null);
+        setSelectedControlId("");
+        await refreshAll();
+      } else {
+        const err = await response.json();
+        alert(`Error assigning control: ${err?.detail || "Unknown error"}`);
+      }
+    } catch (error) {
+      alert("Failed to assign control: " + error.message);
+    }
+  };
+
+  const handleDetachControl = async (riskId, controlId) => {
+    try {
+      const response = await fetch(`${API_BASE}/risks/${riskId}/controls/${controlId}`, {
+        method: "DELETE"
+      });
+      if (response.ok) {
+        await refreshAll();
+      } else {
+        const err = await response.json();
+        alert(`Error detaching control: ${err?.detail || "Unknown error"}`);
+      }
+    } catch (error) {
+      alert("Failed to detach control: " + error.message);
+    }
+  };
+
+  // ----------------------------------------
+  // Add Control Catalog Handler
+  // ----------------------------------------
+
+  const saveNewControl = async () => {
+    if (!controlForm.name.trim()) {
+      alert("Control name is required");
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE}/controls`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(controlForm)
+      });
+      if (response.ok) {
+        setShowAddControlModal(false);
+        setControlForm({
+          name: "",
+          description: "",
+          category: "Preventive",
+          framework: "NIST CSF",
+          effectiveness: "Medium",
+          status: "Implemented"
+        });
+        await refreshAll();
+      } else {
+        const err = await response.json();
+        alert(`Error creating control: ${err?.detail || "Unknown error"}`);
+      }
+    } catch (error) {
+      alert("Failed to create control: " + error.message);
+    }
+  };
+
+  // Helper badge class
+  const getRiskClass = (level) => {
+    switch (level?.toLowerCase()) {
+      case "critical":
+        return "badge-critical";
+      case "high":
+        return "badge-high";
+      case "medium":
+        return "badge-medium";
+      case "low":
+        return "badge-low";
+      default:
+        return "badge-neutral";
+    }
+  };
+
+  const getStatusClass = (status) => {
+    switch (status?.toLowerCase()) {
+      case "open":
+        return "status-open";
+      case "resolved":
+        return "status-resolved";
+      case "accepted":
+        return "status-accepted";
+      case "under review":
+        return "status-review";
+      default:
+        return "status-neutral";
+    }
+  };
 
   return (
-
     <div className="dashboard">
-
       {/* -------------------------------- */}
       {/* HEADER */}
       {/* -------------------------------- */}
-
       <header>
-
         <div>
-
+          <div className="brand-badge">PHASE 2 ACTIVE • GRC RISK MODEL</div>
           <h1>AI-GRC Platform</h1>
-
           <p>
-            Cybersecurity Governance, Risk Management & Compliance
+            Governance, Risk Management & Compliance Engine with Asset Intelligence & Residual Risk Modeling
           </p>
-
         </div>
-
-        <div className="status">
-          ● System Online
+        <div className="system-status">
+          <span className="pulse-dot"></span> System Online
         </div>
-
       </header>
-
 
       {/* -------------------------------- */}
       {/* SUMMARY CARDS */}
       {/* -------------------------------- */}
-
       <section className="cards">
-
         <div className="card">
-
-          <h3>Monitored Assets</h3>
-
-          <strong>
-            {assets.length}
-          </strong>
-
+          <div className="card-label">Monitored Assets</div>
+          <div className="card-val">{assets.length}</div>
+          <div className="card-sub">Infrastructure inventory</div>
         </div>
 
-
         <div className="card">
-
-          <h3>Risk Score</h3>
-
-          <strong className="risk">
-            {result ? result.risk_score : "--"}
-          </strong>
-
+          <div className="card-label">Registered Risks</div>
+          <div className="card-val">{risks.length}</div>
+          <div className="card-sub">
+            {risks.filter(r => r.status === "Open").length} Open • {risks.filter(r => r.status === "Resolved").length} Resolved
+          </div>
         </div>
 
-
         <div className="card">
-
-          <h3>Risk Level</h3>
-
-          <strong className="critical">
-            {result ? result.risk_level : "--"}
-          </strong>
-
+          <div className="card-label">Security Controls</div>
+          <div className="card-val highlight-blue">{controls.length}</div>
+          <div className="card-sub">
+            {controls.filter(c => c.status === "Implemented").length} Implemented Controls
+          </div>
         </div>
 
-
         <div className="card">
-
-          <h3>Findings</h3>
-
-          <strong>
-            {vulnerabilities.length}
-          </strong>
-
+          <div className="card-label">Vulnerability Findings</div>
+          <div className="card-val highlight-orange">{vulnerabilities.length}</div>
+          <div className="card-sub">Identified technical findings</div>
         </div>
-
       </section>
 
-
       {/* -------------------------------- */}
-      {/* NETWORK MONITORING */}
+      {/* NETWORK SCANNER */}
       {/* -------------------------------- */}
-
-      <section className="scan-section">
-
-        <h2>Network Monitoring</h2>
-
-        <p>
-          Enter a target IP address and evaluate its security risk.
-        </p>
-
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Network Scanner & Discovery</h2>
+            <p className="panel-desc">
+              Scan target assets to detect services, correlate findings, and register GRC risks.
+            </p>
+          </div>
+        </div>
 
         <div className="scan-controls">
-
           <input
+            id="target-ip-input"
             type="text"
             value={target}
             onChange={(e) => setTarget(e.target.value)}
-            placeholder="Enter target IP"
+            placeholder="Enter target IP (e.g. 192.168.127.1)"
           />
-
-
           <button
+            id="run-scan-btn"
+            className="btn-primary"
             onClick={runScan}
             disabled={scanning}
           >
-
-            {scanning
-              ? "Scanning..."
-              : "Run Network Scan"}
-
+            {scanning ? "Scanning Target..." : "Run Network Scan"}
           </button>
-
         </div>
 
+        {result && (
+          <div className="scan-result-box">
+            <div className="scan-result-summary">
+              <strong>Scan Completed for: {result.ip_address}</strong> — Risk Score: {result.risk_score} ({result.risk_level})
+            </div>
+            <div className="scan-result-ports">Open Ports: {result.open_ports}</div>
+          </div>
+        )}
       </section>
 
-
       {/* -------------------------------- */}
-      {/* ASSET INVENTORY */}
+      {/* ASSET INVENTORY & INTELLIGENCE */}
       {/* -------------------------------- */}
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Asset Inventory & Intelligence</h2>
+            <p className="panel-desc">
+              Manage business context: criticality, exposure, and environment dynamically inform Inherent Risk.
+            </p>
+          </div>
+        </div>
 
-      <section className="results">
-
-        <h2>Asset Inventory</h2>
-
-        <p>
-          Discovered assets monitored by the GRC platform.
-        </p>
-
-
-        <div className="asset-table-container">
-
-          <table className="asset-table">
-
+        <div className="table-responsive">
+          <table className="data-table">
             <thead>
-
               <tr>
-
                 <th>IP Address</th>
-                <th>Hostname</th>
-                <th>Operating System</th>
-                <th>Open Ports</th>
+                <th>Hostname / OS</th>
+                <th>Criticality</th>
+                <th>Environment</th>
+                <th>Exposure</th>
+                <th>Owner / Function</th>
                 <th>Risk Score</th>
-                <th>Risk Level</th>
-                <th>Status</th>
-
+                <th>Actions</th>
               </tr>
-
             </thead>
-
-
             <tbody>
-
               {assets.length === 0 ? (
-
                 <tr>
-
-                  <td colSpan="7">
-                    No assets discovered yet.
-                  </td>
-
+                  <td colSpan="8" className="empty-cell">No assets discovered yet.</td>
                 </tr>
-
               ) : (
-
                 assets.map((asset) => (
-
                   <tr key={asset.id}>
-
                     <td>
-                      {asset.ip_address}
+                      <strong className="ip-text">{asset.ip_address}</strong>
+                      <div className="sub-text">ID #{asset.id}</div>
                     </td>
-
                     <td>
-                      {asset.hostname || "Unknown"}
+                      <div>{asset.hostname || "Unknown Host"}</div>
+                      <div className="sub-text">{asset.operating_system || "OS not identified"}</div>
                     </td>
-
                     <td>
-                      {asset.operating_system || "Unknown"}
-                    </td>
-
-                    <td>
-                      {asset.open_ports || "None"}
-                    </td>
-
-                    <td>
-                      {asset.risk_score}
-                    </td>
-
-                    <td>
-
-                      <span
-                        className={
-                          asset.risk_level === "Critical"
-                            ? "risk-critical"
-                            : asset.risk_level === "High"
-                            ? "risk-high"
-                            : asset.risk_level === "Medium"
-                            ? "risk-medium"
-                            : "risk-low"
-                        }
-                      >
-                        {asset.risk_level}
+                      <span className={`badge ${getRiskClass(asset.criticality)}`}>
+                        {asset.criticality || "Medium"}
                       </span>
-
                     </td>
-
                     <td>
-                      {asset.status}
+                      <span className="badge badge-neutral">
+                        {asset.environment || "Production"}
+                      </span>
                     </td>
-
+                    <td>
+                      <span className="badge badge-exposure">
+                        {asset.exposure || "Internal"}
+                      </span>
+                    </td>
+                    <td>
+                      <div>{asset.owner || <span className="text-muted">Unassigned</span>}</div>
+                      <div className="sub-text">{asset.business_function || "No function specified"}</div>
+                    </td>
+                    <td>
+                      <span className={`badge ${getRiskClass(asset.risk_level)}`}>
+                        {asset.risk_level} ({asset.risk_score})
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        className="btn-action"
+                        onClick={() => openAssetModal(asset)}
+                        title="Edit Asset Intelligence"
+                      >
+                        Edit Intelligence
+                      </button>
+                    </td>
                   </tr>
-
                 ))
-
               )}
-
             </tbody>
-
           </table>
-
         </div>
-
       </section>
 
-
       {/* -------------------------------- */}
-      {/* SCAN RESULTS */}
+      {/* RISK REGISTER */}
       {/* -------------------------------- */}
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>GRC Risk Register</h2>
+            <p className="panel-desc">
+              Comprehensive risk tracking from Inherent Risk (Likelihood × Impact) to Residual Risk mitigated by Security Controls.
+            </p>
+          </div>
+        </div>
 
-      <section className="results">
-        <h2>Vulnerability Findings</h2>
-
-        <p>
-          Security exposures identified during network scanning.
-        </p>
-
-        <div className="asset-table-container">
-          <table className="asset-table">
+        <div className="table-responsive">
+          <table className="data-table">
             <thead>
               <tr>
-                <th>Port</th>
-                <th>Service</th>
-                <th>Finding</th>
+                <th>Risk Finding</th>
+                <th>Asset</th>
+                <th>Inherent Risk</th>
+                <th>Mitigating Controls</th>
+                <th>Residual Risk</th>
+                <th>Treatment</th>
+                <th>Owner & Due Date</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {risks.length === 0 ? (
+                <tr>
+                  <td colSpan="9" className="empty-cell">No risks registered yet.</td>
+                </tr>
+              ) : (
+                risks.map((risk) => {
+                  const asset = assets.find(a => a.id === risk.asset_id);
+                  return (
+                    <tr key={risk.id}>
+                      <td style={{ minWidth: "200px" }}>
+                        <strong>{risk.title}</strong>
+                        <div className="sub-text">{risk.recommendation || risk.description}</div>
+                        <div className="framework-tag">{risk.compliance_framework} ({risk.compliance_control})</div>
+                      </td>
+                      <td>
+                        <span className="ip-pill">{asset ? asset.ip_address : `Asset #${risk.asset_id}`}</span>
+                      </td>
+                      <td>
+                        <span className={`badge ${getRiskClass(risk.inherent_risk_level)}`}>
+                          {risk.inherent_risk_level || "Medium"} ({risk.inherent_risk_score || risk.risk_score})
+                        </span>
+                        <div className="sub-calc">
+                          L: {risk.likelihood_score || 2} × I: {risk.impact_score || 2}
+                        </div>
+                      </td>
+                      <td style={{ minWidth: "220px" }}>
+                        <div className="controls-list">
+                          {risk.controls && risk.controls.length > 0 ? (
+                            risk.controls.map((c) => (
+                              <span key={c.id} className="control-chip">
+                                {c.name}
+                                <button
+                                  type="button"
+                                  className="chip-remove"
+                                  onClick={() => handleDetachControl(risk.id, c.id)}
+                                  title="Detach Control"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-muted text-xs">No controls assigned</span>
+                          )}
+                        </div>
+
+                        {assigningRiskId === risk.id ? (
+                          <div className="assign-box">
+                            <select
+                              value={selectedControlId}
+                              onChange={(e) => setSelectedControlId(e.target.value)}
+                              className="select-mini"
+                            >
+                              <option value="">Select Control...</option>
+                              {controls
+                                .filter(c => !risk.controls?.some(rc => rc.id === c.id))
+                                .map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.name} ({c.effectiveness} Eff)
+                                  </option>
+                                ))}
+                            </select>
+                            <div className="assign-actions">
+                              <button
+                                className="btn-mini btn-save"
+                                onClick={() => handleAssignControl(risk.id)}
+                                disabled={!selectedControlId}
+                              >
+                                Save
+                              </button>
+                              <button
+                                className="btn-mini btn-cancel"
+                                onClick={() => {
+                                  setAssigningRiskId(null);
+                                  setSelectedControlId("");
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            className="btn-link"
+                            onClick={() => {
+                              setAssigningRiskId(risk.id);
+                              setSelectedControlId("");
+                            }}
+                          >
+                            + Assign Control
+                          </button>
+                        )}
+                      </td>
+                      <td>
+                        <span className={`badge ${getRiskClass(risk.residual_risk_level)}`}>
+                          {risk.residual_risk_level || "Medium"} ({risk.residual_risk_score || risk.risk_score})
+                        </span>
+                        <div className="sub-calc">
+                          Res L: {risk.residual_likelihood || 2} × I: {risk.residual_impact || 2}
+                        </div>
+                      </td>
+                      <td>
+                        <span className="badge badge-treatment">
+                          {risk.treatment || "Mitigate"}
+                        </span>
+                      </td>
+                      <td>
+                        <div>{risk.risk_owner || <span className="text-muted">Unassigned</span>}</div>
+                        <div className="sub-text">
+                          {risk.due_date ? new Date(risk.due_date).toLocaleDateString() : "No due date"}
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`status-pill ${getStatusClass(risk.status)}`}>
+                          {risk.status || "Open"}
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          className="btn-action"
+                          onClick={() => openRiskModal(risk)}
+                          title="Manage Risk Treatment & Ownership"
+                        >
+                          Manage
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* -------------------------------- */}
+      {/* SECURITY CONTROLS CATALOG */}
+      {/* -------------------------------- */}
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Security Controls Catalog</h2>
+            <p className="panel-desc">
+              Available defensive safeguards. Implemented controls reduce risk likelihood based on their effectiveness rating.
+            </p>
+          </div>
+          <button
+            className="btn-primary"
+            onClick={() => setShowAddControlModal(true)}
+          >
+            + Add Control
+          </button>
+        </div>
+
+        <div className="table-responsive">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Control Name</th>
+                <th>Framework</th>
+                <th>Category</th>
+                <th>Effectiveness</th>
+                <th>Status</th>
+                <th>Assigned Risks</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              {controls.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="empty-cell">No controls in catalog.</td>
+                </tr>
+              ) : (
+                controls.map((control) => (
+                  <tr key={control.id}>
+                    <td>
+                      <strong>{control.name}</strong>
+                    </td>
+                    <td>
+                      <span className="badge badge-neutral">{control.framework || "NIST CSF"}</span>
+                    </td>
+                    <td>{control.category || "Preventive"}</td>
+                    <td>
+                      <span className={`badge ${control.effectiveness === "High" ? "badge-eff-high" : "badge-eff-med"}`}>
+                        {control.effectiveness} ({control.effectiveness === "High" ? "-2 Likelihood" : control.effectiveness === "Medium" ? "-1 Likelihood" : "0 Likelihood"})
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`status-pill ${control.status === "Implemented" ? "status-resolved" : "status-review"}`}>
+                        {control.status}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="count-bubble">{control.risk_count}</span>
+                    </td>
+                    <td className="desc-cell">{control.description || "No description provided."}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* -------------------------------- */}
+      {/* VULNERABILITY FINDINGS (PHASE 1) */}
+      {/* -------------------------------- */}
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Vulnerability Findings</h2>
+            <p className="panel-desc">
+              Technical security findings with CVE/NVD correlation and CVSS scores.
+            </p>
+          </div>
+        </div>
+
+        <div className="table-responsive">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Port / Service</th>
+                <th>Finding Title</th>
                 <th>Severity</th>
-                <th>CVE</th>
-                <th>CVSS</th>
+                <th>CVE Reference</th>
+                <th>CVSS Score</th>
+                <th>CVE Confidence</th>
                 <th>Status</th>
               </tr>
             </thead>
-
             <tbody>
               {vulnerabilities.length === 0 ? (
                 <tr>
-                  <td colSpan="7">
-                    No vulnerability findings yet.
-                  </td>
+                  <td colSpan="7" className="empty-cell">No vulnerability findings yet.</td>
                 </tr>
               ) : (
-                vulnerabilities.map((vulnerability) => (
-                  <tr key={vulnerability.id}>
-                    <td>{vulnerability.port}</td>
-
+                vulnerabilities.map((v) => (
+                  <tr key={v.id}>
                     <td>
-                      {vulnerability.service}
+                      <strong>{v.port}</strong> / {v.service || "unknown"}
                     </td>
-
+                    <td>{v.title}</td>
                     <td>
-                      {vulnerability.title}
-                    </td>
-
-                    <td>
-                      <span
-                        className={
-                          vulnerability.severity === "High"
-                            ? "risk-high"
-                            : vulnerability.severity === "Medium"
-                            ? "risk-medium"
-                            : "risk-low"
-                        }
-                      >
-                        {vulnerability.severity}
+                      <span className={`badge ${getRiskClass(v.severity)}`}>
+                        {v.severity}
                       </span>
                     </td>
-
+                    <td>{v.cve || <span className="text-muted">Not identified</span>}</td>
                     <td>
-                      {vulnerability.cve || "Not identified"}
+                      {v.cvss_score != null ? (
+                        <span className="cvss-tag">{v.cvss_score} ({v.cvss_version || "v3.1"})</span>
+                      ) : (
+                        <span className="text-muted">N/A</span>
+                      )}
                     </td>
-
                     <td>
-                      {vulnerability.cvss_score ?? "N/A"}
+                      <span className={`conf-badge conf-${v.cve_confidence || "none"}`}>
+                        {v.cve_confidence || "None"}
+                      </span>
                     </td>
-
                     <td>
-                      {vulnerability.status}
+                      <span className={`status-pill ${getStatusClass(v.status)}`}>
+                        {v.status}
+                      </span>
                     </td>
                   </tr>
                 ))
@@ -393,55 +801,237 @@ function App() {
         </div>
       </section>
 
-      {result && (
+      {/* -------------------------------- */}
+      {/* MODAL: EDIT ASSET INTELLIGENCE */}
+      {/* -------------------------------- */}
+      {editingAsset && (
+        <div className="modal-backdrop" onClick={() => setEditingAsset(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Edit Asset Intelligence — {editingAsset.ip_address}</h3>
+              <button className="modal-close" onClick={() => setEditingAsset(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Business Criticality</label>
+                <select
+                  value={assetForm.criticality}
+                  onChange={(e) => setAssetForm({ ...assetForm, criticality: e.target.value })}
+                >
+                  <option value="Low">Low (Impact = 1)</option>
+                  <option value="Medium">Medium (Impact = 2)</option>
+                  <option value="High">High (Impact = 3)</option>
+                  <option value="Critical">Critical (Impact = 4)</option>
+                </select>
+                <span className="form-hint">Directly sets the Impact Score for all risks on this asset.</span>
+              </div>
 
-        <section className="results">
+              <div className="form-group">
+                <label>Environment</label>
+                <select
+                  value={assetForm.environment}
+                  onChange={(e) => setAssetForm({ ...assetForm, environment: e.target.value })}
+                >
+                  <option value="Production">Production</option>
+                  <option value="Development">Development</option>
+                  <option value="Testing">Testing</option>
+                </select>
+              </div>
 
-          <h2>Scan Results</h2>
+              <div className="form-group">
+                <label>Network Exposure</label>
+                <select
+                  value={assetForm.exposure}
+                  onChange={(e) => setAssetForm({ ...assetForm, exposure: e.target.value })}
+                >
+                  <option value="Internal">Internal (-1 Likelihood modifier)</option>
+                  <option value="DMZ">DMZ (0 Likelihood modifier)</option>
+                  <option value="External">External (+1 Likelihood modifier)</option>
+                </select>
+                <span className="form-hint">Affects the technical Likelihood score for findings on this host.</span>
+              </div>
 
+              <div className="form-group">
+                <label>Asset Owner</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Infrastructure Team / John Doe"
+                  value={assetForm.owner}
+                  onChange={(e) => setAssetForm({ ...assetForm, owner: e.target.value })}
+                />
+              </div>
 
-          <div className="asset-info">
-
-            <p>
-              <b>IP Address:</b> {result.ip_address}
-            </p>
-
-            <p>
-              <b>Risk Score:</b> {result.risk_score}
-            </p>
-
-            <p>
-              <b>Risk Level:</b> {result.risk_level}
-            </p>
-
-            <p>
-              <b>Open Ports:</b> {result.open_ports}
-            </p>
-
+              <div className="form-group">
+                <label>Business Function</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Core Database / Gateway"
+                  value={assetForm.business_function}
+                  onChange={(e) => setAssetForm({ ...assetForm, business_function: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setEditingAsset(null)}>Cancel</button>
+              <button className="btn-primary" onClick={saveAsset}>Save & Recalculate Risks</button>
+            </div>
           </div>
-
-
-          <h3>Security Findings</h3>
-
-
-          <ul>
-
-            {result.findings.map(
-              (finding, index) => (
-
-                <li key={index}>
-                  {finding}
-                </li>
-
-              )
-            )}
-
-          </ul>
-
-        </section>
-
+        </div>
       )}
 
+      {/* -------------------------------- */}
+      {/* MODAL: MANAGE RISK */}
+      {/* -------------------------------- */}
+      {editingRisk && (
+        <div className="modal-backdrop" onClick={() => setEditingRisk(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Manage Risk Treatment — #{editingRisk.id}</h3>
+              <button className="modal-close" onClick={() => setEditingRisk(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="risk-summary-box">
+                <strong>{editingRisk.title}</strong>
+                <div>Inherent Score: {editingRisk.inherent_risk_score} • Residual Score: {editingRisk.residual_risk_score}</div>
+              </div>
+
+              <div className="form-group">
+                <label>Risk Treatment Decision</label>
+                <select
+                  value={riskForm.treatment}
+                  onChange={(e) => setRiskForm({ ...riskForm, treatment: e.target.value })}
+                >
+                  <option value="Mitigate">Mitigate (Deploy Controls)</option>
+                  <option value="Accept">Accept (Document Business Acceptance)</option>
+                  <option value="Transfer">Transfer (Insurance / Third-party)</option>
+                  <option value="Avoid">Avoid (Decommission Service)</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Risk Owner</label>
+                <input
+                  type="text"
+                  placeholder="e.g. SecOps Lead / Jane Smith"
+                  value={riskForm.risk_owner}
+                  onChange={(e) => setRiskForm({ ...riskForm, risk_owner: e.target.value })}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Remediation Due Date</label>
+                <input
+                  type="date"
+                  value={riskForm.due_date}
+                  onChange={(e) => setRiskForm({ ...riskForm, due_date: e.target.value })}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Lifecycle Status</label>
+                <select
+                  value={riskForm.status}
+                  onChange={(e) => setRiskForm({ ...riskForm, status: e.target.value })}
+                >
+                  <option value="Open">Open</option>
+                  <option value="Under Review">Under Review</option>
+                  <option value="Accepted">Accepted</option>
+                  <option value="Resolved">Resolved</option>
+                </select>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setEditingRisk(null)}>Cancel</button>
+              <button className="btn-primary" onClick={saveRisk}>Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* -------------------------------- */}
+      {/* MODAL: ADD CONTROL */}
+      {/* -------------------------------- */}
+      {showAddControlModal && (
+        <div className="modal-backdrop" onClick={() => setShowAddControlModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Add Security Control to Catalog</h3>
+              <button className="modal-close" onClick={() => setShowAddControlModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Control Name *</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Web Application Firewall (WAF)"
+                  value={controlForm.name}
+                  onChange={(e) => setControlForm({ ...controlForm, name: e.target.value })}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Compliance Framework</label>
+                <input
+                  type="text"
+                  placeholder="e.g. NIST CSF (PR.AC-4), ISO 27001"
+                  value={controlForm.framework}
+                  onChange={(e) => setControlForm({ ...controlForm, framework: e.target.value })}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Category</label>
+                <select
+                  value={controlForm.category}
+                  onChange={(e) => setControlForm({ ...controlForm, category: e.target.value })}
+                >
+                  <option value="Preventive">Preventive</option>
+                  <option value="Detective">Detective</option>
+                  <option value="Corrective">Corrective</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Mitigation Effectiveness</label>
+                <select
+                  value={controlForm.effectiveness}
+                  onChange={(e) => setControlForm({ ...controlForm, effectiveness: e.target.value })}
+                >
+                  <option value="High">High (-2 Likelihood reduction)</option>
+                  <option value="Medium">Medium (-1 Likelihood reduction)</option>
+                  <option value="Low">Low (0 Likelihood reduction)</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Implementation Status</label>
+                <select
+                  value={controlForm.status}
+                  onChange={(e) => setControlForm({ ...controlForm, status: e.target.value })}
+                >
+                  <option value="Implemented">Implemented (Actively mitigating)</option>
+                  <option value="Planned">Planned (No mitigation yet)</option>
+                  <option value="Under Review">Under Review</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Description</label>
+                <textarea
+                  rows="3"
+                  placeholder="Describe the safeguard mechanism and scope..."
+                  value={controlForm.description}
+                  onChange={(e) => setControlForm({ ...controlForm, description: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setShowAddControlModal(false)}>Cancel</button>
+              <button className="btn-primary" onClick={saveNewControl}>Add to Catalog</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

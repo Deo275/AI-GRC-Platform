@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Path, Body
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from datetime import datetime
 try:
     from database import engine, Base, SessionLocal
     import models
@@ -19,6 +21,154 @@ sys.path.append(
 from scanner.nmap_scanner import scan_host, discover_hosts
 from scanner.risk_engine import calculate_risk
 from scanner.vulnerability_scanner import identify_vulnerabilities
+from scanner.grc_engine import (
+    criticality_to_impact,
+    calculate_likelihood,
+    calculate_inherent_risk,
+    calculate_residual_risk,
+    calculate_risk_level,
+)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic Schemas for Request Validation
+# ---------------------------------------------------------------------------
+
+class AssetUpdate(BaseModel):
+    criticality: str | None = None
+    environment: str | None = None
+    exposure: str | None = None
+    owner: str | None = None
+    business_function: str | None = None
+
+
+class RiskUpdate(BaseModel):
+    treatment: str | None = None
+    risk_owner: str | None = None
+    due_date: datetime | None = None
+    status: str | None = None
+
+
+class ControlCreate(BaseModel):
+    name: str
+    description: str | None = None
+    category: str | None = "Preventive"
+    framework: str | None = "NIST CSF"
+    effectiveness: str | None = "Medium"
+    status: str | None = "Implemented"
+
+
+class ControlUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    category: str | None = None
+    framework: str | None = None
+    effectiveness: str | None = None
+    status: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Helper formatting functions
+# ---------------------------------------------------------------------------
+
+def format_asset(asset: models.Asset) -> dict:
+    return {
+        "id": asset.id,
+        "ip_address": asset.ip_address,
+        "hostname": asset.hostname,
+        "mac_address": asset.mac_address,
+        "operating_system": asset.operating_system,
+        "open_ports": asset.open_ports,
+        "status": asset.status,
+        "risk_score": asset.risk_score,
+        "risk_level": asset.risk_level,
+        "last_seen": asset.last_seen,
+        "criticality": asset.criticality or "Medium",
+        "environment": asset.environment or "Production",
+        "exposure": asset.exposure or "Internal",
+        "owner": asset.owner,
+        "business_function": asset.business_function,
+    }
+
+
+def format_risk(risk: models.Risk) -> dict:
+    return {
+        "id": risk.id,
+        "asset_id": risk.asset_id,
+        "title": risk.title,
+        "description": risk.description,
+        "likelihood": risk.likelihood,
+        "impact": risk.impact,
+        "risk_score": risk.risk_score,
+        "risk_level": risk.risk_level,
+        "likelihood_score": risk.likelihood_score,
+        "impact_score": risk.impact_score,
+        "inherent_risk_score": risk.inherent_risk_score,
+        "inherent_risk_level": risk.inherent_risk_level,
+        "residual_likelihood": risk.residual_likelihood,
+        "residual_impact": risk.residual_impact,
+        "residual_risk_score": risk.residual_risk_score,
+        "residual_risk_level": risk.residual_risk_level,
+        "treatment": risk.treatment,
+        "status": risk.status,
+        "risk_owner": risk.risk_owner,
+        "due_date": risk.due_date,
+        "compliance_framework": risk.compliance_framework,
+        "compliance_control": risk.compliance_control,
+        "recommendation": risk.recommendation,
+        "controls": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "category": c.category,
+                "framework": c.framework,
+                "effectiveness": c.effectiveness,
+                "status": c.status,
+            }
+            for c in risk.controls
+        ],
+        "created_at": risk.created_at,
+        "updated_at": risk.updated_at,
+    }
+
+
+def format_control(control: models.Control) -> dict:
+    return {
+        "id": control.id,
+        "name": control.name,
+        "description": control.description,
+        "category": control.category,
+        "framework": control.framework,
+        "effectiveness": control.effectiveness,
+        "status": control.status,
+        "risk_count": len(control.risks),
+        "created_at": control.created_at,
+        "updated_at": control.updated_at,
+    }
+
+
+def recalculate_asset_risks(asset: models.Asset):
+    """Recalculate inherent and residual risk scores for all risks belonging to an asset."""
+    impact = criticality_to_impact(asset.criticality)
+    for risk in asset.risks:
+        likelihood = calculate_likelihood(
+            severity_str=risk.likelihood,
+            exposure=asset.exposure,
+            fallback_likelihood=risk.likelihood
+        )
+        inh = calculate_inherent_risk(likelihood, impact)
+        res = calculate_residual_risk(likelihood, impact, risk.controls)
+
+        risk.likelihood_score = inh["likelihood_score"]
+        risk.impact_score = inh["impact_score"]
+        risk.inherent_risk_score = inh["inherent_risk_score"]
+        risk.inherent_risk_level = inh["inherent_risk_level"]
+        risk.residual_likelihood = res["residual_likelihood"]
+        risk.residual_impact = res["residual_impact"]
+        risk.residual_risk_score = res["residual_risk_score"]
+        risk.residual_risk_level = res["residual_risk_level"]
+        risk.updated_at = datetime.utcnow()
+
 
 
 app = FastAPI(title="AI-GRC Platform")
@@ -122,7 +272,12 @@ def scan_network(
                 open_ports=port_data,
                 status="Active",
                 risk_score=risk_result["risk_score"],
-                risk_level=risk_result["risk_level"]
+                risk_level=risk_result["risk_level"],
+                criticality="Medium",
+                environment="Production",
+                exposure="Internal",
+                owner=None,
+                business_function=None
             )
 
             db.add(asset)
@@ -196,12 +351,46 @@ def scan_network(
                 models.Risk.title == finding
             ).first()
 
+            # Correlate with vulnerability findings for CVSS/severity
+            matched_vuln = None
+            for v in vulnerability_result:
+                v_title = v.get("title", "").lower()
+                if v_title and (v_title in finding.lower() or any(w.lower() in v_title for w in finding.split()[:2])):
+                    matched_vuln = v
+                    break
+
+            cvss_val = matched_vuln.get("cvss_score") if matched_vuln else None
+            sev_val = matched_vuln.get("severity") if matched_vuln else None
+
+            impact_score = criticality_to_impact(asset.criticality)
+            likelihood_score = calculate_likelihood(
+                severity_str=sev_val,
+                cvss_score=cvss_val,
+                exposure=asset.exposure,
+                fallback_likelihood=likelihood
+            )
+
+            inh = calculate_inherent_risk(likelihood_score, impact_score)
+            controls = existing_risk.controls if existing_risk else []
+            res = calculate_residual_risk(likelihood_score, impact_score, controls)
+
             if existing_risk:
                 # Update scanner-derived fields
                 existing_risk.likelihood = likelihood
                 existing_risk.impact = impact
                 existing_risk.risk_score = risk_score
                 existing_risk.risk_level = risk_level
+
+                existing_risk.likelihood_score = inh["likelihood_score"]
+                existing_risk.impact_score = inh["impact_score"]
+                existing_risk.inherent_risk_score = inh["inherent_risk_score"]
+                existing_risk.inherent_risk_level = inh["inherent_risk_level"]
+
+                existing_risk.residual_likelihood = res["residual_likelihood"]
+                existing_risk.residual_impact = res["residual_impact"]
+                existing_risk.residual_risk_score = res["residual_risk_score"]
+                existing_risk.residual_risk_level = res["residual_risk_level"]
+
                 existing_risk.compliance_framework = compliance_framework
                 existing_risk.compliance_control = compliance_control
                 existing_risk.recommendation = recommendation
@@ -211,7 +400,7 @@ def scan_network(
                 if existing_risk.status == "Resolved":
                     existing_risk.status = "Open"
 
-                # treatment and non-Resolved status are preserved
+                # treatment, risk_owner, due_date and non-Resolved status are preserved
             else:
                 # Create risk record
                 risk = models.Risk(
@@ -222,8 +411,18 @@ def scan_network(
                     impact=impact,
                     risk_score=risk_score,
                     risk_level=risk_level,
+                    likelihood_score=inh["likelihood_score"],
+                    impact_score=inh["impact_score"],
+                    inherent_risk_score=inh["inherent_risk_score"],
+                    inherent_risk_level=inh["inherent_risk_level"],
+                    residual_likelihood=res["residual_likelihood"],
+                    residual_impact=res["residual_impact"],
+                    residual_risk_score=res["residual_risk_score"],
+                    residual_risk_level=res["residual_risk_level"],
                     treatment="Mitigate",
                     status="Open",
+                    risk_owner=None,
+                    due_date=None,
                     compliance_framework=compliance_framework,
                     compliance_control=compliance_control,
                     recommendation=recommendation,
@@ -455,7 +654,12 @@ def discover_network(
                     open_ports=port_data,
                     status="Active",
                     risk_score=risk_result["risk_score"],
-                    risk_level=risk_result["risk_level"]
+                    risk_level=risk_result["risk_level"],
+                    criticality="Medium",
+                    environment="Production",
+                    exposure="Internal",
+                    owner=None,
+                    business_function=None
                 )
 
                 db.add(asset)
@@ -467,7 +671,12 @@ def discover_network(
                 "operating_system": result["operating_system"],
                 "open_ports": port_data,
                 "risk_score": risk_result["risk_score"],
-                "risk_level": risk_result["risk_level"]
+                "risk_level": risk_result["risk_level"],
+                "criticality": asset.criticality or "Medium",
+                "environment": asset.environment or "Production",
+                "exposure": asset.exposure or "Internal",
+                "owner": asset.owner,
+                "business_function": asset.business_function,
             })
 
         # Save all discovered assets
@@ -483,90 +692,392 @@ def discover_network(
     finally:
         db.close()
 
-# ------------------------------------------------
-# GET ASSET INVENTORY
-# ------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# ASSET INVENTORY & ASSET INTELLIGENCE ENDPOINTS
+# ---------------------------------------------------------------------------
 
 @app.get("/assets")
 def get_assets():
-
     db = SessionLocal()
-
     try:
-
-        assets = db.query(models.Asset).order_by(
-            models.Asset.id
-        ).all()
-
+        assets = db.query(models.Asset).order_by(models.Asset.id).all()
         return {
             "count": len(assets),
-            "assets": [
-                {
-                    "id": asset.id,
-                    "ip_address": asset.ip_address,
-                    "hostname": asset.hostname,
-                    "mac_address": asset.mac_address,
-                    "operating_system": asset.operating_system,
-                    "open_ports": asset.open_ports,
-                    "status": asset.status,
-                    "risk_score": asset.risk_score,
-                    "risk_level": asset.risk_level,
-                    "last_seen": asset.last_seen
-                }
-                for asset in assets
-            ]
+            "assets": [format_asset(asset) for asset in assets]
         }
-
     finally:
         db.close()
 
 
-# ------------------------------------------------
-# GET RISK REGISTER
-# ------------------------------------------------
+@app.get("/assets/{asset_id}")
+def get_asset(asset_id: int = Path(..., description="The ID of the asset")):
+    db = SessionLocal()
+    try:
+        asset = db.query(models.Asset).filter(models.Asset.id == asset_id).first()
+        if not asset:
+            raise HTTPException(status_code=404, detail=f"Asset with ID {asset_id} not found")
+        return format_asset(asset)
+    finally:
+        db.close()
+
+
+@app.patch("/assets/{asset_id}")
+def update_asset(
+    asset_id: int = Path(..., description="The ID of the asset"),
+    payload: AssetUpdate = Body(...)
+):
+    db = SessionLocal()
+    try:
+        asset = db.query(models.Asset).filter(models.Asset.id == asset_id).first()
+        if not asset:
+            raise HTTPException(status_code=404, detail=f"Asset with ID {asset_id} not found")
+
+        criticality_changed = False
+        exposure_changed = False
+
+        if payload.criticality is not None:
+            valid_criticalities = {"low": "Low", "medium": "Medium", "high": "High", "critical": "Critical"}
+            norm_crit = valid_criticalities.get(payload.criticality.strip().lower())
+            if not norm_crit:
+                raise HTTPException(status_code=400, detail="Invalid criticality. Allowed values: Low, Medium, High, Critical")
+            if asset.criticality != norm_crit:
+                asset.criticality = norm_crit
+                criticality_changed = True
+
+        if payload.environment is not None:
+            valid_envs = {"production": "Production", "development": "Development", "testing": "Testing"}
+            norm_env = valid_envs.get(payload.environment.strip().lower())
+            if not norm_env:
+                raise HTTPException(status_code=400, detail="Invalid environment. Allowed values: Production, Development, Testing")
+            asset.environment = norm_env
+
+        if payload.exposure is not None:
+            valid_exposures = {"internal": "Internal", "dmz": "DMZ", "external": "External"}
+            norm_exp = valid_exposures.get(payload.exposure.strip().lower())
+            if not norm_exp:
+                raise HTTPException(status_code=400, detail="Invalid exposure. Allowed values: Internal, DMZ, External")
+            if asset.exposure != norm_exp:
+                asset.exposure = norm_exp
+                exposure_changed = True
+
+        if payload.owner is not None:
+            asset.owner = payload.owner.strip() if payload.owner.strip() else None
+
+        if payload.business_function is not None:
+            asset.business_function = payload.business_function.strip() if payload.business_function.strip() else None
+
+        # When criticality or exposure changes, recalculate risk ratings for all associated risks
+        if criticality_changed or exposure_changed:
+            recalculate_asset_risks(asset)
+
+        db.commit()
+        db.refresh(asset)
+        return {
+            "message": "Asset metadata updated successfully",
+            "asset": format_asset(asset)
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# RISK REGISTER ENDPOINTS
+# ---------------------------------------------------------------------------
 
 @app.get("/risks")
 def get_risks():
-
     db = SessionLocal()
-
     try:
-
-        risks = db.query(models.Risk).order_by(
-            models.Risk.id
-        ).all()
-
+        risks = db.query(models.Risk).order_by(models.Risk.id).all()
         return {
             "count": len(risks),
-            "risks": [
-                {
-                    "id": risk.id,
-                    "asset_id": risk.asset_id,
-                    "title": risk.title,
-                    "description": risk.description,
-                    "likelihood": risk.likelihood,
-                    "impact": risk.impact,
-                    "risk_score": risk.risk_score,
-                    "risk_level": risk.risk_level,
-                    "treatment": risk.treatment,
-                    "status": risk.status,
-                    "compliance_framework": risk.compliance_framework,
-                    "compliance_control": risk.compliance_control,
-                    "recommendation": risk.recommendation,
-                    "created_at": risk.created_at,
-                    "updated_at": risk.updated_at
-                }
-                for risk in risks
-            ]
+            "risks": [format_risk(risk) for risk in risks]
         }
-
     finally:
         db.close()
 
 
-# ------------------------------------------------
+@app.get("/risks/{risk_id}")
+def get_risk(risk_id: int = Path(..., description="The ID of the risk")):
+    db = SessionLocal()
+    try:
+        risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
+        if not risk:
+            raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
+        return format_risk(risk)
+    finally:
+        db.close()
+
+
+@app.patch("/risks/{risk_id}")
+def update_risk(
+    risk_id: int = Path(..., description="The ID of the risk"),
+    payload: RiskUpdate = Body(...)
+):
+    db = SessionLocal()
+    try:
+        risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
+        if not risk:
+            raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
+
+        if payload.treatment is not None:
+            valid_treatments = {"mitigate": "Mitigate", "accept": "Accept", "transfer": "Transfer", "avoid": "Avoid"}
+            norm_treat = valid_treatments.get(payload.treatment.strip().lower())
+            if not norm_treat:
+                raise HTTPException(status_code=400, detail="Invalid treatment. Allowed values: Mitigate, Accept, Transfer, Avoid")
+            risk.treatment = norm_treat
+
+        if payload.status is not None:
+            valid_statuses = {"open": "Open", "resolved": "Resolved", "accepted": "Accepted", "under review": "Under Review"}
+            norm_stat = valid_statuses.get(payload.status.strip().lower())
+            if not norm_stat:
+                raise HTTPException(status_code=400, detail="Invalid status. Allowed values: Open, Resolved, Accepted, Under Review")
+            risk.status = norm_stat
+
+        if payload.risk_owner is not None:
+            risk.risk_owner = payload.risk_owner.strip() if payload.risk_owner.strip() else None
+
+        if payload.due_date is not None:
+            risk.due_date = payload.due_date
+
+        risk.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(risk)
+        return {
+            "message": "Risk management fields updated successfully",
+            "risk": format_risk(risk)
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# SECURITY CONTROLS ENDPOINTS
+# ---------------------------------------------------------------------------
+
+@app.get("/controls")
+def get_controls():
+    db = SessionLocal()
+    try:
+        controls = db.query(models.Control).order_by(models.Control.id).all()
+        return {
+            "count": len(controls),
+            "controls": [format_control(c) for c in controls]
+        }
+    finally:
+        db.close()
+
+
+@app.post("/controls")
+def create_control(payload: ControlCreate = Body(...)):
+    db = SessionLocal()
+    try:
+        existing = db.query(models.Control).filter(models.Control.name.ilike(payload.name.strip())).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Control with name '{payload.name}' already exists")
+
+        valid_eff = {"low": "Low", "medium": "Medium", "high": "High"}
+        eff = valid_eff.get((payload.effectiveness or "Medium").strip().lower(), "Medium")
+
+        valid_stat = {"implemented": "Implemented", "planned": "Planned", "under review": "Under Review"}
+        stat = valid_stat.get((payload.status or "Implemented").strip().lower(), "Implemented")
+
+        control = models.Control(
+            name=payload.name.strip(),
+            description=payload.description.strip() if payload.description else None,
+            category=payload.category.strip() if payload.category else "Preventive",
+            framework=payload.framework.strip() if payload.framework else "NIST CSF",
+            effectiveness=eff,
+            status=stat,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        db.add(control)
+        db.commit()
+        db.refresh(control)
+        return {
+            "message": "Control created successfully",
+            "control": format_control(control)
+        }
+    finally:
+        db.close()
+
+
+@app.get("/controls/{control_id}")
+def get_control(control_id: int = Path(..., description="The ID of the control")):
+    db = SessionLocal()
+    try:
+        control = db.query(models.Control).filter(models.Control.id == control_id).first()
+        if not control:
+            raise HTTPException(status_code=404, detail=f"Control with ID {control_id} not found")
+        return format_control(control)
+    finally:
+        db.close()
+
+
+@app.patch("/controls/{control_id}")
+def update_control(
+    control_id: int = Path(..., description="The ID of the control"),
+    payload: ControlUpdate = Body(...)
+):
+    db = SessionLocal()
+    try:
+        control = db.query(models.Control).filter(models.Control.id == control_id).first()
+        if not control:
+            raise HTTPException(status_code=404, detail=f"Control with ID {control_id} not found")
+
+        eff_changed = False
+        if payload.name is not None:
+            control.name = payload.name.strip()
+        if payload.description is not None:
+            control.description = payload.description.strip() if payload.description else None
+        if payload.category is not None:
+            control.category = payload.category.strip()
+        if payload.framework is not None:
+            control.framework = payload.framework.strip()
+
+        if payload.effectiveness is not None:
+            valid_eff = {"low": "Low", "medium": "Medium", "high": "High"}
+            norm_eff = valid_eff.get(payload.effectiveness.strip().lower())
+            if not norm_eff:
+                raise HTTPException(status_code=400, detail="Invalid effectiveness. Allowed: Low, Medium, High")
+            if control.effectiveness != norm_eff:
+                control.effectiveness = norm_eff
+                eff_changed = True
+
+        if payload.status is not None:
+            valid_stat = {"implemented": "Implemented", "planned": "Planned", "under review": "Under Review"}
+            norm_stat = valid_stat.get(payload.status.strip().lower())
+            if not norm_stat:
+                raise HTTPException(status_code=400, detail="Invalid status. Allowed: Implemented, Planned, Under Review")
+            if control.status != norm_stat:
+                control.status = norm_stat
+                eff_changed = True
+
+        control.updated_at = datetime.utcnow()
+
+        # If effectiveness or status changed, recompute residual risk for all associated risks
+        if eff_changed:
+            for r in control.risks:
+                res = calculate_residual_risk(r.likelihood_score, r.impact_score, r.controls)
+                r.residual_likelihood = res["residual_likelihood"]
+                r.residual_impact = res["residual_impact"]
+                r.residual_risk_score = res["residual_risk_score"]
+                r.residual_risk_level = res["residual_risk_level"]
+                r.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(control)
+        return {
+            "message": "Control updated successfully",
+            "control": format_control(control)
+        }
+    finally:
+        db.close()
+
+
+@app.delete("/controls/{control_id}")
+def delete_control(control_id: int = Path(..., description="The ID of the control")):
+    db = SessionLocal()
+    try:
+        control = db.query(models.Control).filter(models.Control.id == control_id).first()
+        if not control:
+            raise HTTPException(status_code=404, detail=f"Control with ID {control_id} not found")
+
+        affected_risks = list(control.risks)
+        db.delete(control)
+        db.commit()
+
+        # Recalculate residual risks for previously associated risks
+        for r in affected_risks:
+            db.refresh(r)
+            res = calculate_residual_risk(r.likelihood_score, r.impact_score, r.controls)
+            r.residual_likelihood = res["residual_likelihood"]
+            r.residual_impact = res["residual_impact"]
+            r.residual_risk_score = res["residual_risk_score"]
+            r.residual_risk_level = res["residual_risk_level"]
+            r.updated_at = datetime.utcnow()
+
+        db.commit()
+        return {"message": f"Control {control_id} deleted successfully"}
+    finally:
+        db.close()
+
+
+@app.post("/risks/{risk_id}/controls/{control_id}")
+def assign_control_to_risk(
+    risk_id: int = Path(..., description="The ID of the risk"),
+    control_id: int = Path(..., description="The ID of the control")
+):
+    db = SessionLocal()
+    try:
+        risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
+        if not risk:
+            raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
+        control = db.query(models.Control).filter(models.Control.id == control_id).first()
+        if not control:
+            raise HTTPException(status_code=404, detail=f"Control with ID {control_id} not found")
+
+        if control not in risk.controls:
+            risk.controls.append(control)
+
+        # Recalculate residual risk
+        res = calculate_residual_risk(risk.likelihood_score, risk.impact_score, risk.controls)
+        risk.residual_likelihood = res["residual_likelihood"]
+        risk.residual_impact = res["residual_impact"]
+        risk.residual_risk_score = res["residual_risk_score"]
+        risk.residual_risk_level = res["residual_risk_level"]
+        risk.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(risk)
+        return {
+            "message": f"Control '{control.name}' assigned to risk {risk_id}",
+            "risk": format_risk(risk)
+        }
+    finally:
+        db.close()
+
+
+@app.delete("/risks/{risk_id}/controls/{control_id}")
+def detach_control_from_risk(
+    risk_id: int = Path(..., description="The ID of the risk"),
+    control_id: int = Path(..., description="The ID of the control")
+):
+    db = SessionLocal()
+    try:
+        risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
+        if not risk:
+            raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
+        control = db.query(models.Control).filter(models.Control.id == control_id).first()
+        if not control:
+            raise HTTPException(status_code=404, detail=f"Control with ID {control_id} not found")
+
+        if control in risk.controls:
+            risk.controls.remove(control)
+
+        # Recalculate residual risk
+        res = calculate_residual_risk(risk.likelihood_score, risk.impact_score, risk.controls)
+        risk.residual_likelihood = res["residual_likelihood"]
+        risk.residual_impact = res["residual_impact"]
+        risk.residual_risk_score = res["residual_risk_score"]
+        risk.residual_risk_level = res["residual_risk_level"]
+        risk.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(risk)
+        return {
+            "message": f"Control '{control.name}' detached from risk {risk_id}",
+            "risk": format_risk(risk)
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # GET VULNERABILITY FINDINGS
-# ------------------------------------------------
+# ---------------------------------------------------------------------------
 
 @app.get("/vulnerabilities")
 def get_vulnerabilities():
