@@ -168,3 +168,56 @@ button:disabled {
     gap: 15px;
   }
 }
+
+/* ================================
+   Asset Inventory Table
+================================ */
+
+.asset-table-container {
+  overflow-x: auto;
+  margin-top: 20px;
+}
+
+.asset-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.asset-table th {
+  padding: 14px;
+  text-align: left;
+  background: #0b1120;
+  border-bottom: 1px solid #26344f;
+  color: #8fa3c7;
+}
+
+.asset-table td {
+  padding: 14px;
+  border-bottom: 1px solid #1d2940;
+  vertical-align: top;
+}
+
+.asset-table tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.risk-critical {
+  color: #ff4757;
+  font-weight: bold;
+}
+
+.risk-high {
+  color: #ff8c42;
+  font-weight: bold;
+}
+
+.risk-medium {
+  color: #ffd166;
+  font-weight: bold;
+}
+
+.risk-low {
+  color: #2ed573;
+  font-weight: bold;
+}
