@@ -5,3 +5,4 @@ psycopg2-binary>=2.9.12
 requests>=2.34.2
 packaging>=26.3
 python-dotenv>=1.2.3
+google-genai>=2.0.0

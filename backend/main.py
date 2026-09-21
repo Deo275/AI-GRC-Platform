@@ -2,15 +2,24 @@ from fastapi import FastAPI, Query, HTTPException, Path, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from datetime import datetime
+import sys
+import os
+import ipaddress
+from dotenv import load_dotenv
+
+_backend_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+_should_override = not bool(os.environ.get("GEMINI_API_KEY", "").strip())
+if os.path.isfile(_backend_env):
+    load_dotenv(dotenv_path=_backend_env, override=_should_override)
+else:
+    load_dotenv(override=False)
+
 try:
     from database import engine, Base, SessionLocal
     import models
 except ImportError:
     from backend.database import engine, Base, SessionLocal
     import backend.models as models
-import sys
-import os
-import ipaddress
 
 sys.path.append(
     os.path.abspath(
@@ -28,6 +37,10 @@ from scanner.grc_engine import (
     calculate_residual_risk,
     calculate_risk_level,
 )
+try:
+    from ai import analyze_risk, get_latest_risk_analysis, AIProviderError
+except ImportError:
+    from backend.ai import analyze_risk, get_latest_risk_analysis, AIProviderError
 
 
 # ---------------------------------------------------------------------------
@@ -1347,6 +1360,94 @@ def update_compliance_requirement(
         return {
             "message": "Compliance requirement updated successfully",
             "requirement": format_requirement(req)
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: AI-Assisted Security & Risk Intelligence Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/risks/{risk_id}/analyze")
+def trigger_ai_risk_analysis(
+    risk_id: int = Path(..., description="The ID of the risk to analyze with AI intelligence")
+):
+    """Analyze a security finding/risk using AI-assisted security intelligence.
+
+    Extracts normalized context, invokes the configured AI intelligence provider,
+    persists the auditable analysis record, and returns structured intelligence.
+
+    CRITICAL INVARIANT: Official rule-based risk scores remain strictly immutable.
+    """
+    db = SessionLocal()
+    try:
+        risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
+        if not risk:
+            raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
+
+        try:
+            analysis_data = analyze_risk(risk_id=risk_id, db=db)
+        except AIProviderError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"AI security intelligence provider is currently unavailable: {str(e)}"
+            )
+
+        db.refresh(risk)
+
+        return {
+            "message": "AI security intelligence analysis generated successfully",
+            "risk_id": risk_id,
+            "official_risk_scores": {
+                "inherent_risk_score": risk.inherent_risk_score,
+                "inherent_risk_level": risk.inherent_risk_level,
+                "residual_risk_score": risk.residual_risk_score,
+                "residual_risk_level": risk.residual_risk_level,
+                "likelihood": risk.likelihood,
+                "impact": risk.impact,
+                "status": risk.status,
+                "treatment": risk.treatment,
+            },
+            "analysis": analysis_data,
+            "disclaimer": (
+                "AI output is supplementary intelligence for technical and non-technical decision support. "
+                "The rule-based GRC risk engine remains the authoritative source for official risk scores."
+            ),
+        }
+    finally:
+        db.close()
+
+
+@app.get("/risks/{risk_id}/analysis")
+def get_risk_ai_analysis(
+    risk_id: int = Path(..., description="The ID of the risk")
+):
+    """Retrieve the latest auditable AI security intelligence analysis for a risk."""
+    db = SessionLocal()
+    try:
+        risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
+        if not risk:
+            raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
+
+        analysis_data = get_latest_risk_analysis(risk_id=risk_id, db=db)
+        if not analysis_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No AI security intelligence analysis found for risk ID {risk_id}. Run POST /risks/{risk_id}/analyze first."
+            )
+
+        return {
+            "risk_id": risk_id,
+            "official_risk_scores": {
+                "inherent_risk_score": risk.inherent_risk_score,
+                "inherent_risk_level": risk.inherent_risk_level,
+                "residual_risk_score": risk.residual_risk_score,
+                "residual_risk_level": risk.residual_risk_level,
+                "status": risk.status,
+                "treatment": risk.treatment,
+            },
+            "analysis": analysis_data,
         }
     finally:
         db.close()

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint
+from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -90,6 +90,7 @@ class Risk(Base):
     )
 
     controls = relationship("Control", secondary=risk_controls, back_populates="risks")
+    ai_analyses = relationship("AIRiskAnalysis", back_populates="risk", cascade="all, delete-orphan")
 
 
 class Control(Base):
@@ -228,3 +229,30 @@ class ControlComplianceMapping(Base):
 
     control = relationship("Control", back_populates="compliance_mappings")
     requirement = relationship("ComplianceRequirement", back_populates="control_mappings")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: AI-Assisted Security & Risk Intelligence
+# ---------------------------------------------------------------------------
+
+class AIRiskAnalysis(Base):
+    __tablename__ = "ai_risk_analyses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    risk_id = Column(ForeignKey("risks.id", ondelete="CASCADE"), nullable=False)
+    priority = Column(String, nullable=False)
+    simple_explanation = Column(String(2000), nullable=False)
+    why_it_matters = Column(String(2000), nullable=False)
+    severity_explanation = Column(String(2000), nullable=False)
+    risk_factors = Column(String(2000), nullable=True)             # JSON list
+    potential_business_impact = Column(String(2000), nullable=True) # JSON list
+    recommendation = Column(String(2000), nullable=True)            # JSON list
+    remediation_steps = Column(String(3000), nullable=True)         # JSON dict (immediate, permanent, validation)
+    recommended_controls = Column(String(2000), nullable=True)      # JSON list of dicts (name, reason)
+    confidence = Column(Float, nullable=False)
+    human_review_required = Column(Boolean, default=True)
+    human_review_reasons = Column(String(1000), nullable=True)     # JSON list
+    model_name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    risk = relationship("Risk", back_populates="ai_analyses")

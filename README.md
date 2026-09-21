@@ -2,7 +2,7 @@
 
 An automated Governance, Risk Management, and Compliance (GRC) platform integrating network discovery, vulnerability scanning, CVE enrichment via the NVD REST API, asset intelligence, inherent and residual risk modeling, security controls catalog, and compliance framework mapping.
 
-> **Roadmap & Disclaimer**: AI/LLM-assisted analysis is planned for a future phase. Phase 3 establishes the compliance mapping layer. This platform is an internal GRC tracking and assessment tool; metrics such as "Implementation Coverage" reflect internal progress against supported requirements and do not constitute formal compliance certification or legal assurance.
+> **Roadmap & Disclaimer**: Phase 4 introduces the AI-Assisted Security & Risk Intelligence layer. The rule-based GRC risk engine remains the authoritative source for official risk scores, inherent/residual ratings, likelihood, and impact. AI intelligence provides supplementary, transparent, and auditable decision support for both technical and non-technical stakeholders under a strict human-in-the-loop governance model.
 
 ---
 
@@ -145,6 +145,57 @@ $$\text{Implementation Coverage (\%)} = \frac{\text{Implemented} + 0.5 \times \t
 
 ---
 
+---
+
+## Phase 4 — AI-Assisted Security & Risk Intelligence
+
+Phase 4 adds an AI security intelligence layer that analyzes technical vulnerability findings and GRC risk contexts, translating them into clear, actionable intelligence for two distinct audiences:
+1. **Technical / Security Engineers (SecOps)**: Technical severity interpretation, CVSS analysis, attack surface context, and vendor-neutral 3-tier remediation steps.
+2. **Non-Technical GRC & Business Stakeholders**: Plain-language explanations, business consequences, compliance impacts, and governance recommendations.
+
+### Primary Generative AI Provider: Google Gemini
+
+- **Primary Provider**: `GeminiAIProvider` using Google's official Gemini API and Google GenAI Python SDK (`google-genai`).
+- **Primary Model**: `gemini-3.8-flash` (configurable via `GEMINI_MODEL`, default `gemini-3.8-flash`).
+- **Native Structured Output**: Uses Gemini's native `response_schema` with Pydantic schema enforcement and post-generation semantic validation.
+- **Deterministic Local Fallback**: `RuleAssistedAIProvider` serves as an offline, rule-based expert system fallback if Gemini is unconfigured or temporarily unreachable. (Note: `RuleAssistedAIProvider` is a deterministic heuristics engine, **not** a generative AI model).
+- **Environment-based Credentials**: API keys are strictly configured via `GEMINI_API_KEY` in environment variables and never checked into source control.
+
+### Human-in-the-Loop Model
+
+AI intelligence operates strictly as advisory decision support. The authoritative risk ratings remain governed by the rule-based risk engine:
+
+```text
+Technical Finding  ──►  Rule-Based Risk Engine  ──►  Gemini Security Intelligence  ──►  Human Review  ──►  Final GRC Decision
+                           (Authoritative)                (Advisory & Audit)              (Mandatory)
+```
+
+### Critical Architectural Guarantees & Constraints
+
+1. **Strict Immutability**: AI intelligence **NEVER** modifies or overwrites official rule-based risk scores (`inherent_risk_score`, `residual_risk_score`, `likelihood`, `impact`, `risk_level`, `status`, `treatment`).
+2. **No Hallucinations / Unsupported Claims**: AI does not invent CVEs, non-existent software versions, fake vendor advisories, or unverified business impacts. Inferred impacts are explicitly qualified.
+3. **Pluggable Provider Abstraction**:
+   - `GeminiAIProvider`: Primary generative AI provider via official `google-genai` SDK.
+   - `RuleAssistedAIProvider`: Built-in, deterministic, offline fallback requiring zero API keys.
+   - `ExternalLLMProvider`: Optional OpenAI-compatible REST endpoint adapter.
+4. **Structured Intelligence Output**:
+   - **Simple Explanation**: High-level non-technical summary.
+   - **Why It Matters**: Technical security concern based on evidence.
+   - **Severity Interpretation**: Practical meaning of CVSS score and technical severity.
+   - **Risk Factors**: Contributing environmental factors (asset criticality, exposure, CVSS, controls), explicitly marking default fallback assumptions if present.
+   - **Potential Business Impact**: Disruption, unauthorized access, compliance exposure (clearly distinguishing inferred potential from verified facts).
+   - **Tiered Remediation**:
+     - *Immediate Mitigation*: Rapid exposure reduction using approved network security controls (avoiding unverified OS or iptables assumptions).
+     - *Permanent Remediation*: Root-cause resolution (vendor updates, segmentation).
+     - *Validation / Retesting*: Concrete verification steps (re-scan, service checks).
+   - **Recommended Platform Controls**: Recommends controls from the platform catalog with rationales (does **not** auto-apply them).
+   - **Confidence Score**: Normalized metric ($0.0 - 1.0$) reflecting input data completeness.
+   - **Human Review Flag**: Boolean indicator with explicit reasons whenever high severity, production environment, or missing data warrants human sign-off.
+5. **Full Auditability**: Every analysis is permanently logged in the `ai_risk_analyses` table with model identifier, timestamp, and context for historical compliance audit trails.
+6. **Failure Isolation**: If Gemini is unavailable, the platform seamlessly falls back to the deterministic local analyzer (or returns HTTP 503 if fallback is disabled); core scanning, risk calculations, and compliance workflows continue functioning uninterrupted.
+
+---
+
 ## Getting Started
 
 ### 1. Database Migrations
@@ -156,11 +207,22 @@ python scripts/migrate_phase2.py
 
 # Phase 3 (Compliance Frameworks, Requirements, Control Mappings)
 python scripts/migrate_phase3.py
+
+# Phase 4 (AI Risk Analyses Audit Table)
+python scripts/migrate_phase4.py
 ```
 
 ### 2. Backend Setup
 
-1. Activate virtual environment and run development server:
+1. Configure environment variables in `backend/.env` (see `.env.example`):
+   ```env
+   DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/ai_grc
+   AI_PROVIDER=gemini
+   GEMINI_API_KEY=your_gemini_api_key_here
+   GEMINI_MODEL=gemini-3.8-flash
+   AI_FALLBACK_TO_LOCAL=true
+   ```
+2. Activate virtual environment and run development server:
    ```powershell
    cd backend
    .\venv\Scripts\Activate.ps1
@@ -190,6 +252,11 @@ python scripts/migrate_phase3.py
   python -m unittest tests/test_phase3_isolated.py -v
   ```
 
+- **Phase 4 Isolated Test Suite (11 Scenarios)**:
+  ```powershell
+  python -m unittest tests/test_phase4_isolated.py -v
+  ```
+
 - **Run All Isolated Tests**:
   ```powershell
   python -m unittest discover tests -v
@@ -197,7 +264,11 @@ python scripts/migrate_phase3.py
 
 - **Live REST API Verification**:
   ```powershell
+  # Phase 3 Compliance Verification
   python scripts/verify_phase3_api.py
+
+  # Phase 4 AI Intelligence Verification
+  python scripts/verify_phase4_api.py
   ```
 
 ---
@@ -215,6 +286,8 @@ python scripts/migrate_phase3.py
 | `GET` | `/risks` | Retrieve all risk register entries with inherent and residual risk |
 | `GET` | `/risks/{id}` | Retrieve a specific risk register entry |
 | `PATCH` | `/risks/{id}` | Update risk treatment, owner, due date, status |
+| `POST` | `/risks/{id}/analyze` | **(Phase 4)** Trigger AI security intelligence analysis for a risk |
+| `GET` | `/risks/{id}/analysis` | **(Phase 4)** Retrieve latest stored auditable AI analysis for a risk |
 | `GET` | `/controls` | Retrieve security controls catalog |
 | `POST` | `/controls` | Create new security control in catalog |
 | `GET` | `/controls/{id}` | Retrieve a specific security control |
