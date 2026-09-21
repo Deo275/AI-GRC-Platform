@@ -15,79 +15,40 @@ function App() {
   // ----------------------------------------
 
   const fetchAssets = async () => {
-
     try {
-
-      const response = await fetch(
-        "http://127.0.0.1:8000/assets"
-      );
-
+      const response = await fetch("http://127.0.0.1:8000/assets");
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        console.error("Unable to fetch asset inventory:", errData?.detail || response.statusText);
+        return;
+      }
       const data = await response.json();
-
-      setAssets(data.assets);
-
-    } catch {
-
-      console.error("Unable to fetch asset inventory.");
-
+      setAssets(data.assets || []);
+    } catch (error) {
+      console.error("Unable to fetch asset inventory:", error);
     }
   };
 
   const fetchVulnerabilities = async () => {
     try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/vulnerabilities"
-      );
-
+      const response = await fetch("http://127.0.0.1:8000/vulnerabilities");
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        console.error("Unable to fetch vulnerability findings:", errData?.detail || response.statusText);
+        return;
+      }
       const data = await response.json();
-
-      setVulnerabilities(data.vulnerabilities);
-    } catch {
-      console.error(
-        "Unable to fetch vulnerability findings."
-      );
+      setVulnerabilities(data.vulnerabilities || []);
+    } catch (error) {
+      console.error("Unable to fetch vulnerability findings:", error);
     }
   };
 
-  // Fetch assets when dashboard loads
+  // Fetch assets and vulnerabilities independently on load
   useEffect(() => {
-
-    const loadAssets = async () => {
-
-      try {
-
-        const response = await fetch(
-          "http://127.0.0.1:8000/assets"
-        );
-
-        const data = await response.json();
-
-        setAssets(data.assets);
-
-        try {
-          const response = await fetch(
-            "http://127.0.0.1:8000/vulnerabilities"
-          );
-
-          const data = await response.json();
-
-          setVulnerabilities(data.vulnerabilities);
-        } catch {
-          console.error(
-            "Unable to fetch vulnerability findings."
-          );
-        }
-
-      } catch {
-
-        console.error("Unable to fetch asset inventory.");
-
-      }
-
-    };
-
-    loadAssets();
-
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchAssets();
+    fetchVulnerabilities();
   }, []);
 
 
@@ -96,11 +57,9 @@ function App() {
   // ----------------------------------------
 
   const runScan = async () => {
-
     setScanning(true);
 
     try {
-
       const response = await fetch(
         `http://127.0.0.1:8000/scan?target=${encodeURIComponent(target)}`,
         {
@@ -108,21 +67,24 @@ function App() {
         }
       );
 
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const errorMessage = data?.detail || `Scan failed with status ${response.status}`;
+        alert(errorMessage);
+        return;
+      }
 
       setResult(data);
 
-      // Refresh asset inventory
-      fetchAssets();
-      fetchVulnerabilities();
+      // Await refresh of both tables before scan button re-enables
+      await Promise.all([fetchAssets(), fetchVulnerabilities()]);
 
-    } catch {
-
-      alert("Backend is not running. Please start FastAPI.");
-
+    } catch (error) {
+      alert("Backend is not running. Please start FastAPI: " + (error?.message || ""));
+    } finally {
+      setScanning(false);
     }
-
-    setScanning(false);
   };
 
 

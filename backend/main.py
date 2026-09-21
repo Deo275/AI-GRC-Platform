@@ -1,7 +1,11 @@
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from database import engine, Base, SessionLocal
-import models
+try:
+    from database import engine, Base, SessionLocal
+    import models
+except ImportError:
+    from backend.database import engine, Base, SessionLocal
+    import backend.models as models
 import sys
 import os
 import ipaddress
@@ -62,7 +66,13 @@ def scan_network(
         )
     
     # Run Nmap scan
-    result = scan_host(target)
+    try:
+        result = scan_host(target)
+    except RuntimeError as err:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Nmap scan failed: {str(err)}"
+        )
 
     # Calculate security risk
     risk_result = calculate_risk(
@@ -118,22 +128,13 @@ def scan_network(
             db.add(asset)
             db.flush()
 
-    
+        # ------------------------------------------------
+        # CREATE / UPDATE GRC RISK REGISTER ENTRIES
+        # ------------------------------------------------
 
-        # ------------------------------------------------
-        # CREATE GRC RISK REGISTER ENTRIES
-        # ------------------------------------------------
+        current_finding_titles = set(risk_result["findings"])
 
         for finding in risk_result["findings"]:
-
-            # Check if this risk already exists for this asset
-            existing_risk = db.query(models.Risk).filter(
-                models.Risk.asset_id == asset.id,
-                models.Risk.title == finding
-            ).first()
-
-            if existing_risk:
-                continue
 
             # Default risk rating
             likelihood = "High"
@@ -189,88 +190,143 @@ def scan_network(
                     "appropriate security controls."
                 )
 
-            # Create risk record
-            risk = models.Risk(
-                asset_id=asset.id,
-                title=finding,
-                description=f"Security finding detected on asset {target}.",
-                likelihood=likelihood,
-                impact=impact,
-                risk_score=risk_score,
-                risk_level=risk_level,
-                treatment="Mitigate",
-                status="Open",
-                compliance_framework=compliance_framework,
-                compliance_control=compliance_control,
-                recommendation=recommendation
-            )
+            # Check if this risk already exists for this asset
+            existing_risk = db.query(models.Risk).filter(
+                models.Risk.asset_id == asset.id,
+                models.Risk.title == finding
+            ).first()
 
-            db.add(risk)
+            if existing_risk:
+                # Update scanner-derived fields
+                existing_risk.likelihood = likelihood
+                existing_risk.impact = impact
+                existing_risk.risk_score = risk_score
+                existing_risk.risk_level = risk_level
+                existing_risk.compliance_framework = compliance_framework
+                existing_risk.compliance_control = compliance_control
+                existing_risk.recommendation = recommendation
+                existing_risk.updated_at = models.datetime.utcnow()
 
-        # SAVE VULNERABILITIES
+                # If a previously Resolved risk reappears: reopen it
+                if existing_risk.status == "Resolved":
+                    existing_risk.status = "Open"
+
+                # treatment and non-Resolved status are preserved
+            else:
+                # Create risk record
+                risk = models.Risk(
+                    asset_id=asset.id,
+                    title=finding,
+                    description=f"Security finding detected on asset {target}.",
+                    likelihood=likelihood,
+                    impact=impact,
+                    risk_score=risk_score,
+                    risk_level=risk_level,
+                    treatment="Mitigate",
+                    status="Open",
+                    compliance_framework=compliance_framework,
+                    compliance_control=compliance_control,
+                    recommendation=recommendation,
+                    created_at=models.datetime.utcnow(),
+                    updated_at=models.datetime.utcnow()
+                )
+
+                db.add(risk)
+
+        # Mark absent risks for this asset as Resolved
+        existing_asset_risks = db.query(models.Risk).filter(
+            models.Risk.asset_id == asset.id
+        ).all()
+
+        for r in existing_asset_risks:
+            if r.title not in current_finding_titles and r.status != "Resolved":
+                r.status = "Resolved"
+                r.updated_at = models.datetime.utcnow()
+
+        # ------------------------------------------------
+        # SAVE / UPDATE VULNERABILITIES & LIFECYCLE
+        # ------------------------------------------------
+        current_vuln_keys = set()
+
         for vulnerability in vulnerability_result:
+            vuln_port = vulnerability.get("port")
+            vuln_title = vulnerability.get("title")
+            current_vuln_keys.add((vuln_port, vuln_title))
 
             existing_vulnerability = db.query(
                 models.Vulnerability
             ).filter(
                 models.Vulnerability.asset_id == asset.id,
-                models.Vulnerability.port == vulnerability["port"],
-                models.Vulnerability.title == vulnerability["title"]
+                models.Vulnerability.port == vuln_port,
+                models.Vulnerability.title == vuln_title
             ).first()
 
             if existing_vulnerability:
-
                 # Update existing vulnerability
                 existing_vulnerability.service = (
-                    vulnerability["service"]
+                    vulnerability.get("service")
                 )
-
+                existing_vulnerability.product = (
+                    vulnerability.get("product")
+                )
+                existing_vulnerability.version = (
+                    vulnerability.get("version")
+                )
                 existing_vulnerability.severity = (
-                    vulnerability["severity"]
+                    vulnerability.get("severity")
                 )
-
                 existing_vulnerability.description = (
-                    vulnerability["description"]
+                    vulnerability.get("description")
                 )
-
                 existing_vulnerability.cve = (
-                    vulnerability["cve"]
+                    vulnerability.get("cve")
                 )
-
                 existing_vulnerability.cvss_score = (
-                    vulnerability["cvss_score"]
+                    vulnerability.get("cvss_score")
                 )
-
                 existing_vulnerability.cvss_version = (
-                    vulnerability["cvss_version"]
+                    vulnerability.get("cvss_version")
                 )
-
                 existing_vulnerability.cve_confidence = (
-                    vulnerability["cve_confidence"]
+                    vulnerability.get("cve_confidence")
                 )
-
                 existing_vulnerability.cve_candidate_count = (
-                    vulnerability["cve_candidate_count"]
+                    vulnerability.get("cve_candidate_count", 0)
+                )
+                existing_vulnerability.status = "Open"
+                existing_vulnerability.updated_at = models.datetime.utcnow()
+
+            else:
+                vulnerability_record = models.Vulnerability(
+                    asset_id=asset.id,
+                    port=vuln_port,
+                    service=vulnerability.get("service"),
+                    product=vulnerability.get("product"),
+                    version=vulnerability.get("version"),
+                    title=vuln_title,
+                    severity=vulnerability.get("severity"),
+                    description=vulnerability.get("description"),
+                    cve=vulnerability.get("cve"),
+                    cvss_score=vulnerability.get("cvss_score"),
+                    cvss_version=vulnerability.get("cvss_version"),
+                    cve_confidence=vulnerability.get("cve_confidence"),
+                    cve_candidate_count=vulnerability.get("cve_candidate_count", 0),
+                    status="Open",
+                    discovered_at=models.datetime.utcnow(),
+                    updated_at=models.datetime.utcnow()
                 )
 
-                continue
+                db.add(vulnerability_record)
 
-            vulnerability_record = models.Vulnerability(
-                asset_id=asset.id,
-                port=vulnerability["port"],
-                service=vulnerability["service"],
-                title=vulnerability["title"],
-                severity=vulnerability["severity"],
-                description=vulnerability["description"],
-                cve=vulnerability["cve"],
-                cvss_score=vulnerability["cvss_score"],
-                cvss_version=vulnerability["cvss_version"],
-                cve_confidence=vulnerability["cve_confidence"],
-                cve_candidate_count=vulnerability["cve_candidate_count"],
-                status="Open"
-            )
+        # Mark absent vulnerabilities for this asset as Resolved
+        existing_asset_vulns = db.query(models.Vulnerability).filter(
+            models.Vulnerability.asset_id == asset.id
+        ).all()
 
-            db.add(vulnerability_record)
+        for v in existing_asset_vulns:
+            if (v.port, v.title) not in current_vuln_keys and v.status != "Resolved":
+                v.status = "Resolved"
+                v.updated_at = models.datetime.utcnow()
 
         # Save everything once
         db.commit()
@@ -305,8 +361,46 @@ def discover_network(
     network: str = Query("192.168.127.0/24")
 ):
 
+    if not isinstance(network, str) or "/" not in network:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid CIDR format. Subnet mask prefix required (e.g. 192.168.127.0/24)."
+        )
+
+    try:
+        net = ipaddress.ip_network(network, strict=False)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid network CIDR notation."
+        )
+
+    if net.version != 4:
+        raise HTTPException(
+            status_code=400,
+            detail="Only IPv4 networks are supported for discovery."
+        )
+
+    if not net.is_private:
+        raise HTTPException(
+            status_code=400,
+            detail="Discovery is only permitted on private networks (RFC 1918)."
+        )
+
+    if net.prefixlen < 24:
+        raise HTTPException(
+            status_code=400,
+            detail="Network size too large. Maximum allowed size is /24."
+        )
+
     # Discover active hosts
-    hosts = discover_hosts(network)
+    try:
+        hosts = discover_hosts(network)
+    except RuntimeError as err:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Nmap discovery failed: {str(err)}"
+        )
 
     db = SessionLocal()
 
@@ -317,7 +411,10 @@ def discover_network(
         for host in hosts:
 
             # Run detailed scan
-            result = scan_host(host)
+            try:
+                result = scan_host(host)
+            except RuntimeError:
+                continue
 
             # Calculate risk
             risk_result = calculate_risk(
@@ -423,6 +520,54 @@ def get_assets():
     finally:
         db.close()
 
+
+# ------------------------------------------------
+# GET RISK REGISTER
+# ------------------------------------------------
+
+@app.get("/risks")
+def get_risks():
+
+    db = SessionLocal()
+
+    try:
+
+        risks = db.query(models.Risk).order_by(
+            models.Risk.id
+        ).all()
+
+        return {
+            "count": len(risks),
+            "risks": [
+                {
+                    "id": risk.id,
+                    "asset_id": risk.asset_id,
+                    "title": risk.title,
+                    "description": risk.description,
+                    "likelihood": risk.likelihood,
+                    "impact": risk.impact,
+                    "risk_score": risk.risk_score,
+                    "risk_level": risk.risk_level,
+                    "treatment": risk.treatment,
+                    "status": risk.status,
+                    "compliance_framework": risk.compliance_framework,
+                    "compliance_control": risk.compliance_control,
+                    "recommendation": risk.recommendation,
+                    "created_at": risk.created_at,
+                    "updated_at": risk.updated_at
+                }
+                for risk in risks
+            ]
+        }
+
+    finally:
+        db.close()
+
+
+# ------------------------------------------------
+# GET VULNERABILITY FINDINGS
+# ------------------------------------------------
+
 @app.get("/vulnerabilities")
 def get_vulnerabilities():
     db = SessionLocal()
@@ -442,6 +587,8 @@ def get_vulnerabilities():
                     "asset_id": vulnerability.asset_id,
                     "port": vulnerability.port,
                     "service": vulnerability.service,
+                    "product": vulnerability.product,
+                    "version": vulnerability.version,
                     "title": vulnerability.title,
                     "severity": vulnerability.severity,
                     "description": vulnerability.description,
@@ -451,7 +598,8 @@ def get_vulnerabilities():
                     "cve_confidence": vulnerability.cve_confidence,
                     "cve_candidate_count": vulnerability.cve_candidate_count,
                     "status": vulnerability.status,
-                    "discovered_at": vulnerability.discovered_at
+                    "discovered_at": vulnerability.discovered_at,
+                    "updated_at": vulnerability.updated_at
                 }
                 for vulnerability in vulnerabilities
             ]

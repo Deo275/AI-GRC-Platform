@@ -1,7 +1,10 @@
 from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey
 from datetime import datetime
 
-from database import Base
+try:
+    from database import Base
+except ImportError:
+    from backend.database import Base
 
 
 class Asset(Base):
@@ -62,6 +65,8 @@ class Vulnerability(Base):
     port = Column(Integer, nullable=True)
 
     service = Column(String, nullable=True)
+    product = Column(String, nullable=True)
+    version = Column(String, nullable=True)
 
     title = Column(String, nullable=False)
 
@@ -99,4 +104,9 @@ class Vulnerability(Base):
     discovered_at = Column(
         DateTime,
         default=datetime.utcnow
+    )
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
     )

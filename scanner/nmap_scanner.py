@@ -19,6 +19,17 @@ def scan_host(target):
         text=True
     )
 
+    if result.returncode != 0:
+        error_detail = result.stderr.strip()
+
+        if not error_detail:
+            error_detail = "Unknown error"
+
+        raise RuntimeError(
+            f"Nmap scan failed (exit code "
+            f"{result.returncode}): {error_detail}"
+        )
+
     output = result.stdout
 
     if not output.strip():

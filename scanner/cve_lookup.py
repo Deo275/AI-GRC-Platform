@@ -39,7 +39,7 @@ def find_cpes(keyword):
 
 
 def lookup_cves(cpe_name):
-    url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    url = NVD_CVE_API
 
     params = {
         "cpeName": cpe_name,

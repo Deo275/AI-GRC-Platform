@@ -97,6 +97,40 @@ header p {
   color: #94a3b8;
 }
 
+.scan-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 18px;
+  max-width: 520px;
+}
+
+.scan-controls input {
+  flex: 1;
+  background: #0b1120;
+  border: 1px solid #263248;
+  border-radius: 7px;
+  padding: 12px 16px;
+  font-size: 15px;
+  color: #ffffff;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.scan-controls input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.scan-controls input::placeholder {
+  color: #64748b;
+}
+
+.scan-controls button {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
 button {
   margin-top: 15px;
   background: #2563eb;
