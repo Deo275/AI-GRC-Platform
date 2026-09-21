@@ -13,11 +13,20 @@ function App() {
   const [controls, setControls] = useState([]);
   const [vulnerabilities, setVulnerabilities] = useState([]);
 
+  // Phase 3: Compliance State
+  const [frameworks, setFrameworks] = useState([]);
+  const [selectedFramework, setSelectedFramework] = useState("NIST CSF");
+  const [complianceSummary, setComplianceSummary] = useState([]);
+  const [requirements, setRequirements] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [functionFilter, setFunctionFilter] = useState("All");
+
   // Modals state
   const [editingAsset, setEditingAsset] = useState(null);
   const [editingRisk, setEditingRisk] = useState(null);
   const [showAddControlModal, setShowAddControlModal] = useState(false);
   const [assigningRiskId, setAssigningRiskId] = useState(null);
+  const [editingRequirement, setEditingRequirement] = useState(null);
 
   // Form states
   const [assetForm, setAssetForm] = useState({
@@ -44,7 +53,12 @@ function App() {
     status: "Implemented"
   });
 
-  // Selected control for assigning
+  const [requirementForm, setRequirementForm] = useState({
+    status: "Not Assessed",
+    notes: ""
+  });
+
+  // Selected control for assigning to risk
   const [selectedControlId, setSelectedControlId] = useState("");
 
   // ----------------------------------------
@@ -99,12 +113,51 @@ function App() {
     }
   };
 
+  const fetchComplianceFrameworks = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/compliance/frameworks`);
+      if (response.ok) {
+        const data = await response.json();
+        setFrameworks(data.frameworks || []);
+      }
+    } catch (error) {
+      console.error("Unable to fetch compliance frameworks:", error);
+    }
+  };
+
+  const fetchComplianceSummary = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/compliance/summary`);
+      if (response.ok) {
+        const data = await response.json();
+        setComplianceSummary(data.summary || []);
+      }
+    } catch (error) {
+      console.error("Unable to fetch compliance summary:", error);
+    }
+  };
+
+  const fetchComplianceRequirements = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/compliance/requirements`);
+      if (response.ok) {
+        const data = await response.json();
+        setRequirements(data.requirements || []);
+      }
+    } catch (error) {
+      console.error("Unable to fetch compliance requirements:", error);
+    }
+  };
+
   const refreshAll = async () => {
     await Promise.all([
       fetchAssets(),
       fetchRisks(),
       fetchControls(),
-      fetchVulnerabilities()
+      fetchVulnerabilities(),
+      fetchComplianceFrameworks(),
+      fetchComplianceSummary(),
+      fetchComplianceRequirements()
     ]);
   };
 
@@ -292,7 +345,42 @@ function App() {
     }
   };
 
-  // Helper badge class
+  // ----------------------------------------
+  // Phase 3: Compliance Requirement Assessment Handlers
+  // ----------------------------------------
+
+  const openRequirementModal = (req) => {
+    setEditingRequirement(req);
+    setRequirementForm({
+      status: req.status || "Not Assessed",
+      notes: req.notes || ""
+    });
+  };
+
+  const saveRequirementAssessment = async () => {
+    if (!editingRequirement) return;
+    try {
+      const response = await fetch(`${API_BASE}/compliance/requirements/${editingRequirement.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requirementForm)
+      });
+      if (response.ok) {
+        setEditingRequirement(null);
+        await Promise.all([fetchComplianceSummary(), fetchComplianceRequirements()]);
+      } else {
+        const err = await response.json();
+        alert(`Error updating requirement: ${err?.detail || "Unknown error"}`);
+      }
+    } catch (error) {
+      alert("Failed to update requirement assessment: " + error.message);
+    }
+  };
+
+  // ----------------------------------------
+  // Helper classes & formatters
+  // ----------------------------------------
+
   const getRiskClass = (level) => {
     switch (level?.toLowerCase()) {
       case "critical":
@@ -323,6 +411,44 @@ function App() {
     }
   };
 
+  const getComplianceStatusClass = (status) => {
+    switch (status) {
+      case "Implemented":
+        return "badge-low";
+      case "Partially Implemented":
+        return "badge-medium";
+      case "Not Implemented":
+        return "badge-critical";
+      case "Not Applicable":
+        return "badge-na";
+      case "Not Assessed":
+      default:
+        return "badge-neutral";
+    }
+  };
+
+  // Filter active requirements for the Compliance table
+  const currentFwRequirements = requirements.filter(r => r.framework_name === selectedFramework);
+
+  const availableFunctions = ["All", ...Array.from(new Set(currentFwRequirements.map(r => r.function).filter(Boolean)))];
+
+  const filteredRequirements = currentFwRequirements.filter(r => {
+    const matchesStatus = statusFilter === "All" || r.status === statusFilter;
+    const matchesFunction = functionFilter === "All" || r.function === functionFilter;
+    return matchesStatus && matchesFunction;
+  });
+
+  const activeSummary = complianceSummary.find(s => s.framework_name === selectedFramework) || {
+    total_requirements: currentFwRequirements.length,
+    implemented: currentFwRequirements.filter(r => r.status === "Implemented").length,
+    partially_implemented: currentFwRequirements.filter(r => r.status === "Partially Implemented").length,
+    not_implemented: currentFwRequirements.filter(r => r.status === "Not Implemented").length,
+    not_assessed: currentFwRequirements.filter(r => r.status === "Not Assessed" || !r.status).length,
+    not_applicable: currentFwRequirements.filter(r => r.status === "Not Applicable").length,
+    implementation_coverage: 0.0,
+    metric_label: "Implementation Coverage"
+  };
+
   return (
     <div className="dashboard">
       {/* -------------------------------- */}
@@ -330,10 +456,10 @@ function App() {
       {/* -------------------------------- */}
       <header>
         <div>
-          <div className="brand-badge">PHASE 2 ACTIVE • GRC RISK MODEL</div>
+          <div className="brand-badge">PHASE 3 ACTIVE • NIST CSF 2.0 & ISO/IEC 27001:2022</div>
           <h1>AI-GRC Platform</h1>
           <p>
-            Governance, Risk Management & Compliance Engine with Asset Intelligence & Residual Risk Modeling
+            Automated Governance, Risk Management & Compliance with Inherent/Residual Risk Modeling and Authoritative Framework Mapping
           </p>
         </div>
         <div className="system-status">
@@ -344,7 +470,7 @@ function App() {
       {/* -------------------------------- */}
       {/* SUMMARY CARDS */}
       {/* -------------------------------- */}
-      <section className="cards">
+      <section className="cards cards-five">
         <div className="card">
           <div className="card-label">Monitored Assets</div>
           <div className="card-val">{assets.length}</div>
@@ -365,6 +491,12 @@ function App() {
           <div className="card-sub">
             {controls.filter(c => c.status === "Implemented").length} Implemented Controls
           </div>
+        </div>
+
+        <div className="card">
+          <div className="card-label">Implementation Coverage</div>
+          <div className="card-val highlight-green">{activeSummary.implementation_coverage}%</div>
+          <div className="card-sub">{selectedFramework} (Internal metric)</div>
         </div>
 
         <div className="card">
@@ -733,6 +865,183 @@ function App() {
       </section>
 
       {/* -------------------------------- */}
+      {/* PHASE 3: COMPLIANCE MAPPING */}
+      {/* -------------------------------- */}
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <div className="section-tag">GOVERNANCE & COMPLIANCE (PHASE 3)</div>
+            <h2>Compliance Framework Mapping</h2>
+            <p className="panel-desc">
+              Official control mappings for NIST CSF 2.0 and ISO/IEC 27001:2022 (reviewed supported subset).
+            </p>
+          </div>
+
+          <div className="framework-tabs">
+            {frameworks.map(fw => (
+              <button
+                key={fw.id}
+                className={`tab-btn ${selectedFramework === fw.name ? "active" : ""}`}
+                onClick={() => {
+                  setSelectedFramework(fw.name);
+                  setFunctionFilter("All");
+                  setStatusFilter("All");
+                }}
+              >
+                {fw.name} v{fw.version}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Coverage & Status Bar */}
+        <div className="compliance-summary-grid">
+          <div className="comp-stat-card">
+            <div className="comp-stat-label">Implementation Coverage</div>
+            <div className="comp-stat-val text-accent">{activeSummary.implementation_coverage}%</div>
+            <div className="progress-bar-bg">
+              <div className="progress-bar-fill" style={{ width: `${Math.min(100, activeSummary.implementation_coverage)}%` }}></div>
+            </div>
+            <div className="comp-stat-sub">Internal GRC tracking metric</div>
+          </div>
+
+          <div className="comp-stat-mini">
+            <div className="mini-num text-green">{activeSummary.implemented}</div>
+            <div className="mini-lbl">Implemented</div>
+          </div>
+
+          <div className="comp-stat-mini">
+            <div className="mini-num text-yellow">{activeSummary.partially_implemented}</div>
+            <div className="mini-lbl">Partially Impl.</div>
+          </div>
+
+          <div className="comp-stat-mini">
+            <div className="mini-num text-red">{activeSummary.not_implemented}</div>
+            <div className="mini-lbl">Not Impl.</div>
+          </div>
+
+          <div className="comp-stat-mini">
+            <div className="mini-num text-slate">{activeSummary.not_assessed}</div>
+            <div className="mini-lbl">Not Assessed</div>
+          </div>
+
+          <div className="comp-stat-mini">
+            <div className="mini-num text-muted">{activeSummary.not_applicable}</div>
+            <div className="mini-lbl">Not Applicable</div>
+          </div>
+        </div>
+
+        <div className="disclaimer-banner">
+          <span className="info-icon">ℹ️</span>
+          <span>
+            <strong>Note:</strong> Implementation Coverage is an internal GRC tracking metric for the reviewed supported subset of requirements and does not constitute formal certification or compliance.
+          </span>
+        </div>
+
+        {/* Filter Controls */}
+        <div className="table-filter-bar">
+          <div className="filter-group">
+            <label>Filter by Status:</label>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="select-filter"
+            >
+              <option value="All">All Statuses ({currentFwRequirements.length})</option>
+              <option value="Not Assessed">Not Assessed</option>
+              <option value="Partially Implemented">Partially Implemented</option>
+              <option value="Implemented">Implemented</option>
+              <option value="Not Implemented">Not Implemented</option>
+              <option value="Not Applicable">Not Applicable</option>
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Filter by Function / Theme:</label>
+            <select
+              value={functionFilter}
+              onChange={(e) => setFunctionFilter(e.target.value)}
+              className="select-filter"
+            >
+              {availableFunctions.map(fn => (
+                <option key={fn} value={fn}>{fn}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Compliance Table */}
+        <div className="table-responsive">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Requirement Code</th>
+                <th>Title & Function</th>
+                <th>Mapped Security Controls</th>
+                <th>Status</th>
+                <th>Auditor Notes</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRequirements.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className="empty-cell">No requirements match the selected filters.</td>
+                </tr>
+              ) : (
+                filteredRequirements.map(req => (
+                  <tr key={req.id}>
+                    <td>
+                      <span className="req-code-badge">{req.requirement_id}</span>
+                      <div className="sub-text">{req.category}</div>
+                    </td>
+                    <td style={{ minWidth: "260px" }}>
+                      <strong>{req.title}</strong>
+                      <div className="sub-text desc-cell">{req.description}</div>
+                      <span className="function-pill">{req.function}</span>
+                    </td>
+                    <td style={{ minWidth: "220px" }}>
+                      {req.mapped_controls && req.mapped_controls.length > 0 ? (
+                        <div className="controls-list">
+                          {req.mapped_controls.map(mc => (
+                            <span key={mc.id} className="control-chip">
+                              {mc.name}
+                              <span className={`strength-tag ${mc.mapping_strength === "Direct" ? "strength-direct" : "strength-sup"}`}>
+                                {mc.mapping_strength}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-muted text-xs">No controls mapped</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`badge ${getComplianceStatusClass(req.status)}`}>
+                        {req.status || "Not Assessed"}
+                      </span>
+                    </td>
+                    <td className="desc-cell">
+                      {req.notes ? req.notes : <span className="text-muted">No notes recorded</span>}
+                    </td>
+                    <td>
+                      <button
+                        className="btn-action"
+                        onClick={() => openRequirementModal(req)}
+                        title="Update Assessment Status"
+                      >
+                        Assess
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* -------------------------------- */}
       {/* VULNERABILITY FINDINGS (PHASE 1) */}
       {/* -------------------------------- */}
       <section className="panel">
@@ -1028,6 +1337,58 @@ function App() {
             <div className="modal-footer">
               <button className="btn-secondary" onClick={() => setShowAddControlModal(false)}>Cancel</button>
               <button className="btn-primary" onClick={saveNewControl}>Add to Catalog</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* -------------------------------- */}
+      {/* MODAL: ASSESS COMPLIANCE REQUIREMENT (PHASE 3) */}
+      {/* -------------------------------- */}
+      {editingRequirement && (
+        <div className="modal-backdrop" onClick={() => setEditingRequirement(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Assess Requirement — {editingRequirement.requirement_id}</h3>
+              <button className="modal-close" onClick={() => setEditingRequirement(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="risk-summary-box">
+                <strong>{editingRequirement.title}</strong>
+                <div>{editingRequirement.framework_name} v{editingRequirement.framework_version} • Function: {editingRequirement.function}</div>
+                <div className="sub-text">{editingRequirement.description}</div>
+              </div>
+
+              <div className="form-group">
+                <label>Compliance Status</label>
+                <select
+                  value={requirementForm.status}
+                  onChange={(e) => setRequirementForm({ ...requirementForm, status: e.target.value })}
+                >
+                  <option value="Not Assessed">Not Assessed</option>
+                  <option value="Partially Implemented">Partially Implemented</option>
+                  <option value="Implemented">Implemented</option>
+                  <option value="Not Implemented">Not Implemented</option>
+                  <option value="Not Applicable">Not Applicable</option>
+                </select>
+                <span className="form-hint">
+                  Assess independently of control mappings. Affects the Implementation Coverage metric.
+                </span>
+              </div>
+
+              <div className="form-group">
+                <label>Auditor Notes & Observations</label>
+                <textarea
+                  rows="4"
+                  placeholder="Record assessment evidence, gaps, or justification for applicability..."
+                  value={requirementForm.notes}
+                  onChange={(e) => setRequirementForm({ ...requirementForm, notes: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setEditingRequirement(null)}>Cancel</button>
+              <button className="btn-primary" onClick={saveRequirementAssessment}>Save Assessment</button>
             </div>
           </div>
         </div>

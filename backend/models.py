@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table
+from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -110,6 +110,7 @@ class Control(Base):
     )
 
     risks = relationship("Risk", secondary=risk_controls, back_populates="controls")
+    compliance_mappings = relationship("ControlComplianceMapping", back_populates="control", cascade="all, delete-orphan")
 
 
 class Vulnerability(Base):
@@ -170,3 +171,60 @@ class Vulnerability(Base):
         default=datetime.utcnow,
         onupdate=datetime.utcnow
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Compliance Frameworks & Requirements Mapping
+# ---------------------------------------------------------------------------
+
+class ComplianceFramework(Base):
+    __tablename__ = "compliance_frameworks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    version = Column(String, nullable=False)
+    description = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    requirements = relationship("ComplianceRequirement", back_populates="framework", cascade="all, delete-orphan")
+
+
+class ComplianceRequirement(Base):
+    __tablename__ = "compliance_requirements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    framework_id = Column(ForeignKey("compliance_frameworks.id", ondelete="CASCADE"), nullable=False)
+    requirement_id = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(String(2000), nullable=True)
+    function = Column(String, nullable=True)
+    category = Column(String, nullable=True)
+    subcategory = Column(String, nullable=True)
+    status = Column(String, default="Not Assessed")
+    notes = Column(String(2000), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
+    )
+
+    framework = relationship("ComplianceFramework", back_populates="requirements")
+    control_mappings = relationship("ControlComplianceMapping", back_populates="requirement", cascade="all, delete-orphan")
+
+
+class ControlComplianceMapping(Base):
+    __tablename__ = "control_compliance_mappings"
+    __table_args__ = (
+        UniqueConstraint("control_id", "requirement_id", name="uq_control_requirement"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    control_id = Column(ForeignKey("controls.id", ondelete="CASCADE"), nullable=False)
+    requirement_id = Column(ForeignKey("compliance_requirements.id", ondelete="CASCADE"), nullable=False)
+    mapping_strength = Column(String, default="Direct")  # Direct, Supporting
+    notes = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    control = relationship("Control", back_populates="compliance_mappings")
+    requirement = relationship("ComplianceRequirement", back_populates="control_mappings")

@@ -67,6 +67,18 @@ class ControlUpdate(BaseModel):
     status: str | None = None
 
 
+class RequirementUpdate(BaseModel):
+    status: str | None = None
+    notes: str | None = None
+
+
+class MappingCreate(BaseModel):
+    control_id: int
+    requirement_id: int
+    mapping_strength: str | None = "Direct"
+    notes: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Helper formatting functions
 # ---------------------------------------------------------------------------
@@ -147,6 +159,63 @@ def format_control(control: models.Control) -> dict:
     }
 
 
+def format_framework(fw: models.ComplianceFramework) -> dict:
+    return {
+        "id": fw.id,
+        "name": fw.name,
+        "version": fw.version,
+        "description": fw.description,
+        "requirement_count": len(fw.requirements),
+        "created_at": fw.created_at,
+    }
+
+
+def format_requirement(req: models.ComplianceRequirement) -> dict:
+    return {
+        "id": req.id,
+        "framework_id": req.framework_id,
+        "framework_name": req.framework.name if req.framework else None,
+        "framework_version": req.framework.version if req.framework else None,
+        "requirement_id": req.requirement_id,
+        "title": req.title,
+        "description": req.description,
+        "function": req.function,
+        "category": req.category,
+        "subcategory": req.subcategory,
+        "status": req.status or "Not Assessed",
+        "notes": req.notes,
+        "mapped_controls": [
+            {
+                "id": m.control.id,
+                "name": m.control.name,
+                "category": m.control.category,
+                "effectiveness": m.control.effectiveness,
+                "status": m.control.status,
+                "mapping_strength": m.mapping_strength,
+                "notes": m.notes,
+            }
+            for m in req.control_mappings if m.control
+        ],
+        "created_at": req.created_at,
+        "updated_at": req.updated_at,
+    }
+
+
+def format_mapping(m: models.ControlComplianceMapping) -> dict:
+    return {
+        "id": m.id,
+        "control_id": m.control_id,
+        "control_name": m.control.name if m.control else None,
+        "requirement_id": m.requirement_id,
+        "requirement_code": m.requirement.requirement_id if m.requirement else None,
+        "requirement_title": m.requirement.title if m.requirement else None,
+        "framework_name": m.requirement.framework.name if m.requirement and m.requirement.framework else None,
+        "mapping_strength": m.mapping_strength,
+        "notes": m.notes,
+        "created_at": m.created_at,
+    }
+
+
 def recalculate_asset_risks(asset: models.Asset):
     """Recalculate inherent and residual risk scores for all risks belonging to an asset."""
     impact = criticality_to_impact(asset.criticality)
@@ -214,7 +283,7 @@ def scan_network(
             status_code=400,
             detail="Invalid target. Enter a single IPv4 address."
         )
-    
+
     # Run Nmap scan
     try:
         result = scan_host(target)
@@ -232,7 +301,7 @@ def scan_network(
     vulnerability_result = identify_vulnerabilities(
         result["open_ports"]
     )
-    
+
     # Convert ports into a readable string
     port_data = ", ".join(
         f"{item['port']}/{item['service']}"
@@ -1116,5 +1185,168 @@ def get_vulnerabilities():
             ]
         }
 
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# PHASE 3: COMPLIANCE FRAMEWORKS, REQUIREMENTS & MAPPINGS ENDPOINTS
+# ---------------------------------------------------------------------------
+
+@app.get("/compliance/frameworks")
+def get_compliance_frameworks():
+    """Retrieve all supported compliance frameworks."""
+    db = SessionLocal()
+    try:
+        frameworks = db.query(models.ComplianceFramework).order_by(models.ComplianceFramework.id).all()
+        return {
+            "count": len(frameworks),
+            "frameworks": [format_framework(fw) for fw in frameworks]
+        }
+    finally:
+        db.close()
+
+
+@app.get("/compliance/requirements")
+def get_compliance_requirements(
+    framework: str | None = Query(None, description="Filter by framework name (e.g. 'NIST CSF', 'ISO/IEC 27001') or ID"),
+    status: str | None = Query(None, description="Filter by assessment status"),
+    function: str | None = Query(None, description="Filter by function/theme (e.g. 'Protect', 'Technological')"),
+    category: str | None = Query(None, description="Filter by category")
+):
+    """Retrieve compliance requirements with optional filtering by framework, status, function, or category."""
+    db = SessionLocal()
+    try:
+        query = db.query(models.ComplianceRequirement)
+
+        if framework:
+            if framework.strip().isdigit():
+                query = query.filter(models.ComplianceRequirement.framework_id == int(framework.strip()))
+            else:
+                query = query.join(models.ComplianceFramework).filter(
+                    models.ComplianceFramework.name.ilike(f"%{framework.strip()}%")
+                )
+
+        if status:
+            query = query.filter(models.ComplianceRequirement.status.ilike(status.strip()))
+
+        if function:
+            query = query.filter(models.ComplianceRequirement.function.ilike(f"%{function.strip()}%"))
+
+        if category:
+            query = query.filter(models.ComplianceRequirement.category.ilike(f"%{category.strip()}%"))
+
+        requirements = query.order_by(models.ComplianceRequirement.id).all()
+        return {
+            "count": len(requirements),
+            "requirements": [format_requirement(r) for r in requirements]
+        }
+    finally:
+        db.close()
+
+
+@app.get("/compliance/mappings")
+def get_compliance_mappings():
+    """Retrieve all control-to-compliance requirement mappings."""
+    db = SessionLocal()
+    try:
+        mappings = db.query(models.ControlComplianceMapping).order_by(models.ControlComplianceMapping.id).all()
+        return {
+            "count": len(mappings),
+            "mappings": [format_mapping(m) for m in mappings]
+        }
+    finally:
+        db.close()
+
+
+@app.get("/compliance/summary")
+def get_compliance_summary():
+    """Calculate implementation coverage metrics per compliance framework."""
+    db = SessionLocal()
+    try:
+        frameworks = db.query(models.ComplianceFramework).order_by(models.ComplianceFramework.id).all()
+        summary = []
+
+        for fw in frameworks:
+            total = len(fw.requirements)
+            implemented = sum(1 for r in fw.requirements if r.status == "Implemented")
+            partially_implemented = sum(1 for r in fw.requirements if r.status == "Partially Implemented")
+            not_implemented = sum(1 for r in fw.requirements if r.status == "Not Implemented")
+            not_assessed = sum(1 for r in fw.requirements if (r.status == "Not Assessed" or not r.status))
+            not_applicable = sum(1 for r in fw.requirements if r.status == "Not Applicable")
+
+            applicable_count = total - not_applicable
+            if applicable_count > 0:
+                coverage_score = ((implemented + 0.5 * partially_implemented) / applicable_count) * 100
+                coverage_percentage = round(coverage_score, 1)
+            else:
+                coverage_percentage = 0.0
+
+            summary.append({
+                "framework_id": fw.id,
+                "framework_name": fw.name,
+                "framework_version": fw.version,
+                "total_requirements": total,
+                "implemented": implemented,
+                "partially_implemented": partially_implemented,
+                "not_implemented": not_implemented,
+                "not_assessed": not_assessed,
+                "not_applicable": not_applicable,
+                "implementation_coverage": coverage_percentage,
+                "metric_label": "Implementation Coverage"
+            })
+
+        return {
+            "summary": summary,
+            "note": (
+                "Implementation Coverage is an internal GRC tracking metric for reviewed supported requirements "
+                "and does not constitute formal certification or compliance."
+            )
+        }
+    finally:
+        db.close()
+
+
+@app.patch("/compliance/requirements/{requirement_id}")
+def update_compliance_requirement(
+    requirement_id: int = Path(..., description="The ID of the compliance requirement"),
+    payload: RequirementUpdate = Body(...)
+):
+    """Update requirement compliance status and auditor/review notes."""
+    db = SessionLocal()
+    try:
+        req = db.query(models.ComplianceRequirement).filter(
+            models.ComplianceRequirement.id == requirement_id
+        ).first()
+
+        if not req:
+            raise HTTPException(status_code=404, detail=f"Compliance requirement with ID {requirement_id} not found")
+
+        if payload.status is not None:
+            valid_statuses = {
+                "not assessed": "Not Assessed",
+                "not implemented": "Not Implemented",
+                "partially implemented": "Partially Implemented",
+                "implemented": "Implemented",
+                "not applicable": "Not Applicable"
+            }
+            norm_status = valid_statuses.get(payload.status.strip().lower())
+            if not norm_status:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid status. Allowed values: Not Assessed, Not Implemented, Partially Implemented, Implemented, Not Applicable"
+                )
+            req.status = norm_status
+
+        if payload.notes is not None:
+            req.notes = payload.notes.strip() if payload.notes.strip() else None
+
+        req.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(req)
+        return {
+            "message": "Compliance requirement updated successfully",
+            "requirement": format_requirement(req)
+        }
     finally:
         db.close()

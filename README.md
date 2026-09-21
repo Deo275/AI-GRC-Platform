@@ -1,76 +1,109 @@
 # AI-GRC Platform
 
-An automated Governance, Risk Management, and Compliance (GRC) platform integrating network discovery, vulnerability scanning, CVE enrichment via the NVD REST API, asset intelligence, inherent and residual risk modeling, security controls catalog, and risk treatment workflows.
+An automated Governance, Risk Management, and Compliance (GRC) platform integrating network discovery, vulnerability scanning, CVE enrichment via the NVD REST API, asset intelligence, inherent and residual risk modeling, security controls catalog, and compliance framework mapping.
 
-> **Note on Roadmap**: AI/LLM-assisted analysis is planned for a future phase. Phase 2 focuses on establishing a robust, explainable, and industry-standard GRC risk management model.
+> **Roadmap & Disclaimer**: AI/LLM-assisted analysis is planned for a future phase. Phase 3 establishes the compliance mapping layer. This platform is an internal GRC tracking and assessment tool; metrics such as "Implementation Coverage" reflect internal progress against supported requirements and do not constitute formal compliance certification or legal assurance.
 
 ---
 
 ## Architecture Overview
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│             React 19 Dashboard (Vite Frontend)              │
-│  - Asset Inventory & Intelligence Editor (Criticality/Env)  │
-│  - GRC Risk Register (Inherent vs. Residual Risk)           │
-│  - Security Controls Catalog & Mitigation Assignments       │
-│  - Vulnerability Findings & CVE Correlation                 │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ REST API (JSON)
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    FastAPI Backend Service                  │
-│  - Asset Intelligence Management & Dynamic Recalculation   │
-│  - GRC Risk Calculation Engine (scanner/grc_engine.py)      │
-│  - Security Controls Catalog & Association Management       │
-│  - Technical Scanner Pipeline (Nmap, CVE/NVD, Heuristics)   │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-               ┌───────────────┴───────────────┐
-               ▼                               ▼
-┌─────────────────────────────┐ ┌─────────────────────────────┐
-│    PostgreSQL Database      │ │      Scanner Pipeline       │
-│  - assets (with GRC Intel)  │ │  - Nmap Scanner (-sV -O)    │
-│  - risks (Inherent/Residual)│ │  - CVE Lookup (NVD API 2.0) │
-│  - controls (Catalog)       │ │  - Vulnerability Scanner    │
-│  - risk_controls (M2M)      │ │  - GRC Risk Engine          │
-│  - vulnerabilities          │ │                             │
-└─────────────────────────────┘ └─────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                   React 19 Dashboard (Vite Frontend)                     │
+│  - Asset Inventory & Intelligence Editor (Criticality, Exposure, Owner)  │
+│  - GRC Risk Register (Inherent vs. Residual Risk, Ownership, Treatment)  │
+│  - Security Controls Catalog & Mitigation Assignments                    │
+│  - Compliance Mapping (NIST CSF 2.0 & ISO/IEC 27001:2022)                │
+│  - Vulnerability Findings & CVE Correlation                              │
+└────────────────────────────────────┬─────────────────────────────────────┘
+                                     │ REST API (JSON)
+                                     ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          FastAPI Backend Service                         │
+│  - Asset Intelligence Management & Dynamic Recalculation                 │
+│  - GRC Risk Calculation Engine (scanner/grc_engine.py)                    │
+│  - Security Controls Catalog & Association Management                    │
+│  - Compliance Mapping Engine & Implementation Coverage Calculator        │
+│  - Technical Scanner Pipeline (Nmap, CVE/NVD, Heuristics)                 │
+└────────────────────────────────────┬─────────────────────────────────────┘
+                                     │
+                     ┌───────────────┴───────────────┐
+                     ▼                               ▼
+┌──────────────────────────────────────────┐ ┌─────────────────────────────┐
+│           PostgreSQL Database            │ │      Scanner Pipeline       │
+│  - assets (with GRC Intel)               │ │  - Nmap Scanner (-sV -O)    │
+│  - risks (Inherent/Residual)             │ │  - CVE Lookup (NVD API 2.0) │
+│  - controls (Catalog)                    │ │  - Vulnerability Scanner    │
+│  - risk_controls (M2M)                   │ │  - GRC Risk Engine          │
+│  - compliance_frameworks                 │ │                             │
+│  - compliance_requirements               │ │                             │
+│  - control_compliance_mappings           │ │                             │
+│  - vulnerabilities                       │ │                             │
+└──────────────────────────────────────────┘ └─────────────────────────────┘
 ```
 
 ---
 
-## Phase 2 GRC Risk Model
+## The Governance Chain
 
-### 1. Inherent Risk
-- **Impact Score (1–4)**: Directly derived from Asset Business Criticality:
-  - Low $\to$ 1, Medium $\to$ 2 (default), High $\to$ 3, Critical $\to$ 4.
-- **Likelihood Score (1–4)**:
-  - Derived primarily from CVSS score (CVSS $\ge 9.0 \to 4$; $7.0-8.9 \to 3$; $4.0-6.9 \to 2$; $< 4.0 \to 1$).
-  - If CVSS is unavailable, falls back to severity string (`critical` $\to 4$, `high` $\to 3$, `medium` $\to 2$, `low` $\to 1$).
-  - If both are unavailable, uses baseline fallback.
-  - Adjusted by Asset Exposure modifier: External (+1), Internal (-1), DMZ (0).
-  - Strictly clamped between 1 and 4.
-- **Inherent Risk Score**: $\text{Likelihood Score} \times \text{Impact Score}$ (Range: 1–16).
-- **Risk Level Thresholds**:
-  - 1–3: Low
-  - 4–6: Medium
-  - 7–11: High
-  - 12–16: Critical
+The platform establishes an end-to-end trace from physical infrastructure up to regulatory standards:
 
-### 2. Residual Risk & Mitigating Controls
-- In Phase 2, security controls reduce **likelihood only**. Impact remains unchanged (`residual_impact == impact_score`).
-- Mitigating effect per implemented control:
-  - High Effectiveness: -2 Likelihood points
-  - Medium Effectiveness: -1 Likelihood point
-  - Low Effectiveness: 0 points
-- **Floor constraint**: Residual likelihood cannot drop below 1.
-- **Residual Risk Score**: $\text{Residual Likelihood} \times \text{Residual Impact}$ (Range: 1–16).
+$$\text{Asset} \longrightarrow \text{Vulnerability} \longrightarrow \text{Risk} \longrightarrow \text{Security Control} \longrightarrow \text{Compliance Requirement} \longrightarrow \text{Framework}$$
 
-### 3. Risk Treatment & Governance
-- **Treatment Options**: Mitigate (default), Accept, Transfer, Avoid.
-- **Ownership**: Assigned Risk Owner and remediation Due Date.
-- **Lifecycle Status**: Open, Under Review, Accepted, Resolved.
+1. **Asset**: Monitored host with operational context (Criticality, Environment, Exposure, Owner, Function).
+2. **Vulnerability**: Port finding enriched with CVE IDs and CVSS scores.
+3. **Risk**: Inherent Risk ($L \times I$) and Residual Risk calculated after applying controls.
+4. **Security Control**: Defensive safeguard (Preventive, Detective, Corrective) reducing likelihood.
+5. **Compliance Requirement**: Standard subcategory or control clause from an authoritative framework.
+6. **Framework**: Authoritative baseline (NIST CSF 2.0 or ISO/IEC 27001:2022).
+
+---
+
+## Supported Compliance Frameworks (Phase 3)
+
+The platform supports two major cybersecurity frameworks, seeded as a **reviewed prototype subset / supported requirements catalogue**:
+
+### 1. NIST Cybersecurity Framework (CSF) 2.0
+- **Version**: 2.0 (Official February 2024 revision)
+- **Functions Supported**:
+  - **Govern (GV)**: `GV.OC-01`, `GV.RM-01`
+  - **Identify (ID)**: `ID.AM-01`, `ID.RA-01`
+  - **Protect (PR)**: `PR.AA-01`, `PR.AA-03`, `PR.AA-05`, `PR.DS-01`, `PR.DS-02`, `PR.DS-11`, `PR.PS-01`, `PR.PS-02`, `PR.IR-01`
+  - **Detect (DE)**: `DE.CM-01`, `DE.AE-03`
+  - **Respond (RS)**: `RS.MA-01`, `RS.MI-01`
+  - **Recover (RC)**: `RC.RP-01`
+
+### 2. ISO/IEC 27001:2022
+- **Version**: 2022 (Annex A Information Security Controls)
+- **Themes Supported**:
+  - **Organizational (A.5)**: `A.5.15`, `A.5.16`, `A.5.17`, `A.5.18`
+  - **People (A.6)**: `A.6.3`
+  - **Physical (A.7)**: `A.7.2`
+  - **Technological (A.8)**: `A.8.1`, `A.8.5`, `A.8.7`, `A.8.8`, `A.8.13`, `A.8.15`, `A.8.16`, `A.8.20`, `A.8.22`, `A.8.24`
+
+---
+
+## Compliance Logic & Assessment
+
+### Control-to-Requirement Mapping
+- A mapping designates that a security control is relevant or supporting to a compliance requirement:
+  - **Direct**: Primary technical or administrative implementation of the requirement.
+  - **Supporting**: Secondary or complementary safeguard.
+- **Important Rule**: Mapping a control **never** automatically marks a requirement as `Implemented`. Controls provide implementation evidence, but formal compliance status remains an independent audit assessment.
+
+### Requirement Statuses
+Each requirement carries an independently managed assessment status:
+- `Not Assessed` (Default baseline)
+- `Not Implemented`
+- `Partially Implemented`
+- `Implemented`
+- `Not Applicable`
+
+### Implementation Coverage Metric
+To track internal GRC readiness without making unsubstantiated certification claims, the platform calculates **"Implementation Coverage"**:
+
+$$\text{Implementation Coverage (\%)} = \frac{\text{Implemented} + 0.5 \times \text{Partially Implemented}}{\text{Total Requirements} - \text{Not Applicable}} \times 100$$
 
 ---
 
@@ -90,8 +123,14 @@ An automated Governance, Risk Management, and Compliance (GRC) platform integrat
   - View inherent vs. residual risk, likelihood/impact breakdown, assigned controls, treatment, owner, and due date.
 - **Security Controls Catalog (`GET /controls`, `POST /controls`, `PATCH /controls/{id}`, `DELETE /controls/{id}`)**:
   - Manage defensive safeguards with category, framework, effectiveness, and status.
-- **Control Assignment (`POST /risks/{id}/controls/{control_id}`, `DELETE /risks/{id}/controls/{control_id}`)**:
+- **Control Assignment (`POST /risks/{id}/controls/{cid}`, `DELETE /risks/{id}/controls/{cid}`)**:
   - Assign or detach controls from risks to dynamically adjust residual risk scores.
+- **Compliance Mapping (`GET /compliance/frameworks`, `GET /compliance/requirements`, `GET /compliance/summary`, `PATCH /compliance/requirements/{id}`)**:
+  - View frameworks and supported requirements.
+  - Filter requirements by framework, status, function/theme, or category.
+  - Inspect mapped security controls and mapping strength (`Direct` / `Supporting`).
+  - Track Implementation Coverage metrics per framework.
+  - Update requirement assessment status and audit observations.
 - **Vulnerability Findings (`GET /vulnerabilities`)**:
   - Lists all technical vulnerabilities, CVE IDs, CVSS scores, confidence ratings, and status.
 
@@ -108,49 +147,57 @@ An automated Governance, Risk Management, and Compliance (GRC) platform integrat
 
 ## Getting Started
 
-### 1. Backend Setup
+### 1. Database Migrations
 
-1. Activate Python virtual environment:
+Run non-destructive migrations in sequence:
+```powershell
+# Phase 2 (Asset Intelligence, Inherent/Residual Risk, Controls)
+python scripts/migrate_phase2.py
+
+# Phase 3 (Compliance Frameworks, Requirements, Control Mappings)
+python scripts/migrate_phase3.py
+```
+
+### 2. Backend Setup
+
+1. Activate virtual environment and run development server:
    ```powershell
    cd backend
    .\venv\Scripts\Activate.ps1
-   ```
-
-2. Run Phase 2 database migration:
-   ```powershell
-   python ..\scripts\migrate_phase2.py
-   ```
-
-3. Start the FastAPI development server:
-   ```powershell
    python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
    ```
-   Backend API: `http://127.0.0.1:8000` (Interactive docs: `http://127.0.0.1:8000/docs`).
+   Backend API: `http://127.0.0.1:8000` (Interactive Swagger Docs: `http://127.0.0.1:8000/docs`).
 
-### 2. Frontend Setup
+### 3. Frontend Setup
 
-1. Install frontend dependencies:
+1. Install dependencies and start Vite:
    ```bash
    cd frontend
    npm install
-   ```
-
-2. Run the Vite development server:
-   ```bash
    npm run dev
    ```
    Dashboard: `http://127.0.0.1:5173`.
 
-### 3. Running Tests
+### 4. Running Tests
 
-- **Phase 2 Isolated Test Suite** (does not modify real database):
+- **Phase 2 Isolated Test Suite**:
   ```powershell
   python -m unittest tests/test_phase2_isolated.py -v
   ```
 
+- **Phase 3 Isolated Test Suite**:
+  ```powershell
+  python -m unittest tests/test_phase3_isolated.py -v
+  ```
+
+- **Run All Isolated Tests**:
+  ```powershell
+  python -m unittest discover tests -v
+  ```
+
 - **Live REST API Verification**:
   ```powershell
-  python scripts/verify_phase2_api.py
+  python scripts/verify_phase3_api.py
   ```
 
 ---
@@ -175,4 +222,9 @@ An automated Governance, Risk Management, and Compliance (GRC) platform integrat
 | `DELETE` | `/controls/{id}` | Delete security control from catalog |
 | `POST` | `/risks/{id}/controls/{cid}` | Assign mitigating security control to risk |
 | `DELETE` | `/risks/{id}/controls/{cid}` | Detach security control from risk |
+| `GET` | `/compliance/frameworks` | Retrieve supported compliance frameworks (NIST CSF 2.0, ISO 27001:2022) |
+| `GET` | `/compliance/requirements` | Retrieve compliance requirements with filters (framework, status, function, category) |
+| `GET` | `/compliance/mappings` | Retrieve all control-to-compliance requirement mappings |
+| `GET` | `/compliance/summary` | Retrieve Implementation Coverage metrics and status counts per framework |
+| `PATCH` | `/compliance/requirements/{id}` | Update requirement assessment status and auditor notes |
 | `GET` | `/vulnerabilities` | Retrieve all vulnerability findings |
