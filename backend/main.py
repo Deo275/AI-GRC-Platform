@@ -63,6 +63,10 @@ try:
         create_evidence_record,
         format_evidence,
         delete_evidence_record,
+        submit_risk_review,
+        get_or_evaluate_risk_reviews,
+        format_risk_review,
+        evaluate_review_staleness,
     )
 except ImportError:
     from backend.governance import (
@@ -71,6 +75,10 @@ except ImportError:
         create_evidence_record,
         format_evidence,
         delete_evidence_record,
+        submit_risk_review,
+        get_or_evaluate_risk_reviews,
+        format_risk_review,
+        evaluate_review_staleness,
     )
 
 try:
@@ -171,17 +179,27 @@ class EvidenceCreate(BaseModel):
     requirement_ids: list[int] | None = None
 
 
-def get_operator_identity(request: Request = None) -> tuple[str, str]:
-    """Extract operator attribution metadata from request headers.
+class RiskReviewCreate(BaseModel):
+    decision: str = Field(..., description="APPROVED, REJECTED, or CHANGES_REQUESTED")
+    agreed_treatment: str = Field(..., description="Mitigate, Accept, Transfer, or Avoid")
+    comments: str = Field(..., min_length=5, description="Mandatory justification comments")
+    ai_analysis_acknowledged: bool = Field(False, description="Acknowledgement that AI advisory intelligence was reviewed")
+    reviewer_name: Optional[str] = Field(None, description="Optional override; defaults to X-Operator-Name")
+    reviewer_role: Optional[str] = Field(None, description="Optional override; defaults to X-Operator-Role")
 
-    DISCLAIMER: These headers provide attribution metadata for the prototype audit log
-    and do NOT provide authentication, session security, or cryptographic identity validation.
+
+def get_operator_identity(request: Request = None) -> tuple[str, str]:
+    """Extract attributed human reviewer/operator metadata from request headers.
+
+    DISCLAIMER: X-Operator-Name and X-Operator-Role provide attribution metadata only
+    and do not constitute authentication or authorization.
     """
     if not request:
         return "Security Analyst", "Operator"
     actor = request.headers.get("X-Operator-Name", "Security Analyst").strip() or "Security Analyst"
     role = request.headers.get("X-Operator-Role", "Operator").strip() or "Operator"
     return actor, role
+
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +246,7 @@ def format_risk(risk: models.Risk) -> dict:
         "residual_risk_level": risk.residual_risk_level,
         "treatment": risk.treatment,
         "status": risk.status,
+        "review_status": getattr(risk, "review_status", "Pending Review"),
         "risk_owner": risk.risk_owner,
         "due_date": risk.due_date,
         "compliance_framework": risk.compliance_framework,
@@ -2460,5 +2479,199 @@ def get_generic_report(
     db = SessionLocal()
     try:
         return _handle_report_response(report_type, format, db, request, filters=None)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6C: Human Review & Risk Sign-off Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/risks/{risk_id}/reviews", status_code=201)
+def create_risk_review(
+    request: Request,
+    risk_id: int = Path(..., description="The ID of the risk being reviewed"),
+    payload: RiskReviewCreate = Body(...),
+):
+    """Submit formal human governance sign-off and treatment review for a risk.
+
+    Guarantees:
+    - AI output is advisory decision support only; human reviewer explicitly decides.
+    - Exactly one active review per risk enforced at the database level.
+    - Attributed reviewer metadata captured from headers (X-Operator-Name, X-Operator-Role).
+    - Material treatment overrides and review submissions are permanently audited.
+    """
+    actor, role = get_operator_identity(request)
+    reviewer_name = payload.reviewer_name or actor
+    reviewer_role = payload.reviewer_role or role
+    ip_addr = request.client.host if request.client else None
+
+    db = SessionLocal()
+    try:
+        review = submit_risk_review(
+            db=db,
+            risk_id=risk_id,
+            decision=payload.decision,
+            agreed_treatment=payload.agreed_treatment,
+            comments=payload.comments,
+            ai_analysis_acknowledged=payload.ai_analysis_acknowledged,
+            reviewer_name=reviewer_name,
+            reviewer_role=reviewer_role,
+            ip_address=ip_addr,
+        )
+        return format_risk_review(review, is_stale=False, stale_reasons=[])
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except Exception as err:
+        err_msg = str(err).lower()
+        if "unique" in err_msg or "integrityerror" in err_msg:
+            raise HTTPException(
+                status_code=409,
+                detail="A concurrent review submission conflicted with this request. Please refresh and retry."
+            )
+        raise HTTPException(status_code=500, detail=f"Failed to submit risk review: {err}")
+    finally:
+        db.close()
+
+
+@app.get("/risks/{risk_id}/reviews")
+def list_risk_reviews(
+    risk_id: int = Path(..., description="The ID of the risk"),
+):
+    """Retrieve review history for a risk, dynamically evaluating staleness in real-time.
+
+    Guarantees:
+    - Historical reviews remain queryable in chronological order.
+    - Evaluates material technical changes (CVSS, drift, exposure) dynamically on read.
+    - Deduplication: Emits RISK_REVIEW_STALE audit event ONLY upon actual state transition.
+    """
+    db = SessionLocal()
+    try:
+        current_rev, all_revs, is_stale, stale_reasons = get_or_evaluate_risk_reviews(db=db, risk_id=risk_id)
+        risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
+        if not risk:
+            raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
+
+        return {
+            "risk_id": risk_id,
+            "review_status": risk.review_status,
+            "is_stale": is_stale,
+            "stale_reasons": stale_reasons,
+            "current_review": format_risk_review(current_rev, is_stale, stale_reasons) if current_rev else None,
+            "history": [format_risk_review(r) for r in all_revs],
+        }
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err))
+    finally:
+        db.close()
+
+
+@app.get("/governance/reviews/pending")
+def list_pending_risk_reviews(
+    review_status: Optional[str] = Query(None, description="Filter by review status: Pending Review, Stale, Changes Requested, Under Review, Approved, Rejected"),
+    asset_id: Optional[int] = Query(None, description="Filter by asset ID"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Query risks requiring human governance review or re-evaluation.
+
+    Defaults to risks needing attention ('Pending Review', 'Stale', 'Changes Requested').
+    """
+    db = SessionLocal()
+    try:
+        query = db.query(models.Risk)
+        if review_status:
+            query = query.filter(models.Risk.review_status == review_status.strip())
+        else:
+            query = query.filter(models.Risk.review_status.in_(["Pending Review", "Stale", "Changes Requested"]))
+
+        if asset_id:
+            query = query.filter(models.Risk.asset_id == asset_id)
+
+        total = query.count()
+        risks = query.order_by(models.Risk.residual_risk_score.desc(), models.Risk.id.asc()).offset(offset).limit(limit).all()
+
+        results = []
+        for r in risks:
+            current_rev = (
+                db.query(models.RiskReview)
+                .filter(models.RiskReview.risk_id == r.id, models.RiskReview.is_current == True)
+                .first()
+            )
+            results.append({
+                "risk": format_risk(r),
+                "review_status": r.review_status,
+                "current_review": format_risk_review(current_rev) if current_rev else None,
+            })
+
+        return {
+            "risks": results,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/governance/reviews/evaluate-stale")
+def evaluate_stale_reviews_batch(
+    risk_id: Optional[int] = Query(None, description="Optional target risk ID"),
+    asset_id: Optional[int] = Query(None, description="Optional target asset ID"),
+):
+    """On-demand bulk reconciliation to evaluate and update stale review statuses.
+
+    Emits RISK_REVIEW_STALE audit events only on actual Approved -> Stale transitions.
+    """
+    db = SessionLocal()
+    try:
+        query = db.query(models.Risk).filter(models.Risk.review_status == "Approved")
+        if risk_id:
+            query = query.filter(models.Risk.id == risk_id)
+        if asset_id:
+            query = query.filter(models.Risk.asset_id == asset_id)
+
+        approved_risks = query.all()
+        newly_stale_count = 0
+        stale_details = []
+
+        for r in approved_risks:
+            current_rev = (
+                db.query(models.RiskReview)
+                .filter(models.RiskReview.risk_id == r.id, models.RiskReview.is_current == True)
+                .first()
+            )
+            if current_rev:
+                is_stale, reasons = evaluate_review_staleness(db, r, current_rev)
+                if is_stale:
+                    r.review_status = "Stale"
+                    r.updated_at = datetime.utcnow()
+                    newly_stale_count += 1
+                    stale_details.append({
+                        "risk_id": r.id,
+                        "risk_title": r.title,
+                        "reasons": reasons,
+                    })
+                    log_audit_event(
+                        db=db,
+                        source="SYSTEM",
+                        actor="governance_engine",
+                        action="RISK_REVIEW_STALE",
+                        entity_type="Risk",
+                        entity_id=r.id,
+                        entity_name=r.title,
+                        new_values={"stale_reasons": reasons, "review_id": current_rev.id},
+                        description=f"Batch evaluation marked risk #{r.id} review #{current_rev.id} stale: {'; '.join(reasons)}",
+                        commit=False,
+                    )
+
+        if newly_stale_count > 0:
+            db.commit()
+
+        return {
+            "evaluated_count": len(approved_risks),
+            "newly_stale_count": newly_stale_count,
+            "stale_risks": stale_details,
+        }
     finally:
         db.close()

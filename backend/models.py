@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean, Text
+from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean, Text, Index, text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -89,8 +89,13 @@ class Risk(Base):
         onupdate=datetime.utcnow
     )
 
+    # Phase 6C: Human Governance Review
+    review_status = Column(String(32), default="Pending Review", nullable=False, index=True)
+
     controls = relationship("Control", secondary=risk_controls, back_populates="risks")
     ai_analyses = relationship("AIRiskAnalysis", back_populates="risk", cascade="all, delete-orphan")
+    reviews = relationship("RiskReview", back_populates="risk", cascade="all, delete-orphan")
+
 
 
 class Control(Base):
@@ -256,6 +261,59 @@ class AIRiskAnalysis(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     risk = relationship("Risk", back_populates="ai_analyses")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6C: Human Review & Risk Sign-off
+# ---------------------------------------------------------------------------
+
+class RiskReview(Base):
+    __tablename__ = "risk_reviews"
+    __table_args__ = (
+        Index(
+            "uq_risk_reviews_one_current",
+            "risk_id",
+            unique=True,
+            postgresql_where=text("is_current = true"),
+            sqlite_where=text("is_current = 1"),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    risk_id = Column(ForeignKey("risks.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Attributed human reviewer/operator (metadata headers, not IAM/auth)
+    reviewer_name = Column(String(128), nullable=False, index=True)
+    reviewer_role = Column(String(64), nullable=False)
+
+    # Governance decision & agreed treatment
+    decision = Column(String(32), nullable=False, index=True)        # APPROVED, REJECTED, CHANGES_REQUESTED
+    agreed_treatment = Column(String(32), nullable=False)            # Mitigate, Accept, Transfer, Avoid
+    comments = Column(Text, nullable=False)                          # Mandatory justification / rationale
+
+    # AI Advisory Consideration Acknowledgement
+    ai_analysis_acknowledged = Column(Boolean, default=False, nullable=False)
+    ai_analysis_id = Column(ForeignKey("ai_risk_analyses.id", ondelete="SET NULL"), nullable=True)
+
+    # Immutable Technical & GRC Baseline Snapshot at Time of Sign-off
+    snapshot_inherent_score = Column(Integer, nullable=False)
+    snapshot_inherent_level = Column(String(32), nullable=False)
+    snapshot_residual_score = Column(Integer, nullable=False)
+    snapshot_residual_level = Column(String(32), nullable=False)
+    snapshot_asset_criticality = Column(String(32), nullable=True)
+    snapshot_asset_exposure = Column(String(32), nullable=True)
+    snapshot_cvss_score = Column(Float, nullable=True)               # Human-readable scalar CVSS
+    snapshot_control_ids = Column(String(500), nullable=True)        # Sorted comma-separated control IDs: "1,4,7"
+    snapshot_vulnerability_hash = Column(String(64), nullable=False, index=True)  # Authoritative SHA-256 over correlated vuln findings
+    snapshot_hash = Column(String(64), nullable=False, index=True)   # SHA-256 over complete canonical snapshot
+
+    # Versioning & Single-Active State
+    is_current = Column(Boolean, default=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    risk = relationship("Risk", back_populates="reviews")
+    ai_analysis = relationship("AIRiskAnalysis")
+
 
 
 # ---------------------------------------------------------------------------

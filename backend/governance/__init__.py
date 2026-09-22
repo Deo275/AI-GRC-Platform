@@ -13,6 +13,15 @@ from .evidence_manager import (
     delete_evidence_record,
     MAX_CONTENT_BYTES,
 )
+from .review_manager import (
+    submit_risk_review,
+    get_or_evaluate_risk_reviews,
+    evaluate_review_staleness,
+    calculate_vulnerability_hash,
+    calculate_review_snapshot_hash,
+    format_risk_review,
+    get_relevant_vulnerabilities_for_risk,
+)
 
 __all__ = [
     "log_audit_event",
@@ -24,4 +33,11 @@ __all__ = [
     "format_evidence",
     "delete_evidence_record",
     "MAX_CONTENT_BYTES",
+    "submit_risk_review",
+    "get_or_evaluate_risk_reviews",
+    "evaluate_review_staleness",
+    "calculate_vulnerability_hash",
+    "calculate_review_snapshot_hash",
+    "format_risk_review",
+    "get_relevant_vulnerabilities_for_risk",
 ]
