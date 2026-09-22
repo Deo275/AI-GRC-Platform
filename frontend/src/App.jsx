@@ -279,6 +279,46 @@ function App() {
   const [selectedControlId, setSelectedControlId] = useState("");
 
   // ----------------------------------------
+  // Phase 5: Continuous Monitoring State
+  // ----------------------------------------
+  const [monitoringJobs, setMonitoringJobs] = useState([]);
+  const [monitoringJobsLoading, setMonitoringJobsLoading] = useState(false);
+  const [monitoringJobsError, setMonitoringJobsError] = useState(null);
+
+  const [monitoringSchedules, setMonitoringSchedules] = useState([]);
+  const [monitoringSchedulesLoading, setMonitoringSchedulesLoading] = useState(false);
+  const [monitoringSchedulesError, setMonitoringSchedulesError] = useState(null);
+
+  const [driftEvents, setDriftEvents] = useState([]);
+  const [driftEventsLoading, setDriftEventsLoading] = useState(false);
+  const [driftEventsError, setDriftEventsError] = useState(null);
+  const [driftTotal, setDriftTotal] = useState(0);
+  const [driftSeverityFilter, setDriftSeverityFilter] = useState("All");
+  const [driftTypeFilter, setDriftTypeFilter] = useState("All");
+  const [driftLimit] = useState(20);
+  const [driftOffset, setDriftOffset] = useState(0);
+
+  const [monitoringActiveTab, setMonitoringActiveTab] = useState("jobs"); // "jobs" | "schedules" | "drift"
+
+  // New Scan Job Trigger
+  const [newJobTarget, setNewJobTarget] = useState("192.168.127.0/24");
+  const [newJobType, setNewJobType] = useState("subnet_discovery");
+  const [submittingJob, setSubmittingJob] = useState(false);
+  const [jobActionError, setJobActionError] = useState(null);
+  const [cancellingJobId, setCancellingJobId] = useState(null);
+
+  // Schedule Modal / Form
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState(null);
+  const [scheduleForm, setScheduleForm] = useState({
+    name: "",
+    target: "192.168.127.0/24",
+    interval_minutes: 60,
+  });
+  const [scheduleActionError, setScheduleActionError] = useState(null);
+  const [submittingSchedule, setSubmittingSchedule] = useState(false);
+
+  // ----------------------------------------
   // Data Fetching Functions
   // ----------------------------------------
 
@@ -366,6 +406,287 @@ function App() {
     }
   };
 
+  // ----------------------------------------
+  // Phase 5: Continuous Monitoring Fetchers & Handlers
+  // ----------------------------------------
+
+  const fetchMonitoringJobs = async () => {
+    setMonitoringJobsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/monitoring/jobs?limit=50&offset=0`);
+      if (response.ok) {
+        const data = await response.json();
+        setMonitoringJobs(data.jobs || []);
+        setMonitoringJobsError(null);
+        return data.jobs || [];
+      } else {
+        const err = await response.json().catch(() => null);
+        setMonitoringJobsError(err?.detail || "Failed to load scan jobs");
+      }
+    } catch {
+      setMonitoringJobsError("Unable to connect to monitoring service");
+    } finally {
+      setMonitoringJobsLoading(false);
+    }
+    return [];
+  };
+
+  const fetchMonitoringSchedules = async () => {
+    setMonitoringSchedulesLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/monitoring/schedules`);
+      if (response.ok) {
+        const data = await response.json();
+        setMonitoringSchedules(data.schedules || []);
+        setMonitoringSchedulesError(null);
+      } else {
+        const err = await response.json().catch(() => null);
+        setMonitoringSchedulesError(err?.detail || "Failed to load scan schedules");
+      }
+    } catch {
+      setMonitoringSchedulesError("Unable to connect to schedules service");
+    } finally {
+      setMonitoringSchedulesLoading(false);
+    }
+  };
+
+  const fetchDriftEvents = async (customOffset = driftOffset, customSev = driftSeverityFilter, customType = driftTypeFilter) => {
+    setDriftEventsLoading(true);
+    try {
+      let url = `${API_BASE}/monitoring/drift?limit=${driftLimit}&offset=${customOffset}`;
+      if (customSev && customSev !== "All") url += `&severity=${encodeURIComponent(customSev)}`;
+      if (customType && customType !== "All") url += `&event_type=${encodeURIComponent(customType)}`;
+
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        setDriftEvents(data.events || []);
+        setDriftTotal(data.total || 0);
+        setDriftEventsError(null);
+      } else {
+        const err = await response.json().catch(() => null);
+        setDriftEventsError(err?.detail || "Failed to load drift events");
+      }
+    } catch {
+      setDriftEventsError("Unable to connect to drift feed service");
+    } finally {
+      setDriftEventsLoading(false);
+    }
+  };
+
+  const submitNewJob = async (e) => {
+    if (e) e.preventDefault();
+    setSubmittingJob(true);
+    setJobActionError(null);
+    try {
+      const response = await fetch(`${API_BASE}/monitoring/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: newJobTarget.trim(),
+          scan_type: newJobType,
+        }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setJobActionError(data?.detail || "Failed to queue scan job");
+        return;
+      }
+      setMonitoringJobs((prev) => [data, ...prev.filter((j) => j.id !== data.id)]);
+      fetchMonitoringJobs();
+    } catch (error) {
+      setJobActionError(error.message || "Failed to submit scan job");
+    } finally {
+      setSubmittingJob(false);
+    }
+  };
+
+  const cancelJob = async (jobId) => {
+    setCancellingJobId(jobId);
+    setJobActionError(null);
+    try {
+      const response = await fetch(`${API_BASE}/monitoring/jobs/${jobId}/cancel`, {
+        method: "POST",
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setJobActionError(data?.detail || `Failed to cancel job #${jobId}`);
+        return;
+      }
+      await fetchMonitoringJobs();
+    } catch (error) {
+      setJobActionError(error.message || `Error cancelling job #${jobId}`);
+    } finally {
+      setCancellingJobId(null);
+    }
+  };
+
+  const openAddScheduleModal = () => {
+    setEditingSchedule(null);
+    setScheduleForm({
+      name: "",
+      target: "192.168.127.0/24",
+      interval_minutes: 60,
+    });
+    setScheduleActionError(null);
+    setShowScheduleModal(true);
+  };
+
+  const openEditScheduleModal = (sched) => {
+    setEditingSchedule(sched);
+    setScheduleForm({
+      name: sched.name,
+      target: sched.target,
+      interval_minutes: sched.interval_minutes,
+    });
+    setScheduleActionError(null);
+    setShowScheduleModal(true);
+  };
+
+  const handleSaveSchedule = async (e) => {
+    e.preventDefault();
+    setSubmittingSchedule(true);
+    setScheduleActionError(null);
+
+    if (Number(scheduleForm.interval_minutes) < 15) {
+      setScheduleActionError("Schedule interval must be at least 15 minutes");
+      setSubmittingSchedule(false);
+      return;
+    }
+
+    try {
+      let response;
+      if (editingSchedule) {
+        response = await fetch(`${API_BASE}/monitoring/schedules/${editingSchedule.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: scheduleForm.name.trim(),
+            target: scheduleForm.target.trim(),
+            interval_minutes: Number(scheduleForm.interval_minutes),
+          }),
+        });
+      } else {
+        response = await fetch(`${API_BASE}/monitoring/schedules`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: scheduleForm.name.trim(),
+            target: scheduleForm.target.trim(),
+            interval_minutes: Number(scheduleForm.interval_minutes),
+          }),
+        });
+      }
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setScheduleActionError(data?.detail || "Failed to save scan schedule");
+        return;
+      }
+
+      setShowScheduleModal(false);
+      await fetchMonitoringSchedules();
+    } catch (error) {
+      setScheduleActionError(error.message || "Failed to save schedule");
+    } finally {
+      setSubmittingSchedule(false);
+    }
+  };
+
+  const toggleScheduleActive = async (sched) => {
+    try {
+      const response = await fetch(`${API_BASE}/monitoring/schedules/${sched.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: !sched.is_active }),
+      });
+      if (response.ok) {
+        await fetchMonitoringSchedules();
+      } else {
+        const err = await response.json().catch(() => null);
+        alert(err?.detail || "Failed to update schedule status");
+      }
+    } catch (error) {
+      alert("Error updating schedule: " + error.message);
+    }
+  };
+
+  const deleteSchedule = async (schedId) => {
+    if (!window.confirm("Are you sure you want to delete this automated scan schedule?")) return;
+    try {
+      const response = await fetch(`${API_BASE}/monitoring/schedules/${schedId}`, {
+        method: "DELETE",
+      });
+      if (response.ok) {
+        await fetchMonitoringSchedules();
+      } else {
+        const err = await response.json().catch(() => null);
+        alert(err?.detail || "Failed to delete schedule");
+      }
+    } catch (error) {
+      alert("Error deleting schedule: " + error.message);
+    }
+  };
+
+  const formatDateTime = (iso) => {
+    if (!iso) return "—";
+    try {
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? iso : d.toLocaleString();
+    } catch {
+      return iso;
+    }
+  };
+
+  const getJobStatusBadge = (status) => {
+    switch (status) {
+      case "Queued":
+        return <span className="badge badge-queued"><span className="status-indicator-dot dot-amber" />Queued</span>;
+      case "Running":
+        return <span className="badge badge-running"><span className="status-indicator-dot dot-pulse" />Running</span>;
+      case "Completed":
+        return <span className="badge badge-low"><span className="status-indicator-dot dot-green" />Completed</span>;
+      case "Failed":
+        return <span className="badge badge-critical"><span className="status-indicator-dot dot-red" />Failed</span>;
+      case "Cancelled":
+        return <span className="badge badge-neutral"><span className="status-indicator-dot dot-gray" />Cancelled</span>;
+      default:
+        return <span className="badge badge-neutral">{status}</span>;
+    }
+  };
+
+  const getDriftSeverityBadge = (severity) => {
+    switch ((severity || "").toLowerCase()) {
+      case "critical":
+        return <span className="badge badge-critical">Critical</span>;
+      case "high":
+        return <span className="badge badge-high">High</span>;
+      case "medium":
+        return <span className="badge badge-medium">Medium</span>;
+      case "low":
+        return <span className="badge badge-low">Low</span>;
+      default:
+        return <span className="badge badge-neutral">{severity || "Info"}</span>;
+    }
+  };
+
+  const getDriftEventTypeBadge = (type) => {
+    switch (type) {
+      case "NEW_ASSET":
+        return <span className="badge badge-new-asset">New Asset</span>;
+      case "PORT_OPENED":
+        return <span className="badge badge-high">Port Opened</span>;
+      case "PORT_CLOSED":
+        return <span className="badge badge-neutral">Port Closed</span>;
+      case "CVE_DETECTED":
+        return <span className="badge badge-critical">CVE Detected</span>;
+      case "FINDING_RESOLVED":
+        return <span className="badge badge-low">Finding Cleared</span>;
+      default:
+        return <span className="badge badge-neutral">{type}</span>;
+    }
+  };
+
   const refreshAll = async () => {
     await Promise.all([
       fetchAssets(),
@@ -374,7 +695,10 @@ function App() {
       fetchVulnerabilities(),
       fetchComplianceFrameworks(),
       fetchComplianceSummary(),
-      fetchComplianceRequirements()
+      fetchComplianceRequirements(),
+      fetchMonitoringJobs(),
+      fetchMonitoringSchedules(),
+      fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter),
     ]);
   };
 
@@ -383,6 +707,45 @@ function App() {
     refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Adaptive polling for monitoring data (5s if active job; 30s otherwise)
+  useEffect(() => {
+    const hasActiveJobs = monitoringJobs.some(
+      (job) => job.status === "Queued" || job.status === "Running"
+    );
+    const pollInterval = hasActiveJobs ? 5000 : 30000;
+
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/monitoring/jobs?limit=50&offset=0`);
+        if (res.ok) {
+          const data = await res.json();
+          const newJobs = data.jobs || [];
+
+          const justFinished = newJobs.some(
+            (nj) => (nj.status === "Completed" || nj.status === "Failed") &&
+              monitoringJobs.some((oj) => oj.id === nj.id && (oj.status === "Running" || oj.status === "Queued"))
+          );
+
+          setMonitoringJobs(newJobs);
+          setMonitoringJobsError(null);
+
+          if (justFinished) {
+            fetchAssets();
+            fetchVulnerabilities();
+            fetchRisks();
+            fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
+            fetchMonitoringSchedules();
+          }
+        }
+      } catch {
+        // network polling error handled gracefully
+      }
+    }, pollInterval);
+
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitoringJobs, driftOffset, driftSeverityFilter, driftTypeFilter]);
 
   // ----------------------------------------
   // Network Scanning
@@ -825,6 +1188,510 @@ function App() {
               <strong>Scan Completed for: {result.ip_address}</strong> — Risk Score: {result.risk_score} ({result.risk_level})
             </div>
             <div className="scan-result-ports">Open Ports: {result.open_ports}</div>
+          </div>
+        )}
+      </section>
+
+      {/* ------------------------------------------------ */}
+      {/* PHASE 5: CONTINUOUS MONITORING & DRIFT CENTER    */}
+      {/* ------------------------------------------------ */}
+      <section className="panel monitoring-panel">
+        <div className="panel-header monitoring-panel-header">
+          <div>
+            <div className="monitoring-tag">CONTINUOUS ATTACK SURFACE MONITORING</div>
+            <h2>Continuous Monitoring & Drift Center</h2>
+            <p className="panel-desc">
+              Automated background scanning, recurring schedules, and attack surface drift detection with RFC 1918 boundary protection.
+            </p>
+          </div>
+          <div className="monitoring-header-actions">
+            <button
+              className="btn-secondary btn-sm"
+              onClick={() => {
+                fetchMonitoringJobs();
+                fetchMonitoringSchedules();
+                fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
+              }}
+              title="Refresh all monitoring data"
+            >
+              ↻ Refresh Feeds
+            </button>
+          </div>
+        </div>
+
+        {/* Monitoring KPIs */}
+        <div className="monitoring-kpis">
+          <div className="monitoring-kpi-card">
+            <div className="kpi-icon-wrap kpi-blue">⚡</div>
+            <div>
+              <div className="kpi-val">{monitoringSchedules.filter((s) => s.is_active).length}</div>
+              <div className="kpi-label">Active Schedules</div>
+            </div>
+          </div>
+
+          <div className="monitoring-kpi-card">
+            <div className="kpi-icon-wrap kpi-amber">
+              {monitoringJobs.some((j) => j.status === "Running") ? (
+                <span className="ai-spinner" style={{ width: "16px", height: "16px" }} />
+              ) : "⏳"}
+            </div>
+            <div>
+              <div className="kpi-val">
+                {monitoringJobs.filter((j) => j.status === "Queued" || j.status === "Running").length}
+              </div>
+              <div className="kpi-label">Queued / Running Jobs</div>
+            </div>
+          </div>
+
+          <div className="monitoring-kpi-card">
+            <div className="kpi-icon-wrap kpi-orange">🛰</div>
+            <div>
+              <div className="kpi-val">{driftTotal}</div>
+              <div className="kpi-label">Drift Events Detected</div>
+            </div>
+          </div>
+
+          <div className="monitoring-kpi-card">
+            <div className="kpi-icon-wrap kpi-teal">❓</div>
+            <div>
+              <div className="kpi-val">
+                {driftEvents.filter((e) => e.event_type === "NEW_ASSET").length}
+              </div>
+              <div className="kpi-label">Unclassified New Assets</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Sub-Tab Navigation */}
+        <div className="monitoring-subtabs">
+          <button
+            className={`btn-subtab ${monitoringActiveTab === "jobs" ? "active" : ""}`}
+            onClick={() => setMonitoringActiveTab("jobs")}
+          >
+            <span>Scan Jobs & Queue</span>
+            <span className="subtab-count">{monitoringJobs.length}</span>
+          </button>
+          <button
+            className={`btn-subtab ${monitoringActiveTab === "schedules" ? "active" : ""}`}
+            onClick={() => setMonitoringActiveTab("schedules")}
+          >
+            <span>Automated Schedules</span>
+            <span className="subtab-count">{monitoringSchedules.length}</span>
+          </button>
+          <button
+            className={`btn-subtab ${monitoringActiveTab === "drift" ? "active" : ""}`}
+            onClick={() => setMonitoringActiveTab("drift")}
+          >
+            <span>Network Drift & Audit Feed</span>
+            <span className="subtab-count">{driftTotal}</span>
+          </button>
+        </div>
+
+        {/* Action Error Banner */}
+        {jobActionError && (
+          <div className="monitoring-error-banner">
+            <span>⚠ {jobActionError}</span>
+            <button className="btn-link" onClick={() => setJobActionError(null)}>Dismiss</button>
+          </div>
+        )}
+
+        {/* TAB 1: SCAN JOBS & QUEUE */}
+        {monitoringActiveTab === "jobs" && (
+          <div className="monitoring-tab-content">
+            {/* New Job Launcher */}
+            <div className="job-launcher-card">
+              <div className="launcher-title">
+                <strong>Queue Continuous Scan Job</strong>
+                <span className="launcher-hint">
+                  Non-blocking background scan executed by bounded ThreadPoolExecutor (max 3 concurrent; excess jobs wait safely in queue).
+                </span>
+              </div>
+              <form onSubmit={submitNewJob} className="launcher-form">
+                <div className="launcher-field">
+                  <label>Target Scope (RFC 1918 Private, Max /24)</label>
+                  <input
+                    type="text"
+                    value={newJobTarget}
+                    onChange={(e) => setNewJobTarget(e.target.value)}
+                    placeholder="e.g. 192.168.127.0/24 or 192.168.1.50"
+                    disabled={submittingJob}
+                    required
+                  />
+                </div>
+                <div className="launcher-field">
+                  <label>Scan Strategy</label>
+                  <select
+                    value={newJobType}
+                    onChange={(e) => setNewJobType(e.target.value)}
+                    disabled={submittingJob}
+                  >
+                    <option value="subnet_discovery">Subnet Discovery (Ping sweep + Service scan)</option>
+                    <option value="single_host">Single Host (Targeted top 100 ports)</option>
+                  </select>
+                </div>
+                <button
+                  type="submit"
+                  className="btn-primary launcher-btn"
+                  disabled={submittingJob}
+                >
+                  {submittingJob ? "Queueing Job..." : "+ Queue Scan Job"}
+                </button>
+              </form>
+            </div>
+
+            {/* Jobs Table */}
+            {monitoringJobsLoading && monitoringJobs.length === 0 ? (
+              <div className="monitoring-loading-box">
+                <span className="ai-spinner" /> Loading scan jobs...
+              </div>
+            ) : monitoringJobsError ? (
+              <div className="monitoring-error-box">
+                <div>⚠ {monitoringJobsError}</div>
+                <button className="btn-secondary btn-sm" onClick={fetchMonitoringJobs}>Retry</button>
+              </div>
+            ) : (
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Job ID</th>
+                      <th>Target & Strategy</th>
+                      <th>Status</th>
+                      <th>Progress</th>
+                      <th>Discovered Assets</th>
+                      <th>Vulnerabilities</th>
+                      <th>Timestamps</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {monitoringJobs.length === 0 ? (
+                      <tr>
+                        <td colSpan="8" className="empty-cell">
+                          No scan jobs queued or completed yet. Use the form above to submit a scan.
+                        </td>
+                      </tr>
+                    ) : (
+                      monitoringJobs.map((job) => (
+                        <tr key={job.id}>
+                          <td>
+                            <strong>#{job.id}</strong>
+                          </td>
+                          <td>
+                            <strong className="ip-text">{job.target}</strong>
+                            <div className="sub-text">
+                              {job.scan_type === "subnet_discovery" ? "Subnet Sweep" : "Single Host"}
+                            </div>
+                          </td>
+                          <td>
+                            {getJobStatusBadge(job.status)}
+                            {job.error_message && (
+                              <div className="job-error-msg" title={job.error_message}>
+                                {job.error_message}
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            <div className="job-progress-cell">
+                              <div className="progress-bar-bg" style={{ width: "90px", margin: "4px 0" }}>
+                                <div
+                                  className="progress-bar-fill"
+                                  style={{
+                                    width: `${job.progress_percent}%`,
+                                    background: job.status === "Failed" ? "#ef4444" : undefined,
+                                  }}
+                                />
+                              </div>
+                              <span className="text-xs text-slate">{job.progress_percent}%</span>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="metric-pill">
+                              {job.discovered_assets_count ?? 0} hosts
+                            </span>
+                          </td>
+                          <td>
+                            <span className="metric-pill">
+                              {job.discovered_vulns_count ?? 0} findings
+                            </span>
+                          </td>
+                          <td>
+                            <div className="text-xs">
+                              <div>Created: {formatDateTime(job.created_at)}</div>
+                              {job.completed_at && (
+                                <div className="text-slate">Done: {formatDateTime(job.completed_at)}</div>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            {(job.status === "Queued" || job.status === "Running") && (
+                              <button
+                                className="btn-cancel-job"
+                                onClick={() => cancelJob(job.id)}
+                                disabled={cancellingJobId === job.id}
+                                title="Request cooperative cancellation (terminates subprocess safely)"
+                              >
+                                {cancellingJobId === job.id ? "Cancelling..." : "Cancel"}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: AUTOMATED SCHEDULES */}
+        {monitoringActiveTab === "schedules" && (
+          <div className="monitoring-tab-content">
+            <div className="schedules-header-bar">
+              <div>
+                <p className="tab-subtitle">
+                  Automated background recurring sweeps executed by the single-process in-process scheduler.
+                </p>
+              </div>
+              <button
+                className="btn-primary btn-sm"
+                onClick={openAddScheduleModal}
+              >
+                + Add Scan Schedule
+              </button>
+            </div>
+
+            {monitoringSchedulesLoading && monitoringSchedules.length === 0 ? (
+              <div className="monitoring-loading-box">
+                <span className="ai-spinner" /> Loading automated schedules...
+              </div>
+            ) : monitoringSchedulesError ? (
+              <div className="monitoring-error-box">
+                <div>⚠ {monitoringSchedulesError}</div>
+                <button className="btn-secondary btn-sm" onClick={fetchMonitoringSchedules}>Retry</button>
+              </div>
+            ) : (
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Schedule Name</th>
+                      <th>Target Scope</th>
+                      <th>Interval</th>
+                      <th>Schedule State</th>
+                      <th>Last Run</th>
+                      <th>Next Scheduled Run</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {monitoringSchedules.length === 0 ? (
+                      <tr>
+                        <td colSpan="7" className="empty-cell">
+                          No automated scan schedules configured. Click "+ Add Scan Schedule" to create one.
+                        </td>
+                      </tr>
+                    ) : (
+                      monitoringSchedules.map((sched) => (
+                        <tr key={sched.id}>
+                          <td>
+                            <strong>{sched.name}</strong>
+                            <div className="sub-text">Schedule ID #{sched.id}</div>
+                          </td>
+                          <td>
+                            <strong className="ip-text">{sched.target}</strong>
+                          </td>
+                          <td>
+                            <span className="badge badge-neutral">Every {sched.interval_minutes}m</span>
+                          </td>
+                          <td>
+                            <button
+                              className={`toggle-pill ${sched.is_active ? "toggle-active" : "toggle-inactive"}`}
+                              onClick={() => toggleScheduleActive(sched)}
+                              title={sched.is_active ? "Click to pause schedule" : "Click to activate schedule"}
+                            >
+                              <span className={`toggle-dot ${sched.is_active ? "dot-active" : ""}`} />
+                              {sched.is_active ? "Active" : "Paused"}
+                            </button>
+                          </td>
+                          <td>
+                            <span className="text-xs text-slate">{formatDateTime(sched.last_run_at)}</span>
+                          </td>
+                          <td>
+                            <span className="text-xs" style={{ color: sched.is_active ? "#38bdf8" : "#64748b" }}>
+                              {sched.is_active ? formatDateTime(sched.next_run_at) : "Paused"}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="action-buttons-group">
+                              <button
+                                className="btn-action"
+                                onClick={() => openEditScheduleModal(sched)}
+                                title="Edit schedule details"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="btn-action btn-action-danger"
+                                onClick={() => deleteSchedule(sched.id)}
+                                title="Delete schedule"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: NETWORK DRIFT & AUDIT FEED */}
+        {monitoringActiveTab === "drift" && (
+          <div className="monitoring-tab-content">
+            <div className="drift-filter-bar">
+              <div className="filter-group">
+                <label>Severity:</label>
+                <select
+                  className="select-filter"
+                  value={driftSeverityFilter}
+                  onChange={(e) => {
+                    const newSev = e.target.value;
+                    setDriftSeverityFilter(newSev);
+                    setDriftOffset(0);
+                    fetchDriftEvents(0, newSev, driftTypeFilter);
+                  }}
+                >
+                  <option value="All">All Severities</option>
+                  <option value="Critical">Critical</option>
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <label>Event Type:</label>
+                <select
+                  className="select-filter"
+                  value={driftTypeFilter}
+                  onChange={(e) => {
+                    const newType = e.target.value;
+                    setDriftTypeFilter(newType);
+                    setDriftOffset(0);
+                    fetchDriftEvents(0, driftSeverityFilter, newType);
+                  }}
+                >
+                  <option value="All">All Event Types</option>
+                  <option value="NEW_ASSET">New Asset (Unclassified)</option>
+                  <option value="PORT_OPENED">Port Opened</option>
+                  <option value="PORT_CLOSED">Port Closed</option>
+                  <option value="CVE_DETECTED">CVE Detected</option>
+                  <option value="FINDING_RESOLVED">Finding Resolved</option>
+                </select>
+              </div>
+
+              <div className="drift-count-summary">
+                Showing {driftEvents.length} of {driftTotal} events (newest first)
+              </div>
+            </div>
+
+            {driftEventsLoading && driftEvents.length === 0 ? (
+              <div className="monitoring-loading-box">
+                <span className="ai-spinner" /> Loading drift events feed...
+              </div>
+            ) : driftEventsError ? (
+              <div className="monitoring-error-box">
+                <div>⚠ {driftEventsError}</div>
+                <button
+                  className="btn-secondary btn-sm"
+                  onClick={() => fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter)}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <div className="drift-events-list">
+                {driftEvents.length === 0 ? (
+                  <div className="drift-empty-box">
+                    <div className="empty-icon">🛡</div>
+                    <div><strong>No network drift events detected</strong></div>
+                    <div className="sub-text">
+                      Subsequent automated background scans will compare against the last successful baseline and record new assets, port changes, and CVE detections here.
+                    </div>
+                  </div>
+                ) : (
+                  driftEvents.map((event) => (
+                    <div key={event.id} className="drift-event-card">
+                      <div className="drift-card-header">
+                        <div className="drift-header-left">
+                          {getDriftSeverityBadge(event.severity)}
+                          {getDriftEventTypeBadge(event.event_type)}
+                          <span className="drift-time">{formatDateTime(event.detected_at)}</span>
+                        </div>
+                        <div className="drift-header-right">
+                          <span className="drift-job-tag">Scan Job #{event.scan_job_id}</span>
+                          {event.asset_id && (
+                            <span className="drift-asset-tag">Asset #{event.asset_id}</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="drift-card-body">
+                        <div className="drift-card-title">{event.title}</div>
+                        <p className="drift-card-desc">{event.description}</p>
+
+                        {/* CRITICAL: Unclassified Asset Warning Badge for NEW_ASSET */}
+                        {event.event_type === "NEW_ASSET" && (
+                          <div className="drift-unclassified-callout">
+                            <span className="unclassified-pill">Unclassified asset</span>
+                            <span className="unclassified-text">
+                              Newly discovered host awaiting GRC assignment. Business criticality, environment, exposure, and ownership remain unassigned until an operator classifies them.
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+
+                {/* Pagination Controls */}
+                {driftTotal > driftLimit && (
+                  <div className="drift-pagination-bar">
+                    <button
+                      className="btn-secondary btn-sm"
+                      disabled={driftOffset === 0}
+                      onClick={() => {
+                        const newOffset = Math.max(0, driftOffset - driftLimit);
+                        setDriftOffset(newOffset);
+                        fetchDriftEvents(newOffset, driftSeverityFilter, driftTypeFilter);
+                      }}
+                    >
+                      ← Previous Page
+                    </button>
+                    <span className="pagination-info">
+                      Page {Math.floor(driftOffset / driftLimit) + 1} of {Math.ceil(driftTotal / driftLimit)}
+                    </span>
+                    <button
+                      className="btn-secondary btn-sm"
+                      disabled={driftOffset + driftLimit >= driftTotal}
+                      onClick={() => {
+                        const newOffset = driftOffset + driftLimit;
+                        setDriftOffset(newOffset);
+                        fetchDriftEvents(newOffset, driftSeverityFilter, driftTypeFilter);
+                      }}
+                    >
+                      Next Page →
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -1701,6 +2568,80 @@ function App() {
               <button className="btn-secondary" onClick={() => setEditingRequirement(null)}>Cancel</button>
               <button className="btn-primary" onClick={saveRequirementAssessment}>Save Assessment</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------ */}
+      {/* MODAL: ADD / EDIT MONITORING SCHEDULE (PHASE 5)  */}
+      {/* ------------------------------------------------ */}
+      {showScheduleModal && (
+        <div className="modal-backdrop" onClick={() => setShowScheduleModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{editingSchedule ? `Edit Schedule — #${editingSchedule.id}` : "Configure Automated Scan Schedule"}</h3>
+              <button className="modal-close" onClick={() => setShowScheduleModal(false)}>×</button>
+            </div>
+            <form onSubmit={handleSaveSchedule}>
+              <div className="modal-body">
+                {scheduleActionError && (
+                  <div className="modal-error-banner">⚠ {scheduleActionError}</div>
+                )}
+                <div className="form-group">
+                  <label>Schedule Name</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Subnet Daily Sweep"
+                    value={scheduleForm.name}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, name: e.target.value })}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Target Scope (Private RFC 1918, Max /24)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. 192.168.127.0/24 or 10.0.1.0/24"
+                    value={scheduleForm.target}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, target: e.target.value })}
+                  />
+                  <span className="form-hint">
+                    Only private networks allowed. Single IPv4 or /24-/32 subnets (maximum 256 hosts).
+                  </span>
+                </div>
+                <div className="form-group">
+                  <label>Scan Interval (Minutes)</label>
+                  <input
+                    type="number"
+                    min="15"
+                    step="1"
+                    required
+                    value={scheduleForm.interval_minutes}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, interval_minutes: e.target.value })}
+                  />
+                  <span className="form-hint">
+                    Minimum allowed interval is 15 minutes to avoid network and CPU congestion.
+                  </span>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setShowScheduleModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={submittingSchedule}
+                >
+                  {submittingSchedule ? "Saving..." : (editingSchedule ? "Save Changes" : "Create Schedule")}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
