@@ -16,6 +16,8 @@ An automated Governance, Risk Management, and Compliance (GRC) platform integrat
 │  - Security Controls Catalog & Mitigation Assignments                    │
 │  - Compliance Mapping (NIST CSF 2.0 & ISO/IEC 27001:2022)                │
 │  - Vulnerability Findings & CVE Correlation                              │
+│  - AI Security & Risk Intelligence Explanations (On-Demand)              │
+│  - Continuous Monitoring & Attack Surface Drift Center (Phase 5)         │
 └────────────────────────────────────┬─────────────────────────────────────┘
                                      │ REST API (JSON)
                                      ▼
@@ -25,22 +27,28 @@ An automated Governance, Risk Management, and Compliance (GRC) platform integrat
 │  - GRC Risk Calculation Engine (scanner/grc_engine.py)                    │
 │  - Security Controls Catalog & Association Management                    │
 │  - Compliance Mapping Engine & Implementation Coverage Calculator        │
-│  - Technical Scanner Pipeline (Nmap, CVE/NVD, Heuristics)                 │
+│  - AI ProviderChain Multi-LLM Orchestrator (On-Demand Only)              │
+│  - Monitoring API & Background Scan Job Manager (Phase 5)                │
+│  - In-Process Background Scheduler (Single-Process Daemon)               │
 └────────────────────────────────────┬─────────────────────────────────────┘
                                      │
-                     ┌───────────────┴───────────────┐
+                     ┌───────────────┼───────────────┐
                      ▼                               ▼
 ┌──────────────────────────────────────────┐ ┌─────────────────────────────┐
-│           PostgreSQL Database            │ │      Scanner Pipeline       │
-│  - assets (with GRC Intel)               │ │  - Nmap Scanner (-sV -O)    │
-│  - risks (Inherent/Residual)             │ │  - CVE Lookup (NVD API 2.0) │
-│  - controls (Catalog)                    │ │  - Vulnerability Scanner    │
-│  - risk_controls (M2M)                   │ │  - GRC Risk Engine          │
-│  - compliance_frameworks                 │ │                             │
-│  - compliance_requirements               │ │                             │
-│  - control_compliance_mappings           │ │                             │
-│  - vulnerabilities                       │ │                             │
-└──────────────────────────────────────────┘ └─────────────────────────────┘
+│           PostgreSQL Database            │ │  Monitoring & Scan Engine   │
+│  - assets (with GRC Intel)               │ │  - ThreadPoolExecutor (max=3)│
+│  - risks (Inherent/Residual)             │ │  - Stage 1: Ping Sweep (-sn)│
+│  - controls (Catalog)                    │ │  - Stage 2: Top-100 Ports   │
+│  - risk_controls (M2M)                   │ │  - CVE Lookup (NVD API 2.0) │
+│  - compliance_frameworks                 │ │  - Vulnerability Pipeline   │
+│  - compliance_requirements               │ │  - Drift Detector (5 Events)│
+│  - control_compliance_mappings           │ │  - Authoritative GRC Engine │
+│  - vulnerabilities                       │ └─────────────────────────────┘
+│  - ai_risk_analyses (Audit Log)          │
+│  - scan_jobs (Lifecycle & History)       │
+│  - scan_schedules (Automated Intervals)  │
+│  - drift_events (Attack Surface Drift)   │
+└──────────────────────────────────────────┘
 ```
 
 ---
@@ -238,6 +246,147 @@ Technical Finding  ──►  Rule-Based Risk Engine  ──►  AI Security Int
 
 ---
 
+## Phase 5 — Continuous Network Monitoring, Automated Background Scanning, and Asset Drift Detection
+
+Phase 5 introduces continuous attack surface monitoring, non-blocking asynchronous scan orchestration, an in-process scan scheduler, and a deterministic drift detection engine. It continuously tracks changes to network assets, open ports, and vulnerabilities, recalculating GRC risk posture while preserving strict boundaries around AI automation and system safety.
+
+### Architecture & Pipeline Flow
+
+```text
+React Dashboard
+      ↓
+FastAPI Monitoring API
+      ↓
+Scan Job Manager
+      ↓
+ThreadPoolExecutor(max_workers=3)
+      ↓
+2-stage Network Monitoring
+      ↓
+Existing Vulnerability/CVE Pipeline
+      ↓
+Last Successful Scan Snapshot
+      ↓
+Drift Detection
+      ↓
+Authoritative GRC Risk Engine
+      ↓
+PostgreSQL
+      ↓
+Monitoring Dashboard
+
+AI ProviderChain remains:
+
+ON-DEMAND ONLY
+
+It must NOT automatically run during background monitoring.
+```
+
+### Core Capabilities
+
+1. **Continuous Network Monitoring**: Automated discovery and vulnerability assessment across authorized enterprise subnets.
+2. **Asynchronous Scan Jobs**: Scans execute in the background without blocking FastAPI request threads. Clients receive immediate `HTTP 202 Accepted` with a Job ID and track execution progress asynchronously.
+3. **Bounded Worker Pool (`ThreadPoolExecutor(max_workers=3)`)**:
+   - Concurrency is strictly capped at 3 simultaneous background scan jobs.
+   - Additional job requests remain in `Queued` state in the database until an execution worker becomes available. Jobs never fail simply due to worker saturation.
+   - Each worker allocates an independent database session (`SessionLocal()`), committed and closed in `finally` blocks. Request-thread SQLAlchemy sessions are never leaked to workers.
+4. **2-Stage Network Scanning Pipeline**:
+   - **Stage 1 (Host Discovery)**: Fast ping sweep (`nmap -sn`) over the target subnet to identify live hosts without port probing overhead.
+   - **Stage 2 (Port & Service Inspection)**: Port and service fingerprinting (`nmap --top-ports 100 -sV`) executed only against discovered live hosts.
+   - **Optional OS Detection**: OS fingerprinting (`-O`) is optional and disabled by default during monitoring runs for operational stability and speed.
+5. **Automated Scheduled Scans**:
+   - Operator-defined recurring scan schedules with configurable intervals (minimum 15 minutes, e.g., 60m or 1440m).
+   - Dynamic schedule management: activate, pause, modify interval, or delete.
+6. **Scan History & Execution Metrics**:
+   - Comprehensive audit log in `scan_jobs` tracking execution status (`Queued`, `Running`, `Completed`, `Failed`, `Cancelled`), start/completion timestamps, duration in seconds, discovered host/vulnerability counts, and error diagnostic messages.
+7. **Deterministic Attack Surface Drift Detection**:
+   - Evaluates the delta between the previous scan snapshot and the current scan snapshot for the monitored target scope.
+   - Generates typed, severity-categorized drift events logged in `drift_events`.
+
+### Attack Surface Drift Events
+
+The drift detector categorizes changes across five deterministic event types:
+
+| Event Type | Severity | Description | Trigger Condition |
+|---|---|---|---|
+| `NEW_ASSET` | High | New host discovered on network | Host IP present in current scan but absent in previous baseline |
+| `PORT_OPENED` | Medium | New network service listening | Port open in current scan but previously closed/unobserved |
+| `PORT_CLOSED` | Low | Service decommissioned/unreachable | Previously open port is no longer detected as open |
+| `CVE_DETECTED` | High | Known vulnerability identified | CVE finding identified by vulnerability/NVD pipeline |
+| `FINDING_RESOLVED` | Low | Vulnerability remediated | Previously open finding is absent or service port closed |
+
+### Critical Architectural Boundaries & Constraints
+
+#### 1. Drift Baseline Rule
+- **Only the latest successfully completed scan (`status='Completed'`) becomes the drift baseline snapshot.**
+- Failed, aborted, or cancelled scans **never** replace or corrupt the baseline snapshot.
+- If no previous completed scan exists for a target, the current scan establishes the initial baseline without generating false "resolved" events.
+
+#### 2. Unclassified New Asset Rule
+- When a new host is discovered (`NEW_ASSET`), it is registered in the asset inventory with safe default values.
+- **The system does NOT automatically assume or infer:**
+  - `Medium` (or any non-default) Criticality
+  - `Production` Environment
+  - `Internal` Exposure
+  - Asset Owner
+  - Business Function
+- A newly discovered asset remains **business-unclassified** from a GRC perspective until an authorized human operator reviews and assigns asset intelligence via the Asset Intelligence editor.
+
+#### 3. CVE Applicability Boundary
+- `CVE_DETECTED` events strictly represent findings confirmed by the existing vulnerability scanner and NVD CVE lookup pipeline (`scanner/vulnerability_scanner.py` and `scanner/cve_lookup.py`).
+- Phase 5 does **not** introduce a new CVE applicability engine, speculative CVE matching, or heuristic overrides.
+
+#### 4. AI ProviderChain Boundary (Strictly On-Demand)
+- Continuous network monitoring and scheduled background scans **NEVER** automatically invoke the AI `ProviderChain`, Gemini, OpenAI, or Groq.
+- AI risk intelligence remains strictly **ON-DEMAND ONLY** and human-triggered per risk entry. Background scans never consume LLM API quotas or generate automated AI risk determinations.
+
+#### 5. Automatic Deterministic GRC Recalculation
+- Findings and asset updates from monitoring scans feed directly into the authoritative, rule-based GRC risk engine (`scanner/grc_engine.py`).
+- Official inherent and residual risk scores ($L \times I$) and risk levels are recalculated deterministically without external dependencies.
+
+#### 6. Single-Process In-Process Scheduler Limitation
+- The background scan scheduler runs as a lightweight in-process daemon thread within the single running FastAPI process.
+- **Deployment Constraint**: Running multiple FastAPI worker processes (e.g. `uvicorn main:app --workers 4` or multi-pod container clusters) is **NOT supported** for this scheduler architecture, as each worker would independently spawn duplicate schedulers and create competing job dispatches.
+- Distributed scheduling via Celery, Redis, or RabbitMQ is intentionally deferred as out of scope for Phase 5.
+
+#### 7. Target Scope & Subnet Restrictions
+- Scans are strictly restricted to private RFC 1918 subnets and the local loopback:
+  - `10.0.0.0/8`
+  - `172.16.0.0/12`
+  - `192.168.0.0/16`
+  - `127.0.0.1/32`
+- **Subnet Scope Limit**: Maximum network mask permitted is `/24` (256 addresses). Subnets wider than `/24` (e.g. `/16` or `/8`) are rejected with `HTTP 400 Bad Request` to prevent accidental network flooding.
+- Target IP addresses and CIDR notations are validated strictly via Python's standard `ipaddress` module before command generation.
+
+#### 8. Process Execution Security & Timeouts
+- Subprocess invocations strictly use `shell=False` with argument lists (never shell strings), preventing command injection vulnerabilities.
+- Multi-tier timeouts are enforced:
+  - Stage 1 (Host Discovery): 120 seconds total.
+  - Stage 2 (Service Fingerprinting): 180 seconds per individual host; 600 seconds total.
+- **Cooperative Cancellation**: When an operator requests scan cancellation (`POST /monitoring/jobs/{id}/cancel`), a cancellation event is flagged. The background worker checks this flag between execution stages and host loops, actively terminates any running Nmap child subprocesses, and only marks the job as `Cancelled` once all subprocesses have exited cleanly. The system never reports `Cancelled` while an orphaned scanner process continues running.
+
+### React Dashboard: Continuous Monitoring & Drift Center
+
+The React 19 frontend provides an integrated **Continuous Monitoring & Drift Center** featuring:
+- **KPI Summary Ribbon**: Live counts for Active Schedules, Monitored Assets, 24-Hour Drift Events, and Running Scans.
+- **Manual Scan Trigger**: Safe target input with RFC 1918 validation and instant job dispatch.
+- **Active Scans & Progress Tracker**: Real-time progress percentage bar, current execution stage indicator, and one-click cooperative cancellation.
+- **Scan Schedules Manager**: Create recurring scan schedules with validated intervals, toggle active/paused states, or delete schedules.
+- **Attack Surface Drift Feed**: Chronological stream of drift events with severity badges (`High`, `Medium`, `Low`), event type indicators (`NEW_ASSET`, `PORT_OPENED`, etc.), affected host details, and filtering by severity and event type.
+- **Historical Scans Log**: Searchable audit log of past scan executions with execution durations, discovered asset and vulnerability tallies, and failure diagnostics.
+
+### Phase 5 Non-Goals
+
+To maintain high reliability and strict architectural boundaries, the following features are explicitly out of scope for Phase 5:
+- External alerting integrations (Slack, Discord, PagerDuty, email, SMS, or outgoing webhooks).
+- Distributed message brokers or external job queues (Redis, RabbitMQ, Celery).
+- Role-Based Access Control (RBAC) or user authentication.
+- Autonomous AI decision-making or automatic risk reclassification.
+- Full 65,535-port scans (monitoring scans focus on the top 100 ports for operational safety).
+- Arbitrary public Internet scanning.
+
+---
+
 ## Getting Started
 
 ### 1. Database Migrations
@@ -252,6 +401,9 @@ python scripts/migrate_phase3.py
 
 # Phase 4 (AI Risk Analyses Audit Table)
 python scripts/migrate_phase4.py
+
+# Phase 5 (Continuous Monitoring, Scan Jobs, Schedules, Drift Events)
+python scripts/migrate_phase5.py
 ```
 
 ### 2. Backend Setup
@@ -306,9 +458,19 @@ python scripts/migrate_phase4.py
   python tests/test_phase4_isolated.py
   ```
 
-- **Phase 4C Multi-LLM Failover Test Suite (20 Tests)**:
+- **Phase 4C Multi-LLM Failover Test Suite (26 Tests)**:
   ```powershell
   python tests/test_phase4c_isolated.py
+  ```
+
+- **Phase 5 Continuous Monitoring & Drift Test Suite (50 Tests)**:
+  ```powershell
+  python tests/test_phase5_isolated.py
+  ```
+
+- **Complete Multi-Phase Regression Suite (108 Tests)**:
+  ```powershell
+  python -m unittest tests/test_phase2_isolated.py tests/test_phase3_isolated.py tests/test_phase4_isolated.py tests/test_phase4c_isolated.py tests/test_phase5_isolated.py
   ```
 
 - **Live REST API Verification Scripts**:
@@ -321,6 +483,9 @@ python scripts/migrate_phase4.py
 
   # Phase 4C Multi-LLM Failover Verification
   python scripts/verify_phase4c_api.py
+
+  # Phase 5 Monitoring & Drift API Verification
+  python scripts/verify_phase5_api.py
   ```
 
 ---
@@ -330,7 +495,7 @@ python scripts/migrate_phase4.py
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Health check & database connection status |
-| `POST` | `/scan?target=...` | Scan single IPv4 host, enrich findings, register GRC risks |
+| `POST` | `/scan?target=...` | Scan single IPv4 host, enrich findings, register GRC risks (synchronous legacy) |
 | `POST` | `/discover?network=...` | Discover hosts on private CIDR subnet (max `/24`) |
 | `GET` | `/assets` | Retrieve all tracked assets with asset intelligence |
 | `GET` | `/assets/{id}` | Retrieve a specific asset |
@@ -353,3 +518,14 @@ python scripts/migrate_phase4.py
 | `GET` | `/compliance/summary` | Retrieve Implementation Coverage metrics and status counts per framework |
 | `PATCH` | `/compliance/requirements/{id}` | Update requirement assessment status and auditor notes |
 | `GET` | `/vulnerabilities` | Retrieve all vulnerability findings |
+| `POST` | `/monitoring/jobs` | **(Phase 5)** Dispatch asynchronous network scan job (HTTP 202 Accepted) |
+| `GET` | `/monitoring/jobs` | **(Phase 5)** Retrieve paginated scan jobs history with status/metrics |
+| `GET` | `/monitoring/jobs/{id}` | **(Phase 5)** Retrieve real-time progress and details for a specific scan job |
+| `POST` | `/monitoring/jobs/{id}/cancel` | **(Phase 5)** Request cooperative cancellation for an active scan job |
+| `GET` | `/monitoring/schedules` | **(Phase 5)** Retrieve all configured recurring scan schedules |
+| `POST` | `/monitoring/schedules` | **(Phase 5)** Create new automated scan schedule (min 15-minute interval) |
+| `GET` | `/monitoring/schedules/{id}` | **(Phase 5)** Retrieve a specific scan schedule |
+| `PATCH` | `/monitoring/schedules/{id}` | **(Phase 5)** Update scan schedule interval or toggle active/paused state |
+| `DELETE` | `/monitoring/schedules/{id}` | **(Phase 5)** Delete an automated scan schedule |
+| `GET` | `/monitoring/drift` | **(Phase 5)** Retrieve attack surface drift feed with severity and type filters |
+| `GET` | `/monitoring/metrics` | **(Phase 5)** Retrieve aggregated monitoring KPI metrics for the dashboard |
