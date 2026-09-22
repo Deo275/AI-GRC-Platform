@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Query, HTTPException, Path, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 import os
 import ipaddress
@@ -41,6 +41,19 @@ try:
     from ai import analyze_risk, get_latest_risk_analysis, AIProviderError
 except ImportError:
     from backend.ai import analyze_risk, get_latest_risk_analysis, AIProviderError
+
+try:
+    from monitoring import (
+        validate_target_network,
+        ScanWorkerPool,
+        MonitoringScheduler,
+    )
+except ImportError:
+    from backend.monitoring import (
+        validate_target_network,
+        ScanWorkerPool,
+        MonitoringScheduler,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +103,25 @@ class MappingCreate(BaseModel):
     requirement_id: int
     mapping_strength: str | None = "Direct"
     notes: str | None = None
+
+
+# Phase 5: Monitoring Schemas
+class ScanJobCreate(BaseModel):
+    target: str
+    scan_type: str = "subnet_discovery"
+
+
+class ScanScheduleCreate(BaseModel):
+    name: str
+    target: str
+    interval_minutes: int = 60
+
+
+class ScanScheduleUpdate(BaseModel):
+    name: str | None = None
+    target: str | None = None
+    interval_minutes: int | None = None
+    is_active: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +261,49 @@ def format_mapping(m: models.ControlComplianceMapping) -> dict:
     }
 
 
+def format_scan_job(job: models.ScanJob) -> dict:
+    return {
+        "id": job.id,
+        "target": job.target,
+        "scan_type": job.scan_type,
+        "status": job.status,
+        "progress_percent": job.progress_percent,
+        "discovered_assets_count": job.discovered_assets_count,
+        "discovered_vulns_count": job.discovered_vulns_count,
+        "error_message": job.error_message,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+    }
+
+
+def format_scan_schedule(sched: models.ScanSchedule) -> dict:
+    return {
+        "id": sched.id,
+        "name": sched.name,
+        "target": sched.target,
+        "interval_minutes": sched.interval_minutes,
+        "is_active": sched.is_active,
+        "last_run_at": sched.last_run_at,
+        "next_run_at": sched.next_run_at,
+        "created_at": sched.created_at,
+        "updated_at": sched.updated_at,
+    }
+
+
+def format_drift_event(ev: models.DriftEvent) -> dict:
+    return {
+        "id": ev.id,
+        "scan_job_id": ev.scan_job_id,
+        "asset_id": ev.asset_id,
+        "event_type": ev.event_type,
+        "title": ev.title,
+        "description": ev.description,
+        "severity": ev.severity,
+        "detected_at": ev.detected_at,
+    }
+
+
 def recalculate_asset_risks(asset: models.Asset):
     """Recalculate inherent and residual risk scores for all risks belonging to an asset."""
     impact = criticality_to_impact(asset.criticality)
@@ -267,6 +342,25 @@ app.add_middleware(
 )
 
 Base.metadata.create_all(bind=engine)
+
+# ---------------------------------------------------------------------------
+# Phase 5: Continuous Monitoring Single-Process Worker Pool & Scheduler
+# NOTE: Single FastAPI process architecture only. Multi-worker deployments
+# (e.g. gunicorn -w 4) are not supported with this in-process scheduler.
+# ---------------------------------------------------------------------------
+scan_worker_pool = ScanWorkerPool(max_workers=3)
+monitoring_scheduler = MonitoringScheduler(worker_pool=scan_worker_pool, poll_interval_seconds=30)
+
+
+@app.on_event("startup")
+def on_startup():
+    monitoring_scheduler.start()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    monitoring_scheduler.stop()
+    scan_worker_pool.shutdown(wait=False)
 
 
 @app.get("/")
@@ -1448,6 +1542,273 @@ def get_risk_ai_analysis(
                 "treatment": risk.treatment,
             },
             "analysis": analysis_data,
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Continuous Network Monitoring & Drift Detection Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/monitoring/jobs", status_code=202)
+def create_monitoring_job(
+    payload: ScanJobCreate = Body(...)
+):
+    """Submit an asynchronous network scan job (single host or RFC 1918 /24 subnet).
+
+    Validates target bounds, creates ScanJob with status Queued, and submits to bounded worker pool.
+    """
+    try:
+        validated_target = validate_target_network(payload.target)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+    valid_scan_types = ("single_host", "subnet_discovery", "scheduled_sweep")
+    if payload.scan_type not in valid_scan_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid scan_type '{payload.scan_type}'. Must be one of: {', '.join(valid_scan_types)}",
+        )
+
+    db = SessionLocal()
+    try:
+        job = models.ScanJob(
+            target=validated_target,
+            scan_type=payload.scan_type,
+            status="Queued",
+            progress_percent=0,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        scan_worker_pool.submit_scan_job(job.id)
+        return format_scan_job(job)
+    finally:
+        db.close()
+
+
+@app.get("/monitoring/jobs")
+def list_monitoring_jobs(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(None),
+):
+    """List recent scan jobs with optional status filtering and pagination."""
+    db = SessionLocal()
+    try:
+        query = db.query(models.ScanJob)
+        if status:
+            query = query.filter(models.ScanJob.status == status)
+
+        total = query.count()
+        jobs = query.order_by(models.ScanJob.created_at.desc(), models.ScanJob.id.desc()).offset(offset).limit(limit).all()
+
+        return {
+            "jobs": [format_scan_job(j) for j in jobs],
+            "total": total,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/monitoring/jobs/{job_id}")
+def get_monitoring_job(
+    job_id: int = Path(..., description="The ID of the scan job")
+):
+    """Retrieve execution status, metrics, and progress for a specific scan job."""
+    db = SessionLocal()
+    try:
+        job = db.query(models.ScanJob).filter(models.ScanJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"ScanJob with ID {job_id} not found")
+        return format_scan_job(job)
+    finally:
+        db.close()
+
+
+@app.post("/monitoring/jobs/{job_id}/cancel")
+def cancel_monitoring_job(
+    job_id: int = Path(..., description="The ID of the scan job to cancel")
+):
+    """Request cooperative cancellation of a queued or running scan job.
+
+    Terminates active Nmap subprocess if running and marks job Cancelled once verified.
+    """
+    db = SessionLocal()
+    try:
+        job = db.query(models.ScanJob).filter(models.ScanJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"ScanJob with ID {job_id} not found")
+
+        if job.status in ("Completed", "Failed", "Cancelled"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot cancel job with terminal status '{job.status}'",
+            )
+
+        scan_worker_pool.cancel_scan_job(job_id)
+        return {
+            "message": "Scan job cancellation requested",
+            "job_id": job_id,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/monitoring/schedules")
+def list_monitoring_schedules():
+    """List all configured continuous monitoring scan schedules."""
+    db = SessionLocal()
+    try:
+        schedules = db.query(models.ScanSchedule).order_by(models.ScanSchedule.created_at.desc()).all()
+        return {
+            "schedules": [format_scan_schedule(s) for s in schedules],
+            "total": len(schedules),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/monitoring/schedules", status_code=201)
+def create_monitoring_schedule(
+    payload: ScanScheduleCreate = Body(...)
+):
+    """Create a new automated continuous monitoring scan schedule.
+
+    Target must be valid RFC 1918 (max /24), and interval must be at least 15 minutes.
+    """
+    try:
+        validated_target = validate_target_network(payload.target)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+    if payload.interval_minutes < 15:
+        raise HTTPException(
+            status_code=400,
+            detail="Minimum schedule interval is 15 minutes",
+        )
+
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        sched = models.ScanSchedule(
+            name=payload.name.strip(),
+            target=validated_target,
+            interval_minutes=payload.interval_minutes,
+            is_active=True,
+            next_run_at=now + timedelta(minutes=payload.interval_minutes),
+        )
+        db.add(sched)
+        db.commit()
+        db.refresh(sched)
+        return format_scan_schedule(sched)
+    finally:
+        db.close()
+
+
+@app.get("/monitoring/schedules/{schedule_id}")
+def get_monitoring_schedule(
+    schedule_id: int = Path(..., description="The ID of the scan schedule to retrieve")
+):
+    """Retrieve details for a specific continuous monitoring scan schedule."""
+    db = SessionLocal()
+    try:
+        sched = db.query(models.ScanSchedule).filter(models.ScanSchedule.id == schedule_id).first()
+        if not sched:
+            raise HTTPException(status_code=404, detail=f"ScanSchedule with ID {schedule_id} not found")
+        return format_scan_schedule(sched)
+    finally:
+        db.close()
+
+
+@app.patch("/monitoring/schedules/{schedule_id}")
+def update_monitoring_schedule(
+    schedule_id: int = Path(..., description="The ID of the scan schedule to update"),
+    payload: ScanScheduleUpdate = Body(...),
+):
+    """Update name, target, interval, or active state of an existing scan schedule."""
+    db = SessionLocal()
+    try:
+        sched = db.query(models.ScanSchedule).filter(models.ScanSchedule.id == schedule_id).first()
+        if not sched:
+            raise HTTPException(status_code=404, detail=f"ScanSchedule with ID {schedule_id} not found")
+
+        if payload.name is not None:
+            sched.name = payload.name.strip()
+
+        if payload.target is not None:
+            try:
+                sched.target = validate_target_network(payload.target)
+            except ValueError as err:
+                raise HTTPException(status_code=400, detail=str(err))
+
+        if payload.interval_minutes is not None:
+            if payload.interval_minutes < 15:
+                raise HTTPException(status_code=400, detail="Minimum schedule interval is 15 minutes")
+            sched.interval_minutes = payload.interval_minutes
+            # Recalculate next run relative to now if active
+            if sched.is_active:
+                sched.next_run_at = datetime.utcnow() + timedelta(minutes=payload.interval_minutes)
+
+        if payload.is_active is not None:
+            sched.is_active = payload.is_active
+            if sched.is_active and not sched.next_run_at:
+                sched.next_run_at = datetime.utcnow() + timedelta(minutes=sched.interval_minutes)
+
+        sched.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(sched)
+        return format_scan_schedule(sched)
+    finally:
+        db.close()
+
+
+@app.delete("/monitoring/schedules/{schedule_id}")
+def delete_monitoring_schedule(
+    schedule_id: int = Path(..., description="The ID of the scan schedule to delete")
+):
+    """Delete an automated continuous monitoring schedule."""
+    db = SessionLocal()
+    try:
+        sched = db.query(models.ScanSchedule).filter(models.ScanSchedule.id == schedule_id).first()
+        if not sched:
+            raise HTTPException(status_code=404, detail=f"ScanSchedule with ID {schedule_id} not found")
+
+        db.delete(sched)
+        db.commit()
+        return {"message": f"ScanSchedule with ID {schedule_id} deleted successfully"}
+    finally:
+        db.close()
+
+
+@app.get("/monitoring/drift")
+def list_drift_events(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    severity: str | None = Query(None),
+    event_type: str | None = Query(None),
+    asset_id: int | None = Query(None),
+):
+    """Query network attack surface drift events feed, sorted newest first."""
+    db = SessionLocal()
+    try:
+        query = db.query(models.DriftEvent)
+
+        if severity:
+            query = query.filter(models.DriftEvent.severity == severity.strip())
+        if event_type:
+            query = query.filter(models.DriftEvent.event_type == event_type.strip())
+        if asset_id:
+            query = query.filter(models.DriftEvent.asset_id == asset_id)
+
+        total = query.count()
+        events = query.order_by(models.DriftEvent.detected_at.desc(), models.DriftEvent.id.desc()).offset(offset).limit(limit).all()
+
+        return {
+            "events": [format_drift_event(e) for e in events],
+            "total": total,
         }
     finally:
         db.close()

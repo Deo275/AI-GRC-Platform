@@ -39,6 +39,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 
 import sys
@@ -68,6 +69,7 @@ class TestPhase5MonitoringCore(unittest.TestCase):
         self.engine = create_engine(
             "sqlite:///:memory:",
             connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
         )
         models.Base.metadata.create_all(bind=self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
@@ -681,6 +683,405 @@ class TestPhase5MonitoringCore(unittest.TestCase):
         self.assertEqual(risk.impact_score, 3)
         self.assertEqual(risk.inherent_risk_score, 6)
         self.assertEqual(risk.inherent_risk_level, "Medium")
+
+
+class TestPhase5MonitoringAPI(unittest.TestCase):
+    """Integration tests for Phase 5 /monitoring REST API endpoints in backend/main.py."""
+
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        models.Base.metadata.create_all(bind=self.engine)
+        self.TestingSessionLocal = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
+
+        # Patch SessionLocal and worker pool in main
+        from main import app, scan_worker_pool
+        self.app = app
+        self.scan_worker_pool = scan_worker_pool
+
+        self.session_patcher = patch("main.SessionLocal", side_effect=self.TestingSessionLocal)
+        self.session_patcher.start()
+
+        # Patch worker execution so real scans aren't run
+        self.submit_patcher = patch.object(self.scan_worker_pool, "submit_scan_job")
+        self.mock_submit = self.submit_patcher.start()
+
+        from fastapi.testclient import TestClient
+        self.client = TestClient(self.app)
+
+    def tearDown(self):
+        self.submit_patcher.stop()
+        self.session_patcher.stop()
+        models.Base.metadata.drop_all(bind=self.engine)
+
+    def test_api_post_job_returns_202(self):
+        """Test API 1: POST /monitoring/jobs with valid RFC 1918 target returns 202 Accepted."""
+        resp = self.client.post("/monitoring/jobs", json={
+            "target": "192.168.1.0/24",
+            "scan_type": "subnet_discovery",
+        })
+        self.assertEqual(resp.status_code, 202)
+        data = resp.json()
+        self.assertEqual(data["target"], "192.168.1.0/24")
+        self.assertEqual(data["scan_type"], "subnet_discovery")
+        self.assertEqual(data["status"], "Queued")
+        self.mock_submit.assert_called_once_with(data["id"])
+
+    def test_api_post_job_rejects_invalid_target(self):
+        """Test API 2: POST /monitoring/jobs rejects malformed targets with HTTP 400."""
+        resp = self.client.post("/monitoring/jobs", json={
+            "target": "not-an-ip",
+            "scan_type": "subnet_discovery",
+        })
+        self.assertEqual(resp.status_code, 400)
+
+    def test_api_post_job_rejects_public_ip(self):
+        """Test API 3: POST /monitoring/jobs rejects public IP addresses with HTTP 400."""
+        resp = self.client.post("/monitoring/jobs", json={
+            "target": "8.8.8.8",
+            "scan_type": "single_host",
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("RFC 1918", resp.json()["detail"])
+
+    def test_api_post_job_rejects_wide_network(self):
+        """Test API 4: POST /monitoring/jobs rejects subnets wider than /24 with HTTP 400."""
+        resp = self.client.post("/monitoring/jobs", json={
+            "target": "10.0.0.0/16",
+            "scan_type": "subnet_discovery",
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Maximum allowed subnet size is /24", resp.json()["detail"])
+
+    def test_api_post_job_rejects_invalid_scan_type(self):
+        """Test API 5: POST /monitoring/jobs rejects unapproved scan_type with HTTP 400."""
+        resp = self.client.post("/monitoring/jobs", json={
+            "target": "192.168.1.1",
+            "scan_type": "aggressive_exploit",
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Invalid scan_type", resp.json()["detail"])
+
+    def test_api_get_jobs_returns_created_job_and_pagination(self):
+        """Test API 6: GET /monitoring/jobs lists recent jobs with pagination and status filter."""
+        # Create 2 jobs in DB
+        db = self.TestingSessionLocal()
+        j1 = models.ScanJob(target="192.168.1.1", scan_type="single_host", status="Queued")
+        j2 = models.ScanJob(target="192.168.1.2", scan_type="single_host", status="Completed")
+        db.add_all([j1, j2])
+        db.commit()
+        db.close()
+
+        resp = self.client.get("/monitoring/jobs?limit=10&offset=0")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(len(data["jobs"]), 2)
+
+        # Filter by status
+        resp_filtered = self.client.get("/monitoring/jobs?status=Completed")
+        self.assertEqual(resp_filtered.status_code, 200)
+        filtered_data = resp_filtered.json()
+        self.assertEqual(filtered_data["total"], 1)
+        self.assertEqual(filtered_data["jobs"][0]["status"], "Completed")
+
+    def test_api_get_job_by_id_returns_details(self):
+        """Test API 7: GET /monitoring/jobs/{id} returns job state and metrics."""
+        db = self.TestingSessionLocal()
+        job = models.ScanJob(
+            target="192.168.1.10",
+            scan_type="single_host",
+            status="Running",
+            progress_percent=45,
+            discovered_assets_count=1,
+            discovered_vulns_count=3,
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+
+        resp = self.client.get(f"/monitoring/jobs/{job_id}")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["id"], job_id)
+        self.assertEqual(data["status"], "Running")
+        self.assertEqual(data["progress_percent"], 45)
+        self.assertEqual(data["discovered_assets_count"], 1)
+        self.assertEqual(data["discovered_vulns_count"], 3)
+
+    def test_api_get_job_by_id_nonexistent_returns_404(self):
+        """Test API 8: GET /monitoring/jobs/{id} for non-existent ID returns 404."""
+        resp = self.client.get("/monitoring/jobs/99999")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_api_cancel_job_requests_cooperative_cancellation(self):
+        """Test API 9: POST /monitoring/jobs/{id}/cancel requests cooperative cancellation."""
+        db = self.TestingSessionLocal()
+        job = models.ScanJob(target="192.168.1.10", scan_type="single_host", status="Running")
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+
+        with patch.object(self.scan_worker_pool, "cancel_scan_job") as mock_cancel:
+            resp = self.client.post(f"/monitoring/jobs/{job_id}/cancel")
+            self.assertEqual(resp.status_code, 200)
+            mock_cancel.assert_called_once_with(job_id)
+
+    def test_api_cancel_job_already_terminal_returns_400(self):
+        """Test API 10: Cannot cancel job with terminal status (Completed/Failed/Cancelled)."""
+        db = self.TestingSessionLocal()
+        job = models.ScanJob(target="192.168.1.10", scan_type="single_host", status="Completed")
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+
+        resp = self.client.post(f"/monitoring/jobs/{job_id}/cancel")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("terminal status", resp.json()["detail"])
+
+    def test_api_cancel_job_nonexistent_returns_404(self):
+        """Test API: POST /monitoring/jobs/{id}/cancel returns 404 for nonexistent job."""
+        resp = self.client.post("/monitoring/jobs/99999/cancel")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_api_post_schedule_creates_schedule_and_calculates_next_run_at(self):
+        """Test API 11: POST /monitoring/schedules creates schedule with next_run_at."""
+        resp = self.client.post("/monitoring/schedules", json={
+            "name": "Hourly Subnet Sweep",
+            "target": "192.168.1.0/24",
+            "interval_minutes": 60,
+        })
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()
+        self.assertEqual(data["name"], "Hourly Subnet Sweep")
+        self.assertEqual(data["interval_minutes"], 60)
+        self.assertTrue(data["is_active"])
+        self.assertIsNotNone(data["next_run_at"])
+
+    def test_api_post_schedule_rejects_interval_under_15(self):
+        """Test API 12: POST /monitoring/schedules rejects interval < 15 minutes with HTTP 400."""
+        resp = self.client.post("/monitoring/schedules", json={
+            "name": "Rapid Sweep",
+            "target": "192.168.1.0/24",
+            "interval_minutes": 5,
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Minimum schedule interval is 15 minutes", resp.json()["detail"])
+
+    def test_api_post_schedule_validates_target(self):
+        """Test API 13: POST /monitoring/schedules rejects public target with HTTP 400."""
+        resp = self.client.post("/monitoring/schedules", json={
+            "name": "Public Sweep",
+            "target": "8.8.8.8",
+            "interval_minutes": 60,
+        })
+        self.assertEqual(resp.status_code, 400)
+
+    def test_api_get_schedules_returns_schedules(self):
+        """Test API 14: GET /monitoring/schedules returns list of configured schedules."""
+        db = self.TestingSessionLocal()
+        s1 = models.ScanSchedule(name="S1", target="192.168.1.0/24", interval_minutes=60)
+        s2 = models.ScanSchedule(name="S2", target="10.0.0.0/24", interval_minutes=120)
+        db.add_all([s1, s2])
+        db.commit()
+        db.close()
+
+        resp = self.client.get("/monitoring/schedules")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(len(data["schedules"]), 2)
+
+    def test_api_patch_schedule_updates_fields(self):
+        """Test API 15: PATCH /monitoring/schedules/{id} updates interval and active status."""
+        db = self.TestingSessionLocal()
+        s = models.ScanSchedule(name="Old Name", target="192.168.1.0/24", interval_minutes=60, is_active=True)
+        db.add(s)
+        db.commit()
+        sid = s.id
+        db.close()
+
+        resp = self.client.patch(f"/monitoring/schedules/{sid}", json={
+            "name": "New Name",
+            "interval_minutes": 120,
+            "is_active": False,
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["name"], "New Name")
+        self.assertEqual(data["interval_minutes"], 120)
+        self.assertFalse(data["is_active"])
+
+    def test_api_patch_schedule_revalidates_target_and_interval(self):
+        """Test API 16: PATCH revalidates changed target and interval bounds."""
+        db = self.TestingSessionLocal()
+        s = models.ScanSchedule(name="Sweep", target="192.168.1.0/24", interval_minutes=60)
+        db.add(s)
+        db.commit()
+        sid = s.id
+        db.close()
+
+        # Revalidate interval < 15
+        resp1 = self.client.patch(f"/monitoring/schedules/{sid}", json={"interval_minutes": 2})
+        self.assertEqual(resp1.status_code, 400)
+
+        # Revalidate public target
+        resp2 = self.client.patch(f"/monitoring/schedules/{sid}", json={"target": "8.8.8.8"})
+        self.assertEqual(resp2.status_code, 400)
+
+    def test_api_delete_schedule_works(self):
+        """Test API 17: DELETE /monitoring/schedules/{id} deletes the schedule."""
+        db = self.TestingSessionLocal()
+        s = models.ScanSchedule(name="To Delete", target="192.168.1.0/24", interval_minutes=60)
+        db.add(s)
+        db.commit()
+        sid = s.id
+        db.close()
+
+        resp = self.client.delete(f"/monitoring/schedules/{sid}")
+        self.assertEqual(resp.status_code, 200)
+
+        # Verify 404 on subsequent get/delete
+        resp2 = self.client.delete(f"/monitoring/schedules/{sid}")
+        self.assertEqual(resp2.status_code, 404)
+
+    def test_api_get_schedule_nonexistent_returns_404(self):
+        """Test API 18: GET /monitoring/schedules/{id} for non-existent schedule returns 404."""
+        resp = self.client.get("/monitoring/schedules/99999")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_api_job_lifecycle_mocked_execution(self):
+        """Test API 8: Job submitted through API transitions through lifecycle using mocked worker."""
+        with patch.object(self.scan_worker_pool.pipeline, "discover_live_hosts", return_value=["192.168.1.50"]):
+            with patch.object(self.scan_worker_pool.pipeline, "scan_single_host", return_value={
+                "ip_address": "192.168.1.50",
+                "hostname": "host50",
+                "mac_address": "AA:BB:CC:DD:EE:01",
+                "operating_system": "Linux 5.4",
+                "open_ports": [{"port": "80", "service": "http"}],
+                "vulnerabilities": [],
+                "risk_result": {"risk_score": 10, "risk_level": "Low", "findings": []},
+            }):
+                resp = self.client.post("/monitoring/jobs", json={
+                    "target": "192.168.1.50",
+                    "scan_type": "single_host",
+                })
+                self.assertEqual(resp.status_code, 202)
+                job_id = resp.json()["id"]
+
+                # Execute the worker job logic directly using our test SessionLocal
+                with patch("monitoring.worker.SessionLocal", side_effect=self.TestingSessionLocal):
+                    self.scan_worker_pool._execute_scan_job(job_id, threading.Event())
+
+                # Verify GET /monitoring/jobs/{id} shows Completed
+                get_resp = self.client.get(f"/monitoring/jobs/{job_id}")
+                self.assertEqual(get_resp.status_code, 200)
+                job_data = get_resp.json()
+                self.assertEqual(job_data["status"], "Completed")
+                self.assertEqual(job_data["progress_percent"], 100)
+                self.assertEqual(job_data["discovered_assets_count"], 1)
+
+    def _seed_drift_events(self):
+        db = self.TestingSessionLocal()
+        job = models.ScanJob(target="192.168.1.0/24", scan_type="subnet_discovery", status="Completed")
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+        e1 = models.DriftEvent(scan_job_id=job_id, event_type="NEW_ASSET", title="New Asset", severity="Low")
+        e2 = models.DriftEvent(scan_job_id=job_id, event_type="PORT_OPENED", title="Port 445 Opened", severity="High")
+        e3 = models.DriftEvent(scan_job_id=job_id, event_type="PORT_CLOSED", title="Port 80 Closed", severity="Low")
+        db.add_all([e1, e2, e3])
+        db.commit()
+        db.close()
+        return job_id
+
+    def test_api_get_drift_returns_events(self):
+        """Test API 19: GET /monitoring/drift returns all recorded drift events."""
+        self._seed_drift_events()
+        resp = self.client.get("/monitoring/drift")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(len(data["events"]), 3)
+
+    def test_api_get_drift_filter_by_severity(self):
+        """Test API 20: GET /monitoring/drift filters correctly by severity level."""
+        self._seed_drift_events()
+        resp = self.client.get("/monitoring/drift?severity=High")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["events"][0]["event_type"], "PORT_OPENED")
+        self.assertEqual(data["events"][0]["severity"], "High")
+
+    def test_api_get_drift_filter_by_event_type(self):
+        """Test API 21: GET /monitoring/drift filters correctly by event_type."""
+        self._seed_drift_events()
+        resp = self.client.get("/monitoring/drift?event_type=NEW_ASSET")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["events"][0]["event_type"], "NEW_ASSET")
+
+    def test_api_get_drift_pagination(self):
+        """Test API 22: GET /monitoring/drift supports limit and offset pagination."""
+        self._seed_drift_events()
+        resp = self.client.get("/monitoring/drift?limit=2&offset=0")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(len(data["events"]), 2)
+        self.assertEqual(data["total"], 3)
+
+    @patch("main.scan_host")
+    @patch("main.calculate_risk")
+    @patch("main.identify_vulnerabilities")
+    def test_api_backward_compatibility_scan(self, mock_vuln, mock_risk, mock_scan):
+        """Test API 23: Existing POST /scan remains 100% functional and backward compatible."""
+        mock_scan.return_value = {
+            "hostname": "test-host",
+            "mac_address": "AA:BB:CC:DD:EE:FF",
+            "operating_system": "Linux 5.4",
+            "open_ports": [{"port": "80", "service": "http"}],
+        }
+        mock_risk.return_value = {
+            "risk_score": 10,
+            "risk_level": "Low",
+            "findings": ["HTTP service exposed on port 80"],
+        }
+        mock_vuln.return_value = []
+
+        resp = self.client.post("/scan?target=192.168.127.1")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["ip_address"], "192.168.127.1")
+        self.assertEqual(data["risk_level"], "Low")
+        self.assertEqual(data["message"], "Network scan completed and GRC risks registered")
+
+    @patch("main.scan_host")
+    @patch("main.discover_hosts")
+    def test_api_backward_compatibility_discover(self, mock_discover, mock_scan):
+        """Test API 24: Existing POST /discover remains 100% functional and backward compatible."""
+        mock_discover.return_value = ["192.168.127.1"]
+        mock_scan.return_value = {
+            "hostname": "test-host",
+            "mac_address": "AA:BB:CC:DD:EE:FF",
+            "operating_system": "Linux",
+            "open_ports": [{"port": "80", "service": "http"}],
+        }
+
+        resp = self.client.post("/discover?network=192.168.127.0/24")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["network"], "192.168.127.0/24")
+        self.assertEqual(data["hosts_found"], 1)
+        self.assertEqual(data["message"], "Network discovery completed")
 
 
 if __name__ == "__main__":
