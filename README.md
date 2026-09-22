@@ -153,31 +153,73 @@ Phase 4 adds an AI security intelligence layer that analyzes technical vulnerabi
 1. **Technical / Security Engineers (SecOps)**: Technical severity interpretation, CVSS analysis, attack surface context, and vendor-neutral 3-tier remediation steps.
 2. **Non-Technical GRC & Business Stakeholders**: Plain-language explanations, business consequences, compliance impacts, and governance recommendations.
 
-### Primary Generative AI Provider: Google Gemini
+### Multi-LLM Provider Failover Architecture (Phase 4C)
 
-- **Primary Provider**: `GeminiAIProvider` using Google's official Gemini API and Google GenAI Python SDK (`google-genai`).
-- **Primary Model**: `gemini-3.8-flash` (configurable via `GEMINI_MODEL`, default `gemini-3.8-flash`).
-- **Native Structured Output**: Uses Gemini's native `response_schema` with Pydantic schema enforcement and post-generation semantic validation.
-- **Deterministic Local Fallback**: `RuleAssistedAIProvider` serves as an offline, rule-based expert system fallback if Gemini is unconfigured or temporarily unreachable. (Note: `RuleAssistedAIProvider` is a deterministic heuristics engine, **not** a generative AI model).
-- **Environment-based Credentials**: API keys are strictly configured via `GEMINI_API_KEY` in environment variables and never checked into source control.
+The platform employs a resilient, sequential multi-LLM failover chain (`ProviderChain`) that transparently cascades across multiple frontier and open-weight models before guaranteeing completion via an offline deterministic fallback:
+
+```text
+                  AI Analysis Request (POST /risks/{id}/analyze)
+                                        │
+                                        ▼
+                  ProviderChain Orchestrator [DEFAULT: AI_PROVIDER=chain]
+                                        │
+                       ┌────────────────┴────────────────┐
+                       │ 1. Google Gemini 3.8 Flash      │ (Primary: GEMINI_API_KEY, 8s timeout)
+                       └────────────────┬────────────────┘
+                                        │ AIProviderError / Timeout / 503
+                                        ▼
+                       ┌────────────────┴────────────────┐
+                       │ 2. OpenAI (gpt-4o-mini)         │ (Secondary: OPENAI_API_KEY, 7s timeout)
+                       └────────────────┬────────────────┘
+                                        │ AIProviderError / Timeout / 429 / 500
+                                        ▼
+                       ┌────────────────┴────────────────┐
+                       │ 3. Groq (openai/gpt-oss-120b)   │ (Tertiary: GROQ_API_KEY, 5s timeout)
+                       └────────────────┬────────────────┘
+                                        │ AIProviderError / Timeout / 429 / 500
+                                        ▼
+                       ┌────────────────┴────────────────┐
+                       │ 4. Rule-Assisted Local GRC      │ (Guaranteed Tail: offline, deterministic)
+                       └────────────────┬────────────────┘
+                                        │
+                                        ▼
+                 Structured AIAnalysisResult & Immutability Guarantee
+```
+
+#### Provider Hierarchy & Structured Output Strategy
+
+| Tier | Provider | Default Model | Timeout | Output Format | Role |
+|---|---|---|---|---|---|
+| **Tier 1** | `GeminiAIProvider` | `gemini-3.8-flash` | 8s | Native `response_schema` | Primary generative LLM via official Google GenAI SDK |
+| **Tier 2** | `OpenAIProvider` | `gpt-4o-mini` | 7s | `json_schema` structured output | Secondary LLM with typed error classification & fallback |
+| **Tier 3** | `GroqProvider` | `openai/gpt-oss-120b` | 5s | `json_schema` structured output | High-throughput tertiary open-source LLM via Groq Cloud |
+| **Tail** | `RuleAssistedAIProvider` | `rule-assisted-grc-v1` | 0s | Deterministic Python heuristics | Offline expert system; guaranteed zero-dependency fallback |
+
+- **Sequential Execution**: Providers are invoked strictly in sequential order. No concurrent or parallel API requests are made.
+- **Single Attempt**: Each external provider receives exactly one request attempt; no cross-provider retries or exponential backoff loops.
+- **Failover Auditability**: If failover occurs, the model identifier reflects the full attempt chain (e.g. `rule-assisted-grc-v1 (chain-failover: GeminiAIProvider, OpenAIProvider, GroqProvider)`), `human_review_required` is automatically set to `True`, and a failover notice is appended to `human_review_reasons`.
+- **Credential Hygiene**: API keys are read strictly from environment variables, scrubbed via regex sanitizers from all attempt logs, and never logged or serialized to the database.
 
 ### Human-in-the-Loop Model
 
 AI intelligence operates strictly as advisory decision support. The authoritative risk ratings remain governed by the rule-based risk engine:
 
 ```text
-Technical Finding  ──►  Rule-Based Risk Engine  ──►  Gemini Security Intelligence  ──►  Human Review  ──►  Final GRC Decision
-                           (Authoritative)                (Advisory & Audit)              (Mandatory)
+Technical Finding  ──►  Rule-Based Risk Engine  ──►  AI Security Intelligence  ──►  Human Review  ──►  Final GRC Decision
+                           (Authoritative)                (Advisory & Audit)            (Mandatory)
 ```
 
 ### Critical Architectural Guarantees & Constraints
 
-1. **Strict Immutability**: AI intelligence **NEVER** modifies or overwrites official rule-based risk scores (`inherent_risk_score`, `residual_risk_score`, `likelihood`, `impact`, `risk_level`, `status`, `treatment`).
+1. **Strict Immutability**: AI intelligence **NEVER** modifies or overwrites official rule-based risk scores (`inherent_risk_score`, `residual_risk_score`, `likelihood`, `impact`, `risk_level`, `status`, `treatment`, `risk_owner`, `due_date`).
 2. **No Hallucinations / Unsupported Claims**: AI does not invent CVEs, non-existent software versions, fake vendor advisories, or unverified business impacts. Inferred impacts are explicitly qualified.
 3. **Pluggable Provider Abstraction**:
-   - `GeminiAIProvider`: Primary generative AI provider via official `google-genai` SDK.
-   - `RuleAssistedAIProvider`: Built-in, deterministic, offline fallback requiring zero API keys.
-   - `ExternalLLMProvider`: Optional OpenAI-compatible REST endpoint adapter.
+   - `chain` (Default): Sequential multi-LLM failover (Gemini → OpenAI → Groq → RuleAssisted).
+   - `gemini`: Standalone Gemini with internal fallback to RuleAssisted (Phase 4A behavior).
+   - `local`: Offline deterministic heuristics only (`RuleAssistedAIProvider`).
+   - `openai`: Legacy `ExternalLLMProvider` (Phase 4A backward-compatible).
+   - `openai-native`: Production `OpenAIProvider` with JSON Schema structured outputs.
+   - `groq`: Standalone `GroqProvider` (`openai/gpt-oss-120b`).
 4. **Structured Intelligence Output**:
    - **Simple Explanation**: High-level non-technical summary.
    - **Why It Matters**: Technical security concern based on evidence.
@@ -190,9 +232,9 @@ Technical Finding  ──►  Rule-Based Risk Engine  ──►  Gemini Security
      - *Validation / Retesting*: Concrete verification steps (re-scan, service checks).
    - **Recommended Platform Controls**: Recommends controls from the platform catalog with rationales (does **not** auto-apply them).
    - **Confidence Score**: Normalized metric ($0.0 - 1.0$) reflecting input data completeness.
-   - **Human Review Flag**: Boolean indicator with explicit reasons whenever high severity, production environment, or missing data warrants human sign-off.
+   - **Human Review Flag**: Boolean indicator with explicit reasons whenever high severity, production environment, missing data, or chain failover occurs.
 5. **Full Auditability**: Every analysis is permanently logged in the `ai_risk_analyses` table with model identifier, timestamp, and context for historical compliance audit trails.
-6. **Failure Isolation**: If Gemini is unavailable, the platform seamlessly falls back to the deterministic local analyzer (or returns HTTP 503 if fallback is disabled); core scanning, risk calculations, and compliance workflows continue functioning uninterrupted.
+6. **Failure Isolation**: If all external LLMs are unavailable, the platform seamlessly falls through to the deterministic local analyzer; core scanning, risk calculations, and compliance workflows continue functioning uninterrupted.
 
 ---
 
@@ -217,10 +259,17 @@ python scripts/migrate_phase4.py
 1. Configure environment variables in `backend/.env` (see `.env.example`):
    ```env
    DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/ai_grc
-   AI_PROVIDER=gemini
+   AI_PROVIDER=chain
+   AI_PROVIDER_CHAIN=gemini,openai,groq
    GEMINI_API_KEY=your_gemini_api_key_here
    GEMINI_MODEL=gemini-3.8-flash
-   AI_FALLBACK_TO_LOCAL=true
+   GEMINI_TIMEOUT_SECONDS=8
+   OPENAI_API_KEY=your_openai_api_key_here
+   OPENAI_MODEL=gpt-4o-mini
+   OPENAI_TIMEOUT_SECONDS=7
+   GROQ_API_KEY=your_groq_api_key_here
+   GROQ_MODEL=openai/gpt-oss-120b
+   GROQ_TIMEOUT_SECONDS=5
    ```
 2. Activate virtual environment and run development server:
    ```powershell
@@ -242,33 +291,36 @@ python scripts/migrate_phase4.py
 
 ### 4. Running Tests
 
-- **Phase 2 Isolated Test Suite**:
+- **Phase 2 Isolated Test Suite (11 Tests)**:
   ```powershell
-  python -m unittest tests/test_phase2_isolated.py -v
+  python tests/test_phase2_isolated.py
   ```
 
-- **Phase 3 Isolated Test Suite**:
+- **Phase 3 Isolated Test Suite (7 Tests)**:
   ```powershell
-  python -m unittest tests/test_phase3_isolated.py -v
+  python tests/test_phase3_isolated.py
   ```
 
-- **Phase 4 Isolated Test Suite (11 Scenarios)**:
+- **Phase 4A Isolated Test Suite (14 Tests)**:
   ```powershell
-  python -m unittest tests/test_phase4_isolated.py -v
+  python tests/test_phase4_isolated.py
   ```
 
-- **Run All Isolated Tests**:
+- **Phase 4C Multi-LLM Failover Test Suite (20 Tests)**:
   ```powershell
-  python -m unittest discover tests -v
+  python tests/test_phase4c_isolated.py
   ```
 
-- **Live REST API Verification**:
+- **Live REST API Verification Scripts**:
   ```powershell
-  # Phase 3 Compliance Verification
+  # Phase 3 Compliance Mapping Verification
   python scripts/verify_phase3_api.py
 
-  # Phase 4 AI Intelligence Verification
+  # Phase 4A AI Intelligence Verification
   python scripts/verify_phase4_api.py
+
+  # Phase 4C Multi-LLM Failover Verification
+  python scripts/verify_phase4c_api.py
   ```
 
 ---

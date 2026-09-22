@@ -45,6 +45,7 @@ from ai.provider import (
     AIProviderError,
     GeminiAIProvider,
     RuleAssistedAIProvider,
+    ProviderChain,
     get_ai_provider,
 )
 from ai.risk_analyzer import (
@@ -153,7 +154,7 @@ class TestPhase4GeminiIsolated(unittest.TestCase):
         try:
             os.environ.pop("AI_PROVIDER", None)
             default_p = get_ai_provider()
-            self.assertIsInstance(default_p, GeminiAIProvider)
+            self.assertIsInstance(default_p, (GeminiAIProvider, ProviderChain))
             self.assertEqual(default_p.model_name, "gemini-3.8-flash")
         finally:
             if old_env is not None:

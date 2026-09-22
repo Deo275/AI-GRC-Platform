@@ -11,7 +11,9 @@ Provides:
 import os
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 
 from .schemas import (
@@ -47,8 +49,97 @@ ensure_env_loaded()
 
 
 class AIProviderError(Exception):
-    """Raised when an AI provider fails, times out, or returns invalid output."""
+    """Base error raised when an AI provider fails, times out, or returns invalid output."""
     pass
+
+
+class AIProviderTransientError(AIProviderError):
+    """Transient error: network timeout, 503, 429 rate-limit — chain should advance."""
+    pass
+
+
+class AIProviderFatalError(AIProviderError):
+    """Fatal error: missing API key, 401 unauthorized, configuration error — chain advances."""
+    pass
+
+
+@dataclass
+class ProviderAttempt:
+    """Audit record for a single provider attempt within ProviderChain."""
+    provider_name: str
+    model_name: str
+    succeeded: bool
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+CREDENTIAL_KEY_VAL = re.compile(
+    r"(password|passwd|pwd|secret|api_key|apikey|token|bearer|auth|private_key)\s*[:=]\s*([^\s,;]+)",
+    re.IGNORECASE,
+)
+DATABASE_URI_PATTERN = re.compile(
+    r"([a-zA-Z0-9+]+://)([^:]+):([^@]+)@([^\s/]+/[^\s]*)",
+    re.IGNORECASE,
+)
+PRIVATE_KEY_PATTERN = re.compile(
+    r"-----BEGIN [A-Z ]+ PRIVATE KEY-----.*?-----END [A-Z ]+ PRIVATE KEY-----",
+    re.DOTALL,
+)
+API_KEY_PATTERNS = re.compile(
+    r"\b(sk-[a-zA-Z0-9_-]{8,}|gsk_[a-zA-Z0-9_-]{8,}|AIza[a-zA-Z0-9_-]{15,})\b"
+)
+
+
+def _sanitize_compact(text: Optional[str], max_len: int = 200) -> str:
+    """Sanitize free text of potential passwords, tokens, or credentials and truncate."""
+    if not text:
+        return ""
+    sanitized = CREDENTIAL_KEY_VAL.sub(r"\1=[REDACTED]", str(text))
+    sanitized = DATABASE_URI_PATTERN.sub(r"\1\2:[REDACTED]@\4", sanitized)
+    sanitized = PRIVATE_KEY_PATTERN.sub("[REDACTED PRIVATE KEY]", sanitized)
+    sanitized = API_KEY_PATTERNS.sub("[REDACTED KEY]", sanitized)
+    sanitized = sanitized.replace("\n", " ").strip()
+    if len(sanitized) > max_len:
+        return sanitized[:max_len - 3] + "..."
+    return sanitized
+
+
+def validate_and_sanitize_result(
+    result: AIAnalysisResult,
+    context: NormalizedSecurityContext,
+) -> AIAnalysisResult:
+    """Validate semantic constraints on AI model output (shared across all providers)."""
+    # Standardize priority
+    if result.priority not in ["Critical", "High", "Medium", "Low"]:
+        result.priority = "Medium"
+
+    # Clamp confidence to valid range
+    if result.confidence < 0.0:
+        result.confidence = 0.0
+    elif result.confidence > 1.0:
+        result.confidence = 1.0
+
+    # Semantic rule: If CVSS or vuln is missing, confidence cannot be artificially high
+    if context.cvss_score is None and result.confidence > 0.75:
+        result.confidence = 0.70
+
+    # Semantic rule: High or Critical risk or missing critical info requires human review
+    if (
+        context.inherent_risk_score >= 12
+        or context.residual_risk_score >= 8
+        or (context.asset_environment and context.asset_environment.lower() == "production")
+        or context.cvss_score is None
+        or context.cve is None
+        or context.is_criticality_default
+        or context.is_exposure_default
+    ):
+        result.human_review_required = True
+        if not result.human_review_reasons:
+            result.human_review_reasons = [
+                "Human validation recommended due to elevated risk, production environment, or incomplete evidence."
+            ]
+
+    return result
 
 
 class AIProvider(ABC):
@@ -75,6 +166,10 @@ class RuleAssistedAIProvider(AIProvider):
     """
 
     MODEL_NAME = "rule-assisted-grc-v1"
+
+    @property
+    def model_name(self) -> str:
+        return self.MODEL_NAME
 
     def analyze_finding(self, context: NormalizedSecurityContext) -> AIAnalysisResult:
         title = context.risk_title or "Security Finding"
@@ -368,7 +463,7 @@ class GeminiAIProvider(AIProvider):
     """
 
     DEFAULT_MODEL = "gemini-3.8-flash"
-    DEFAULT_TIMEOUT_SECONDS = 10
+    DEFAULT_TIMEOUT_SECONDS = 8
     DEFAULT_MAX_RETRIES = 1
 
     def __init__(
@@ -507,37 +602,7 @@ class GeminiAIProvider(AIProvider):
         context: NormalizedSecurityContext,
     ) -> AIAnalysisResult:
         """Validate semantic constraints on Gemini model output."""
-        # Standardize priority
-        if result.priority not in ["Critical", "High", "Medium", "Low"]:
-            result.priority = "Medium"
-
-        # Clamp confidence to valid range
-        if result.confidence < 0.0:
-            result.confidence = 0.0
-        elif result.confidence > 1.0:
-            result.confidence = 1.0
-
-        # Semantic rule: If CVSS or vuln is missing, confidence cannot be artificially high
-        if context.cvss_score is None and result.confidence > 0.75:
-            result.confidence = 0.70
-
-        # Semantic rule: High or Critical risk or missing critical info requires human review
-        if (
-            context.inherent_risk_score >= 12
-            or context.residual_risk_score >= 8
-            or context.asset_environment.lower() == "production"
-            or context.cvss_score is None
-            or context.cve is None
-            or context.is_criticality_default
-            or context.is_exposure_default
-        ):
-            result.human_review_required = True
-            if not result.human_review_reasons:
-                result.human_review_reasons = [
-                    "Human validation recommended due to elevated risk, production environment, or incomplete evidence."
-                ]
-
-        return result
+        return validate_and_sanitize_result(result, context)
 
 
 # ---------------------------------------------------------------------------
@@ -598,21 +663,355 @@ class ExternalLLMProvider(AIProvider):
 
 
 # ---------------------------------------------------------------------------
-# Factory Function
+# OpenAI-Compatible Providers & Production Implementations (OpenAI & Groq)
 # ---------------------------------------------------------------------------
+
+class _OpenAICompatibleProvider(AIProvider):
+    """Base provider for OpenAI-compatible REST endpoints using structured outputs."""
+
+    DEFAULT_MODEL: str = ""
+    DEFAULT_TIMEOUT_SECONDS: int = 10
+    MODEL_ENV: str = ""
+    KEY_ENV: str = ""
+    DEFAULT_ENDPOINT: str = ""
+    ENDPOINT_ENV: str = ""
+    TIMEOUT_ENV: str = ""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model_name: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        timeout_seconds: Optional[int] = None,
+    ):
+        ensure_env_loaded()
+        self._explicit_key = api_key is not None
+        if api_key is not None:
+            self.api_key = api_key.strip()
+        else:
+            self.api_key = os.getenv(self.KEY_ENV, "").strip() if self.KEY_ENV else ""
+
+        if model_name is not None and model_name.strip():
+            self._api_model = model_name.strip()
+        else:
+            env_model = os.getenv(self.MODEL_ENV, "").strip() if self.MODEL_ENV else ""
+            self._api_model = env_model or self.DEFAULT_MODEL
+
+        if endpoint is not None:
+            self.endpoint = endpoint.strip()
+        else:
+            self.endpoint = (
+                os.getenv(self.ENDPOINT_ENV, self.DEFAULT_ENDPOINT).strip()
+                if self.ENDPOINT_ENV
+                else self.DEFAULT_ENDPOINT
+            ) or self.DEFAULT_ENDPOINT
+
+        if timeout_seconds is not None:
+            self.timeout_seconds = timeout_seconds
+        else:
+            try:
+                env_timeout = (
+                    os.getenv(self.TIMEOUT_ENV, str(self.DEFAULT_TIMEOUT_SECONDS))
+                    if self.TIMEOUT_ENV
+                    else str(self.DEFAULT_TIMEOUT_SECONDS)
+                )
+                self.timeout_seconds = int(env_timeout)
+            except ValueError:
+                self.timeout_seconds = self.DEFAULT_TIMEOUT_SECONDS
+
+    @property
+    def model_name(self) -> str:
+        return self._api_model
+
+    def analyze_finding(self, context: NormalizedSecurityContext) -> AIAnalysisResult:
+        if not self.api_key:
+            raise AIProviderFatalError(
+                f"{self.KEY_ENV or 'API key'} environment variable is not configured or empty for {type(self).__name__}."
+            )
+
+        import requests
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+        prompt = generate_analysis_prompt(
+            context.model_dump() if hasattr(context, "model_dump") else context.dict()
+        )
+
+        schema = AIAnalysisResult.model_json_schema()
+        payload = {
+            "model": self._api_model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "ai_analysis_result",
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+        }
+
+        resp = None
+        try:
+            resp = requests.post(
+                self.endpoint,
+                headers=headers,
+                json=payload,
+                timeout=self.timeout_seconds,
+            )
+        except requests.Timeout as err:
+            raise AIProviderTransientError(
+                f"{type(self).__name__} request timed out after {self.timeout_seconds}s"
+            ) from err
+        except requests.RequestException as err:
+            raise AIProviderTransientError(
+                f"{type(self).__name__} network error: {_sanitize_compact(str(err))}"
+            ) from err
+
+        # Fallback to json_object mode if HTTP 400 occurs (schema format unsupported by endpoint)
+        if resp.status_code == 400:
+            logger.warning(
+                f"{type(self).__name__} returned HTTP 400 with json_schema mode. Attempting fallback to json_object mode."
+            )
+            payload["response_format"] = {"type": "json_object"}
+            try:
+                resp = requests.post(
+                    self.endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
+            except requests.Timeout as err:
+                raise AIProviderTransientError(
+                    f"{type(self).__name__} request timed out on json_object fallback after {self.timeout_seconds}s"
+                ) from err
+            except requests.RequestException as err:
+                raise AIProviderTransientError(
+                    f"{type(self).__name__} network error on json_object fallback: {_sanitize_compact(str(err))}"
+                ) from err
+
+        if resp.status_code != 200:
+            err_body = _sanitize_compact(resp.text)
+            if resp.status_code in (401, 403):
+                raise AIProviderFatalError(
+                    f"{type(self).__name__} authentication/authorization error (HTTP {resp.status_code}): {err_body}"
+                )
+            elif resp.status_code == 429:
+                raise AIProviderTransientError(
+                    f"{type(self).__name__} rate limit exceeded (HTTP 429): {err_body}"
+                )
+            elif resp.status_code in (500, 502, 503, 504):
+                raise AIProviderTransientError(
+                    f"{type(self).__name__} service error (HTTP {resp.status_code}): {err_body}"
+                )
+            else:
+                raise AIProviderTransientError(
+                    f"{type(self).__name__} HTTP error {resp.status_code}: {err_body}"
+                )
+
+        try:
+            data = resp.json()
+            raw_content = data["choices"][0]["message"]["content"]
+            if isinstance(raw_content, str):
+                stripped = raw_content.strip()
+                if stripped.startswith("```json"):
+                    stripped = stripped[7:]
+                elif stripped.startswith("```"):
+                    stripped = stripped[3:]
+                if stripped.endswith("```"):
+                    stripped = stripped[:-3]
+                parsed_json = json.loads(stripped.strip())
+            elif isinstance(raw_content, dict):
+                parsed_json = raw_content
+            else:
+                raise ValueError(f"Unexpected content type: {type(raw_content)}")
+        except (KeyError, IndexError, json.JSONDecodeError, TypeError, ValueError) as err:
+            raise AIProviderTransientError(
+                f"Failed to parse {type(self).__name__} response JSON: {_sanitize_compact(str(err))}"
+            ) from err
+
+        parsed_json["model_name"] = self.model_name
+        try:
+            result = AIAnalysisResult(**parsed_json)
+        except Exception as val_err:
+            raise AIProviderTransientError(
+                f"{type(self).__name__} schema validation error: {_sanitize_compact(str(val_err))}"
+            ) from val_err
+
+        return validate_and_sanitize_result(result, context)
+
+
+class OpenAIProvider(_OpenAICompatibleProvider):
+    """Production-grade OpenAI provider with JSON Schema structured output and typed error classification."""
+
+    DEFAULT_MODEL = "gpt-4o-mini"
+    DEFAULT_TIMEOUT_SECONDS = 7
+    MODEL_ENV = "OPENAI_MODEL"
+    KEY_ENV = "OPENAI_API_KEY"
+    DEFAULT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
+    ENDPOINT_ENV = "OPENAI_ENDPOINT"
+    TIMEOUT_ENV = "OPENAI_TIMEOUT_SECONDS"
+
+
+class GroqProvider(_OpenAICompatibleProvider):
+    """Production-grade Groq provider using OpenAI-compatible endpoints and structured outputs."""
+
+    DEFAULT_MODEL = "openai/gpt-oss-120b"
+    DEFAULT_TIMEOUT_SECONDS = 5
+    MODEL_ENV = "GROQ_MODEL"
+    KEY_ENV = "GROQ_API_KEY"
+    DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+    ENDPOINT_ENV = "GROQ_ENDPOINT"
+    TIMEOUT_ENV = "GROQ_TIMEOUT_SECONDS"
+
+    @property
+    def model_name(self) -> str:
+        return f"{self._api_model} (via groq)"
+
+
+# ---------------------------------------------------------------------------
+# Multi-LLM Provider Failover Orchestrator (ProviderChain)
+# ---------------------------------------------------------------------------
+
+class ProviderChain(AIProvider):
+    """Sequential multi-provider failover orchestrator.
+
+    - Attempts providers in order; on any exception, logs the attempt and advances.
+    - RuleAssistedAIProvider is ALWAYS the final item (guaranteed by factory).
+    - Never raises AIProviderError to the caller when RuleAssisted is present.
+    - Implements AIProvider — injectable into analyze_risk(provider=chain) for tests.
+    """
+
+    def __init__(self, providers: List[AIProvider]):
+        if not providers:
+            raise ValueError("ProviderChain requires at least one provider.")
+        self._providers = list(providers)
+        self._attempts: List[ProviderAttempt] = []
+
+    @property
+    def attempts(self) -> List[ProviderAttempt]:
+        """Audit records of all provider attempts during the most recent analysis."""
+        return list(self._attempts)
+
+    @property
+    def model_name(self) -> str:
+        """Identifier of the primary model in the chain."""
+        if self._providers:
+            return getattr(self._providers[0], "model_name", "chain")
+        return "chain"
+
+    def analyze_finding(self, context: NormalizedSecurityContext) -> AIAnalysisResult:
+        self._attempts = []
+        for provider in self._providers:
+            provider_label = getattr(provider, "provider_name", type(provider).__name__)
+            model_label = getattr(
+                provider,
+                "model_name",
+                getattr(provider, "MODEL_NAME", provider_label),
+            )
+            try:
+                result = provider.analyze_finding(context)
+                self._attempts.append(
+                    ProviderAttempt(
+                        provider_name=provider_label,
+                        model_name=model_label,
+                        succeeded=True,
+                        error_type=None,
+                        error_message=None,
+                    )
+                )
+                if any(not a.succeeded for a in self._attempts):
+                    self._annotate_failover(result)
+                return result
+            except Exception as err:
+                err_msg = _sanitize_compact(str(err))
+                logger.warning(
+                    f"ProviderChain: {provider_label} failed ({type(err).__name__}): {err_msg}"
+                )
+                self._attempts.append(
+                    ProviderAttempt(
+                        provider_name=provider_label,
+                        model_name=model_label,
+                        succeeded=False,
+                        error_type=type(err).__name__,
+                        error_message=err_msg,
+                    )
+                )
+                continue
+
+        # Unreachable if chain is built correctly (RuleAssisted always last)
+        raise AIProviderError("ProviderChain exhausted all providers without success.")
+
+    def _annotate_failover(self, result: AIAnalysisResult) -> None:
+        """Inject compact audit trail into result when failover occurred."""
+        failed_names = ", ".join(a.provider_name for a in self._attempts if not a.succeeded)
+        result.human_review_required = True
+        if result.human_review_reasons is None:
+            result.human_review_reasons = []
+        failover_note = (
+            f"Chain failover: {failed_names[:80]} unavailable; result from {result.model_name[:40]}."
+        )
+        if failover_note not in result.human_review_reasons:
+            result.human_review_reasons.append(failover_note)
+        result.model_name = f"{result.model_name} (chain-failover: {failed_names})"
+
+
+# ---------------------------------------------------------------------------
+# Factory Function & Helpers
+# ---------------------------------------------------------------------------
+
+def _build_provider_chain() -> ProviderChain:
+    """Build ProviderChain from AI_PROVIDER_CHAIN env var.
+
+    RuleAssistedAIProvider is ALWAYS appended as the guaranteed final fallback.
+    """
+    chain_spec = os.getenv("AI_PROVIDER_CHAIN", "gemini,openai,groq").strip().lower()
+    provider_names = [p.strip() for p in chain_spec.split(",") if p.strip()]
+
+    providers: List[AIProvider] = []
+    for name in provider_names:
+        if name in ("gemini", "google"):
+            # CRITICAL: fallback_enabled=False when inside chain to let failover advance
+            providers.append(GeminiAIProvider(fallback_enabled=False))
+        elif name in ("openai", "openai-native"):
+            providers.append(OpenAIProvider())
+        elif name == "groq":
+            providers.append(GroqProvider())
+        elif name in ("local", "rule", "rule-assisted"):
+            pass  # Appended unconditionally below
+        else:
+            logger.warning(f"Unknown provider '{name}' in AI_PROVIDER_CHAIN — skipping.")
+
+    # Unconditionally append guaranteed deterministic fallback
+    providers.append(RuleAssistedAIProvider())
+    return ProviderChain(providers)
+
 
 def get_ai_provider() -> AIProvider:
     """Factory function resolving configured AI provider via environment variables.
 
-    Defaults to GeminiAIProvider with automatic local fallback to RuleAssistedAIProvider.
+    Defaults to ProviderChain with sequential failover:
+    Gemini -> OpenAI -> Groq -> RuleAssisted.
+
     Explicit options:
-      AI_PROVIDER=gemini -> GeminiAIProvider
-      AI_PROVIDER=local  -> RuleAssistedAIProvider
+      AI_PROVIDER=chain         -> ProviderChain (default)
+      AI_PROVIDER=gemini        -> GeminiAIProvider (Phase 4A standalone behavior)
+      AI_PROVIDER=local         -> RuleAssistedAIProvider
+      AI_PROVIDER=openai        -> ExternalLLMProvider (Phase 4A backward-compatible)
+      AI_PROVIDER=openai-native -> OpenAIProvider (Phase 4C production provider)
+      AI_PROVIDER=groq          -> GroqProvider
     """
     ensure_env_loaded()
-    provider_type = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+    provider_type = os.getenv("AI_PROVIDER", "chain").strip().lower()
 
-    if provider_type in ["gemini", "google", "default"]:
+    if provider_type in ["gemini", "google"]:
         fallback_enabled = os.getenv("AI_FALLBACK_TO_LOCAL", "true").strip().lower() in ("true", "1", "yes")
         return GeminiAIProvider(fallback_enabled=fallback_enabled)
 
@@ -622,5 +1021,14 @@ def get_ai_provider() -> AIProvider:
     if provider_type in ["openai", "external"]:
         return ExternalLLMProvider()
 
-    # Default to GeminiAIProvider with fallback enabled
-    return GeminiAIProvider(fallback_enabled=True)
+    if provider_type in ["openai-native"]:
+        return OpenAIProvider()
+
+    if provider_type in ["groq"]:
+        return GroqProvider()
+
+    if provider_type in ["chain"]:
+        return _build_provider_chain()
+
+    # Default fallback is chain
+    return _build_provider_chain()
