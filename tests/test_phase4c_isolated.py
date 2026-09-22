@@ -63,6 +63,7 @@ from ai.provider import (
     get_ai_provider,
     validate_and_sanitize_result,
     _sanitize_compact,
+    make_strict_json_schema,
 )
 from ai.risk_analyzer import (
     build_security_context,
@@ -498,6 +499,113 @@ class TestPhase4CProviderChain(unittest.TestCase):
         self.assertNotIn(raw_key, recorded_err)
         self.assertNotIn("SuperSecretPassword123", recorded_err)
         self.assertIn("[REDACTED", recorded_err)
+
+    def test_strict_json_schema_root_additional_properties_false(self):
+        """Test 21: make_strict_json_schema sets additionalProperties=False on root object."""
+        schema = make_strict_json_schema(AIAnalysisResult.model_json_schema())
+        self.assertEqual(schema.get("type"), "object")
+        self.assertFalse(schema.get("additionalProperties"))
+        self.assertIn("required", schema)
+        self.assertEqual(set(schema["required"]), set(schema["properties"].keys()))
+
+    def test_strict_json_schema_defs_additional_properties_false(self):
+        """Test 22: Every object definition under $defs has additionalProperties=False."""
+        schema = make_strict_json_schema(AIAnalysisResult.model_json_schema())
+        defs = schema.get("$defs", {})
+        self.assertIn("RemediationSteps", defs)
+        self.assertIn("RecommendedControl", defs)
+        for def_name, def_schema in defs.items():
+            if def_schema.get("type") == "object":
+                self.assertFalse(
+                    def_schema.get("additionalProperties"),
+                    f"Def '{def_name}' missing additionalProperties=False",
+                )
+                self.assertIn("required", def_schema)
+                self.assertEqual(set(def_schema["required"]), set(def_schema["properties"].keys()))
+
+    def test_strict_json_schema_preserves_constraints(self):
+        """Test 23: Field descriptions, titles, and numeric constraints are preserved."""
+        raw_schema = AIAnalysisResult.model_json_schema()
+        strict_schema = make_strict_json_schema(raw_schema)
+
+        self.assertEqual(
+            strict_schema["properties"]["confidence"]["maximum"],
+            raw_schema["properties"]["confidence"]["maximum"],
+        )
+        self.assertEqual(
+            strict_schema["properties"]["confidence"]["minimum"],
+            raw_schema["properties"]["confidence"]["minimum"],
+        )
+        self.assertEqual(
+            strict_schema["properties"]["priority"]["type"],
+            raw_schema["properties"]["priority"]["type"],
+        )
+
+    @patch("requests.post")
+    def test_openai_provider_uses_strict_schema(self, mock_post):
+        """Test 24: OpenAIProvider passes strict schema with additionalProperties=False in response_format."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": json.dumps(sample_analysis_dict())}}]
+        }
+        mock_post.return_value = mock_response
+
+        provider = OpenAIProvider(api_key="sk-test-key")
+        provider.analyze_finding(self.context)
+
+        self.assertTrue(mock_post.called)
+        sent_payload = mock_post.call_args[1]["json"]
+        sent_schema = sent_payload["response_format"]["json_schema"]["schema"]
+        self.assertFalse(sent_schema["additionalProperties"])
+        self.assertFalse(sent_schema["$defs"]["RemediationSteps"]["additionalProperties"])
+
+    @patch("requests.post")
+    def test_groq_provider_uses_strict_schema(self, mock_post):
+        """Test 25: GroqProvider passes strict schema with additionalProperties=False in response_format."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": json.dumps(sample_analysis_dict(model_name="openai/gpt-oss-120b (via groq)"))}}]
+        }
+        mock_post.return_value = mock_response
+
+        provider = GroqProvider(api_key="gsk-test-key")
+        provider.analyze_finding(self.context)
+
+        self.assertTrue(mock_post.called)
+        sent_payload = mock_post.call_args[1]["json"]
+        sent_schema = sent_payload["response_format"]["json_schema"]["schema"]
+        self.assertFalse(sent_schema["additionalProperties"])
+        self.assertFalse(sent_schema["$defs"]["RemediationSteps"]["additionalProperties"])
+
+    @patch("requests.post")
+    def test_json_object_fallback_includes_schema_guidance(self, mock_post):
+        """Test 26: When HTTP 400 occurs, fallback to json_object includes explicit field instructions."""
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        resp_400.text = "Invalid schema"
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "choices": [{"message": {"content": json.dumps(sample_analysis_dict())}}]
+        }
+        mock_post.side_effect = [resp_400, resp_200]
+
+        provider = OpenAIProvider(api_key="sk-test-key")
+        result = provider.analyze_finding(self.context)
+
+        self.assertEqual(mock_post.call_count, 2)
+        fallback_call = mock_post.call_args_list[1]
+        fallback_payload = fallback_call[1]["json"]
+        self.assertEqual(fallback_payload["response_format"], {"type": "json_object"})
+        user_message = fallback_payload["messages"][1]["content"]
+        self.assertIn("CRITICAL INSTRUCTION", user_message)
+        self.assertIn("priority", user_message)
+        self.assertIn("simple_explanation", user_message)
+        self.assertIn("remediation", user_message)
+        self.assertEqual(result.priority, "High")
 
 
 if __name__ == "__main__":

@@ -666,6 +666,36 @@ class ExternalLLMProvider(AIProvider):
 # OpenAI-Compatible Providers & Production Implementations (OpenAI & Groq)
 # ---------------------------------------------------------------------------
 
+def make_strict_json_schema(schema_dict: dict) -> dict:
+    """Recursively transform JSON schema for OpenAI/Groq strict Structured Outputs.
+
+    OpenAI/Groq strict mode requirements:
+    1. Every object schema (root, nested, under $defs) must have additionalProperties: false.
+    2. Every object schema with properties must list all its properties in required.
+    3. Traverses nested dictionaries, lists, and schema definitions without mutating the input.
+    """
+    import copy
+    schema = copy.deepcopy(schema_dict)
+
+    def _walk(node):
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "object" or "properties" in node:
+            node["additionalProperties"] = False
+            if "properties" in node:
+                node["required"] = list(node["properties"].keys())
+        for v in node.values():
+            if isinstance(v, dict):
+                _walk(v)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        _walk(item)
+
+    _walk(schema)
+    return schema
+
+
 class _OpenAICompatibleProvider(AIProvider):
     """Base provider for OpenAI-compatible REST endpoints using structured outputs."""
 
@@ -740,7 +770,7 @@ class _OpenAICompatibleProvider(AIProvider):
             context.model_dump() if hasattr(context, "model_dump") else context.dict()
         )
 
-        schema = AIAnalysisResult.model_json_schema()
+        schema = make_strict_json_schema(AIAnalysisResult.model_json_schema())
         payload = {
             "model": self._api_model,
             "messages": [
@@ -780,7 +810,29 @@ class _OpenAICompatibleProvider(AIProvider):
             logger.warning(
                 f"{type(self).__name__} returned HTTP 400 with json_schema mode. Attempting fallback to json_object mode."
             )
+            fallback_instruction = (
+                "\n\nCRITICAL INSTRUCTION: You must respond ONLY with a JSON object conforming to the "
+                "AIAnalysisResult schema with these exact keys:\n"
+                "- priority (string: 'Critical', 'High', 'Medium', or 'Low')\n"
+                "- simple_explanation (string)\n"
+                "- why_it_matters (string)\n"
+                "- severity_explanation (string)\n"
+                "- risk_factors (array of strings)\n"
+                "- potential_business_impact (array of strings)\n"
+                "- recommendation (array of strings)\n"
+                "- remediation (object with: immediate_mitigation: [string], permanent_remediation: [string], validation: [string])\n"
+                "- recommended_controls (array of objects with: name: string, reason: string)\n"
+                "- confidence (float between 0.0 and 1.0)\n"
+                "- human_review_required (boolean)\n"
+                "- human_review_reasons (array of strings)\n"
+                f"- model_name (string: '{self.model_name}')\n\n"
+                "Do NOT echo the input context keys. Output ONLY the analysis JSON structure above."
+            )
             payload["response_format"] = {"type": "json_object"}
+            payload["messages"] = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt + fallback_instruction},
+            ]
             try:
                 resp = requests.post(
                     self.endpoint,
