@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, HTTPException, Path, Body
+from fastapi import FastAPI, Query, HTTPException, Path, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
@@ -53,6 +53,23 @@ except ImportError:
         validate_target_network,
         ScanWorkerPool,
         MonitoringScheduler,
+    )
+
+try:
+    from governance import (
+        log_audit_event,
+        format_audit_log,
+        create_evidence_record,
+        format_evidence,
+        delete_evidence_record,
+    )
+except ImportError:
+    from backend.governance import (
+        log_audit_event,
+        format_audit_log,
+        create_evidence_record,
+        format_evidence,
+        delete_evidence_record,
     )
 
 
@@ -122,6 +139,36 @@ class ScanScheduleUpdate(BaseModel):
     target: str | None = None
     interval_minutes: int | None = None
     is_active: bool | None = None
+
+
+# Phase 6A: Evidence Schemas
+class EvidenceCreate(BaseModel):
+    title: str
+    evidence_type: str
+    description: str | None = None
+    content_text: str | None = None
+    reference_url: str | None = None
+    source_system: str | None = "AI-GRC Platform"
+    collector: str | None = None
+    collected_at: datetime | None = None
+    asset_id: int | None = None
+    scan_job_id: int | None = None
+    risk_ids: list[int] | None = None
+    control_ids: list[int] | None = None
+    requirement_ids: list[int] | None = None
+
+
+def get_operator_identity(request: Request = None) -> tuple[str, str]:
+    """Extract operator attribution metadata from request headers.
+
+    DISCLAIMER: These headers provide attribution metadata for the prototype audit log
+    and do NOT provide authentication, session security, or cryptographic identity validation.
+    """
+    if not request:
+        return "Security Analyst", "Operator"
+    actor = request.headers.get("X-Operator-Name", "Security Analyst").strip() or "Security Analyst"
+    role = request.headers.get("X-Operator-Role", "Operator").strip() or "Operator"
+    return actor, role
 
 
 # ---------------------------------------------------------------------------
@@ -901,13 +948,22 @@ def get_asset(asset_id: int = Path(..., description="The ID of the asset")):
 @app.patch("/assets/{asset_id}")
 def update_asset(
     asset_id: int = Path(..., description="The ID of the asset"),
-    payload: AssetUpdate = Body(...)
+    payload: AssetUpdate = Body(...),
+    request: Request = None,
 ):
     db = SessionLocal()
     try:
         asset = db.query(models.Asset).filter(models.Asset.id == asset_id).first()
         if not asset:
             raise HTTPException(status_code=404, detail=f"Asset with ID {asset_id} not found")
+
+        old_state = {
+            "criticality": asset.criticality,
+            "environment": asset.environment,
+            "exposure": asset.exposure,
+            "owner": asset.owner,
+            "business_function": asset.business_function,
+        }
 
         criticality_changed = False
         exposure_changed = False
@@ -949,6 +1005,29 @@ def update_asset(
 
         db.commit()
         db.refresh(asset)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="UPDATE",
+            entity_type="Asset",
+            entity_id=asset.id,
+            entity_name=asset.ip_address,
+            old_values=old_state,
+            new_values={
+                "criticality": asset.criticality,
+                "environment": asset.environment,
+                "exposure": asset.exposure,
+                "owner": asset.owner,
+                "business_function": asset.business_function,
+            },
+            description=f"Updated asset {asset.ip_address} intelligence metadata",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {
             "message": "Asset metadata updated successfully",
             "asset": format_asset(asset)
@@ -989,13 +1068,21 @@ def get_risk(risk_id: int = Path(..., description="The ID of the risk")):
 @app.patch("/risks/{risk_id}")
 def update_risk(
     risk_id: int = Path(..., description="The ID of the risk"),
-    payload: RiskUpdate = Body(...)
+    payload: RiskUpdate = Body(...),
+    request: Request = None,
 ):
     db = SessionLocal()
     try:
         risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
         if not risk:
             raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
+
+        old_state = {
+            "treatment": risk.treatment,
+            "status": risk.status,
+            "risk_owner": risk.risk_owner,
+            "due_date": risk.due_date.isoformat() if risk.due_date else None,
+        }
 
         if payload.treatment is not None:
             valid_treatments = {"mitigate": "Mitigate", "accept": "Accept", "transfer": "Transfer", "avoid": "Avoid"}
@@ -1020,6 +1107,28 @@ def update_risk(
         risk.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(risk)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="UPDATE",
+            entity_type="Risk",
+            entity_id=risk.id,
+            entity_name=risk.title,
+            old_values=old_state,
+            new_values={
+                "treatment": risk.treatment,
+                "status": risk.status,
+                "risk_owner": risk.risk_owner,
+                "due_date": risk.due_date.isoformat() if risk.due_date else None,
+            },
+            description=f"Updated risk #{risk.id} '{risk.title}' management attributes",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {
             "message": "Risk management fields updated successfully",
             "risk": format_risk(risk)
@@ -1046,7 +1155,10 @@ def get_controls():
 
 
 @app.post("/controls")
-def create_control(payload: ControlCreate = Body(...)):
+def create_control(
+    payload: ControlCreate = Body(...),
+    request: Request = None,
+):
     db = SessionLocal()
     try:
         existing = db.query(models.Control).filter(models.Control.name.ilike(payload.name.strip())).first()
@@ -1072,6 +1184,22 @@ def create_control(payload: ControlCreate = Body(...)):
         db.add(control)
         db.commit()
         db.refresh(control)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="CREATE",
+            entity_type="Control",
+            entity_id=control.id,
+            entity_name=control.name,
+            new_values=format_control(control),
+            description=f"Created security control '{control.name}'",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {
             "message": "Control created successfully",
             "control": format_control(control)
@@ -1095,7 +1223,8 @@ def get_control(control_id: int = Path(..., description="The ID of the control")
 @app.patch("/controls/{control_id}")
 def update_control(
     control_id: int = Path(..., description="The ID of the control"),
-    payload: ControlUpdate = Body(...)
+    payload: ControlUpdate = Body(...),
+    request: Request = None,
 ):
     db = SessionLocal()
     try:
@@ -1103,6 +1232,7 @@ def update_control(
         if not control:
             raise HTTPException(status_code=404, detail=f"Control with ID {control_id} not found")
 
+        old_state = format_control(control)
         eff_changed = False
         if payload.name is not None:
             control.name = payload.name.strip()
@@ -1145,6 +1275,23 @@ def update_control(
 
         db.commit()
         db.refresh(control)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="UPDATE",
+            entity_type="Control",
+            entity_id=control.id,
+            entity_name=control.name,
+            old_values=old_state,
+            new_values=format_control(control),
+            description=f"Updated security control '{control.name}'",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {
             "message": "Control updated successfully",
             "control": format_control(control)
@@ -1154,13 +1301,18 @@ def update_control(
 
 
 @app.delete("/controls/{control_id}")
-def delete_control(control_id: int = Path(..., description="The ID of the control")):
+def delete_control(
+    control_id: int = Path(..., description="The ID of the control"),
+    request: Request = None,
+):
     db = SessionLocal()
     try:
         control = db.query(models.Control).filter(models.Control.id == control_id).first()
         if not control:
             raise HTTPException(status_code=404, detail=f"Control with ID {control_id} not found")
 
+        old_state = format_control(control)
+        control_name = control.name
         affected_risks = list(control.risks)
         db.delete(control)
         db.commit()
@@ -1176,6 +1328,22 @@ def delete_control(control_id: int = Path(..., description="The ID of the contro
             r.updated_at = datetime.utcnow()
 
         db.commit()
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="DELETE",
+            entity_type="Control",
+            entity_id=control_id,
+            entity_name=control_name,
+            old_values=old_state,
+            description=f"Deleted security control '{control_name}'",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {"message": f"Control {control_id} deleted successfully"}
     finally:
         db.close()
@@ -1184,7 +1352,8 @@ def delete_control(control_id: int = Path(..., description="The ID of the contro
 @app.post("/risks/{risk_id}/controls/{control_id}")
 def assign_control_to_risk(
     risk_id: int = Path(..., description="The ID of the risk"),
-    control_id: int = Path(..., description="The ID of the control")
+    control_id: int = Path(..., description="The ID of the control"),
+    request: Request = None,
 ):
     db = SessionLocal()
     try:
@@ -1208,6 +1377,27 @@ def assign_control_to_risk(
 
         db.commit()
         db.refresh(risk)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="ASSIGN",
+            entity_type="Risk",
+            entity_id=risk.id,
+            entity_name=risk.title,
+            new_values={
+                "assigned_control_id": control.id,
+                "control_name": control.name,
+                "residual_risk_score": risk.residual_risk_score,
+                "residual_risk_level": risk.residual_risk_level,
+            },
+            description=f"Assigned control '{control.name}' to risk #{risk.id}",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {
             "message": f"Control '{control.name}' assigned to risk {risk_id}",
             "risk": format_risk(risk)
@@ -1219,7 +1409,8 @@ def assign_control_to_risk(
 @app.delete("/risks/{risk_id}/controls/{control_id}")
 def detach_control_from_risk(
     risk_id: int = Path(..., description="The ID of the risk"),
-    control_id: int = Path(..., description="The ID of the control")
+    control_id: int = Path(..., description="The ID of the control"),
+    request: Request = None,
 ):
     db = SessionLocal()
     try:
@@ -1243,6 +1434,27 @@ def detach_control_from_risk(
 
         db.commit()
         db.refresh(risk)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="DETACH",
+            entity_type="Risk",
+            entity_id=risk.id,
+            entity_name=risk.title,
+            old_values={
+                "detached_control_id": control.id,
+                "control_name": control.name,
+                "residual_risk_score": risk.residual_risk_score,
+                "residual_risk_level": risk.residual_risk_level,
+            },
+            description=f"Detached control '{control.name}' from risk #{risk.id}",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {
             "message": f"Control '{control.name}' detached from risk {risk_id}",
             "risk": format_risk(risk)
@@ -1417,7 +1629,8 @@ def get_compliance_summary():
 @app.patch("/compliance/requirements/{requirement_id}")
 def update_compliance_requirement(
     requirement_id: int = Path(..., description="The ID of the compliance requirement"),
-    payload: RequirementUpdate = Body(...)
+    payload: RequirementUpdate = Body(...),
+    request: Request = None,
 ):
     """Update requirement compliance status and auditor/review notes."""
     db = SessionLocal()
@@ -1428,6 +1641,8 @@ def update_compliance_requirement(
 
         if not req:
             raise HTTPException(status_code=404, detail=f"Compliance requirement with ID {requirement_id} not found")
+
+        old_state = {"status": req.status, "notes": req.notes}
 
         if payload.status is not None:
             valid_statuses = {
@@ -1451,6 +1666,23 @@ def update_compliance_requirement(
         req.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(req)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="UPDATE",
+            entity_type="ComplianceRequirement",
+            entity_id=req.id,
+            entity_name=f"{req.requirement_id}: {req.title}",
+            old_values=old_state,
+            new_values={"status": req.status, "notes": req.notes},
+            description=f"Updated compliance requirement {req.requirement_id} status to '{req.status}'",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {
             "message": "Compliance requirement updated successfully",
             "requirement": format_requirement(req)
@@ -1465,7 +1697,8 @@ def update_compliance_requirement(
 
 @app.post("/risks/{risk_id}/analyze")
 def trigger_ai_risk_analysis(
-    risk_id: int = Path(..., description="The ID of the risk to analyze with AI intelligence")
+    risk_id: int = Path(..., description="The ID of the risk to analyze with AI intelligence"),
+    request: Request = None,
 ):
     """Analyze a security finding/risk using AI-assisted security intelligence.
 
@@ -1489,6 +1722,26 @@ def trigger_ai_risk_analysis(
             )
 
         db.refresh(risk)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="AI",
+            actor=actor,
+            action="AI_ANALYSIS_RUN",
+            entity_type="Risk",
+            entity_id=risk_id,
+            entity_name=risk.title,
+            new_values={
+                "model_name": analysis_data.get("model_name"),
+                "priority": analysis_data.get("priority"),
+                "confidence": analysis_data.get("confidence"),
+                "human_review_required": analysis_data.get("human_review_required"),
+            },
+            description=f"Generated AI risk intelligence analysis for risk #{risk_id} using {analysis_data.get('model_name')}",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
 
         return {
             "message": "AI security intelligence analysis generated successfully",
@@ -1553,7 +1806,8 @@ def get_risk_ai_analysis(
 
 @app.post("/monitoring/jobs", status_code=202)
 def create_monitoring_job(
-    payload: ScanJobCreate = Body(...)
+    payload: ScanJobCreate = Body(...),
+    request: Request = None,
 ):
     """Submit an asynchronous network scan job (single host or RFC 1918 /24 subnet).
 
@@ -1584,6 +1838,22 @@ def create_monitoring_job(
         db.refresh(job)
 
         scan_worker_pool.submit_scan_job(job.id)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="SCANNER",
+            actor=actor,
+            action="DISPATCH",
+            entity_type="ScanJob",
+            entity_id=job.id,
+            entity_name=job.target,
+            new_values={"id": job.id, "target": job.target, "scan_type": job.scan_type},
+            description=f"Dispatched background scan job #{job.id} on target {job.target}",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return format_scan_job(job)
     finally:
         db.close()
@@ -1630,7 +1900,8 @@ def get_monitoring_job(
 
 @app.post("/monitoring/jobs/{job_id}/cancel")
 def cancel_monitoring_job(
-    job_id: int = Path(..., description="The ID of the scan job to cancel")
+    job_id: int = Path(..., description="The ID of the scan job to cancel"),
+    request: Request = None,
 ):
     """Request cooperative cancellation of a queued or running scan job.
 
@@ -1649,6 +1920,21 @@ def cancel_monitoring_job(
             )
 
         scan_worker_pool.cancel_scan_job(job_id)
+
+        actor, _ = get_operator_identity(request)
+        log_audit_event(
+            db=db,
+            source="SCANNER",
+            actor=actor,
+            action="CANCEL",
+            entity_type="ScanJob",
+            entity_id=job_id,
+            entity_name=job.target,
+            description=f"Requested cancellation of scan job #{job_id}",
+            ip_address=request.client.host if request and request.client else None,
+            commit=True,
+        )
+
         return {
             "message": "Scan job cancellation requested",
             "job_id": job_id,
@@ -1810,5 +2096,189 @@ def list_drift_events(
             "events": [format_drift_event(e) for e in events],
             "total": total,
         }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6A: Governance, Evidence Catalog & Tamper-Evident Audit Trail Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/audit-logs")
+def list_audit_logs(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    source: str | None = Query(None),
+    actor: str | None = Query(None),
+    action: str | None = Query(None),
+    entity_type: str | None = Query(None),
+    entity_id: int | None = Query(None),
+):
+    """Query append-only governance audit trail with multi-attribute filtering.
+
+    STRICT GUARANTEE: AuditLog is append-only through the API. No UPDATE or DELETE endpoints exist.
+    """
+    db = SessionLocal()
+    try:
+        query = db.query(models.AuditLog)
+
+        if source:
+            query = query.filter(models.AuditLog.source == source.strip().upper())
+        if actor:
+            query = query.filter(models.AuditLog.actor.ilike(f"%{actor.strip()}%"))
+        if action:
+            query = query.filter(models.AuditLog.action == action.strip().upper())
+        if entity_type:
+            query = query.filter(models.AuditLog.entity_type == entity_type.strip())
+        if entity_id is not None:
+            query = query.filter(models.AuditLog.entity_id == entity_id)
+
+        total = query.count()
+        logs = (
+            query.order_by(models.AuditLog.timestamp.desc(), models.AuditLog.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return {
+            "logs": [format_audit_log(l) for l in logs],
+            "total": total,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/audit-logs/{log_id}")
+def get_audit_log(
+    log_id: int = Path(..., description="The ID of the audit log record")
+):
+    """Retrieve full details for a specific audit log record including state diffs."""
+    db = SessionLocal()
+    try:
+        log = db.query(models.AuditLog).filter(models.AuditLog.id == log_id).first()
+        if not log:
+            raise HTTPException(status_code=404, detail=f"AuditLog with ID {log_id} not found")
+        return format_audit_log(log)
+    finally:
+        db.close()
+
+
+@app.get("/evidence")
+def list_evidence(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    evidence_type: str | None = Query(None),
+    asset_id: int | None = Query(None),
+    scan_job_id: int | None = Query(None),
+    risk_id: int | None = Query(None),
+    control_id: int | None = Query(None),
+    requirement_id: int | None = Query(None),
+):
+    """Retrieve evidence records with filtering by technical or governance linkages."""
+    db = SessionLocal()
+    try:
+        query = db.query(models.EvidenceRecord)
+
+        if evidence_type:
+            query = query.filter(models.EvidenceRecord.evidence_type == evidence_type.strip())
+        if asset_id is not None:
+            query = query.filter(models.EvidenceRecord.asset_id == asset_id)
+        if scan_job_id is not None:
+            query = query.filter(models.EvidenceRecord.scan_job_id == scan_job_id)
+        if risk_id is not None:
+            query = query.filter(models.EvidenceRecord.risks.any(models.Risk.id == risk_id))
+        if control_id is not None:
+            query = query.filter(models.EvidenceRecord.controls.any(models.Control.id == control_id))
+        if requirement_id is not None:
+            query = query.filter(
+                models.EvidenceRecord.requirements.any(models.ComplianceRequirement.id == requirement_id)
+            )
+
+        total = query.count()
+        records = (
+            query.order_by(models.EvidenceRecord.collected_at.desc(), models.EvidenceRecord.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return {
+            "evidence": [format_evidence(r) for r in records],
+            "total": total,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/evidence", status_code=201)
+def create_evidence(
+    request: Request,
+    payload: EvidenceCreate = Body(...),
+):
+    """Register a new tamper-evident evidence artifact with M2M governance linkages."""
+    actor, _ = get_operator_identity(request)
+    ip_addr = request.client.host if request.client else None
+
+    db = SessionLocal()
+    try:
+        record = create_evidence_record(
+            db=db,
+            title=payload.title,
+            evidence_type=payload.evidence_type,
+            description=payload.description,
+            content_text=payload.content_text,
+            reference_url=payload.reference_url,
+            source_system=payload.source_system or "AI-GRC Platform",
+            collector=payload.collector or actor,
+            collected_at=payload.collected_at,
+            asset_id=payload.asset_id,
+            scan_job_id=payload.scan_job_id,
+            risk_ids=payload.risk_ids,
+            control_ids=payload.control_ids,
+            requirement_ids=payload.requirement_ids,
+            actor=actor,
+            ip_address=ip_addr,
+        )
+        return format_evidence(record)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    finally:
+        db.close()
+
+
+@app.get("/evidence/{evidence_id}")
+def get_evidence_detail(
+    evidence_id: int = Path(..., description="The ID of the evidence record")
+):
+    """Retrieve full details of an evidence record including SHA-256 and linkages."""
+    db = SessionLocal()
+    try:
+        record = db.query(models.EvidenceRecord).filter(models.EvidenceRecord.id == evidence_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail=f"EvidenceRecord with ID {evidence_id} not found")
+        return format_evidence(record)
+    finally:
+        db.close()
+
+
+@app.delete("/evidence/{evidence_id}")
+def delete_evidence(
+    request: Request,
+    evidence_id: int = Path(..., description="The ID of the evidence record to delete"),
+):
+    """Delete an evidence record and emit a corresponding audit log."""
+    actor, _ = get_operator_identity(request)
+    ip_addr = request.client.host if request.client else None
+
+    db = SessionLocal()
+    try:
+        success = delete_evidence_record(
+            db=db,
+            evidence_id=evidence_id,
+            actor=actor,
+            ip_address=ip_addr,
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail=f"EvidenceRecord with ID {evidence_id} not found")
+        return {"message": f"Evidence record #{evidence_id} deleted successfully"}
     finally:
         db.close()

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean
+from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -313,3 +313,73 @@ class DriftEvent(Base):
 
     scan_job = relationship("ScanJob", back_populates="drift_events")
     asset = relationship("Asset", backref="drift_events")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6A: Governance, Evidence & Tamper-Evident Audit Trail
+# ---------------------------------------------------------------------------
+
+evidence_risks = Table(
+    "evidence_risks",
+    Base.metadata,
+    Column("evidence_id", Integer, ForeignKey("evidence_records.id", ondelete="CASCADE"), primary_key=True),
+    Column("risk_id", Integer, ForeignKey("risks.id", ondelete="CASCADE"), primary_key=True),
+)
+
+evidence_controls = Table(
+    "evidence_controls",
+    Base.metadata,
+    Column("evidence_id", Integer, ForeignKey("evidence_records.id", ondelete="CASCADE"), primary_key=True),
+    Column("control_id", Integer, ForeignKey("controls.id", ondelete="CASCADE"), primary_key=True),
+)
+
+evidence_requirements = Table(
+    "evidence_requirements",
+    Base.metadata,
+    Column("evidence_id", Integer, ForeignKey("evidence_records.id", ondelete="CASCADE"), primary_key=True),
+    Column("requirement_id", Integer, ForeignKey("compliance_requirements.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class EvidenceRecord(Base):
+    __tablename__ = "evidence_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(200), nullable=False)
+    description = Column(String(2000), nullable=True)
+    evidence_type = Column(String(50), nullable=False)  # SCAN_OUTPUT, CONFIG_EXPORT, POLICY_REF, MANUAL_OBSERVATION, AUDIT_EXPORT
+    source_system = Column(String(100), default="AI-GRC Platform", nullable=False)
+    collector = Column(String(100), default="Security Analyst", nullable=False)
+    collected_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    content_text = Column(Text, nullable=True)          # Raw text snippet or observation (capped at 50 KB)
+    reference_url = Column(String(500), nullable=True)  # Artifact path or URL reference
+    checksum_sha256 = Column(String(64), nullable=True) # Tamper-evident SHA-256 hex digest
+
+    asset_id = Column(ForeignKey("assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    scan_job_id = Column(ForeignKey("scan_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    asset = relationship("Asset", backref="evidence_records")
+    scan_job = relationship("ScanJob", backref="evidence_records")
+    risks = relationship("Risk", secondary=evidence_risks, backref="evidence_records")
+    controls = relationship("Control", secondary=evidence_controls, backref="evidence_records")
+    requirements = relationship("ComplianceRequirement", secondary=evidence_requirements, backref="evidence_records")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    source = Column(String(30), nullable=False, index=True)      # USER, SYSTEM, SCANNER, SCHEDULER, AI, API
+    actor = Column(String(100), nullable=False, index=True)      # Attribution: username, service name, or role
+    ip_address = Column(String(50), nullable=True)               # Client IP address or 127.0.0.1
+    action = Column(String(50), nullable=False, index=True)      # CREATE, UPDATE, DELETE, STATUS_CHANGE, ASSIGN, DETACH, DISPATCH, COMPLETE, CANCEL, DRIFT_DETECTED, AI_ANALYSIS
+    entity_type = Column(String(50), nullable=False, index=True) # Risk, Asset, Control, ComplianceRequirement, ScanJob, EvidenceRecord
+    entity_id = Column(Integer, nullable=True, index=True)
+    entity_name = Column(String(200), nullable=True)
+    old_values = Column(Text, nullable=True)                     # JSON string
+    new_values = Column(Text, nullable=True)                     # JSON string
+    description = Column(String(1000), nullable=True)
