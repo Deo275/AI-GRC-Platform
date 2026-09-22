@@ -383,3 +383,4 @@ class AuditLog(Base):
     old_values = Column(Text, nullable=True)                     # JSON string
     new_values = Column(Text, nullable=True)                     # JSON string
     description = Column(String(1000), nullable=True)
+    integrity_hash = Column(String(64), nullable=True, index=True)  # Deterministic SHA-256 over canonical immutable event fields

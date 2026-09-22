@@ -112,7 +112,7 @@ def create_evidence_record(
     db.refresh(record)
 
     # 6. Emit governance audit event
-    log_audit_event(
+    audit_res = log_audit_event(
         db=db,
         source="USER",
         actor=actor,
@@ -133,6 +133,12 @@ def create_evidence_record(
         ip_address=ip_address,
         commit=True,
     )
+    if audit_res is None:
+        logger.warning(
+            f"[AUDIT LOG RECORDING FAILED] EvidenceRecord #{record.id} was created, "
+            f"but its governance audit log could not be persisted."
+        )
+
 
     return record
 
@@ -183,7 +189,7 @@ def delete_evidence_record(
     db.delete(record)
     db.commit()
 
-    log_audit_event(
+    audit_res = log_audit_event(
         db=db,
         source="USER",
         actor=actor,
@@ -196,4 +202,9 @@ def delete_evidence_record(
         ip_address=ip_address,
         commit=True,
     )
+    if audit_res is None:
+        logger.warning(
+            f"[AUDIT LOG RECORDING FAILED] EvidenceRecord #{evidence_id} was deleted, "
+            f"but its deletion audit log could not be persisted."
+        )
     return True

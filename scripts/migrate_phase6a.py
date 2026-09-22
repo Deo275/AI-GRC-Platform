@@ -40,8 +40,12 @@ def run_migration():
                 entity_name VARCHAR(200),
                 old_values TEXT,
                 new_values TEXT,
-                description VARCHAR(1000)
+                description VARCHAR(1000),
+                integrity_hash VARCHAR(64)
             );
+        """))
+        conn.execute(text("""
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS integrity_hash VARCHAR(64);
         """))
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS ix_audit_logs_id ON audit_logs (id);
@@ -63,6 +67,9 @@ def run_migration():
         """))
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS ix_audit_logs_entity_id ON audit_logs (entity_id);
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_audit_logs_integrity_hash ON audit_logs (integrity_hash);
         """))
 
         print("Ensuring `evidence_records` table exists...")

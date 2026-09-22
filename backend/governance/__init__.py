@@ -4,6 +4,7 @@ from .audit_logger import (
     log_audit_event,
     sanitize_sensitive_data,
     format_audit_log,
+    calculate_audit_integrity_hash,
 )
 from .evidence_manager import (
     calculate_sha256,
@@ -17,6 +18,7 @@ __all__ = [
     "log_audit_event",
     "sanitize_sensitive_data",
     "format_audit_log",
+    "calculate_audit_integrity_hash",
     "calculate_sha256",
     "create_evidence_record",
     "format_evidence",

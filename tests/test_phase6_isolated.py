@@ -56,6 +56,7 @@ from governance.audit_logger import (
     log_audit_event,
     sanitize_sensitive_data,
     format_audit_log,
+    calculate_audit_integrity_hash,
 )
 from governance.evidence_manager import (
     calculate_sha256,
@@ -247,6 +248,62 @@ class TestAuditLogger(BasePhase6IsolatedTestCase):
             commit=True,
         )
         self.assertIsNone(res)
+
+    def test_audit_log_deterministic_integrity_hash(self):
+        """Verifies deterministic SHA-256 integrity hash generation on immutable audit fields."""
+        entry = log_audit_event(
+            db=self.db,
+            source="API",
+            actor="compliance_officer",
+            action="UPDATE",
+            entity_type="Risk",
+            entity_id=self.risk.id,
+            entity_name=self.risk.title,
+            old_values={"residual_risk": "High"},
+            new_values={"residual_risk": "Medium"},
+            description="Remediation verified by compensating control",
+            ip_address="192.168.1.50",
+            commit=True,
+        )
+        self.assertIsNotNone(entry.integrity_hash)
+        self.assertEqual(len(entry.integrity_hash), 64)
+
+        # Recalculate deterministic hash using exact same payload
+        expected_hash = calculate_audit_integrity_hash(
+            timestamp=entry.timestamp,
+            source=entry.source,
+            actor=entry.actor,
+            action=entry.action,
+            entity_type=entry.entity_type,
+            entity_id=entry.entity_id,
+            entity_name=entry.entity_name,
+            old_values=entry.old_values,
+            new_values=entry.new_values,
+            description=entry.description,
+            ip_address=entry.ip_address,
+        )
+        self.assertEqual(entry.integrity_hash, expected_hash)
+
+        # Verify changing any field alters the hash (tamper evidence)
+        tampered_hash = calculate_audit_integrity_hash(
+            timestamp=entry.timestamp,
+            source=entry.source,
+            actor="malicious_actor",
+            action=entry.action,
+            entity_type=entry.entity_type,
+            entity_id=entry.entity_id,
+            entity_name=entry.entity_name,
+            old_values=entry.old_values,
+            new_values=entry.new_values,
+            description=entry.description,
+            ip_address=entry.ip_address,
+        )
+        self.assertNotEqual(entry.integrity_hash, tampered_hash)
+
+        # Verify format_audit_log exposes the integrity hash
+        formatted = format_audit_log(entry)
+        self.assertEqual(formatted["integrity_hash"], entry.integrity_hash)
+
 
 
 class TestEvidenceManager(BasePhase6IsolatedTestCase):
