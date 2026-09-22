@@ -1,7 +1,218 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, Fragment } from "react";
 import "./App.css";
 
 const API_BASE = "http://127.0.0.1:8000";
+
+// ---------------------------------------------------------------------------
+// AIAnalysisPanel — Phase 4B: Pure display component for AI security intelligence
+// Receives pre-fetched analysis data; no API calls, no GRC state mutations.
+// ---------------------------------------------------------------------------
+function AIAnalysisPanel({ loading, error, analysis, onReanalyze }) {
+  if (loading) {
+    return (
+      <div className="ai-panel-loading">
+        <span className="ai-spinner" />
+        Generating AI security intelligence...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="ai-panel-error">
+        <strong>⚠ Analysis Failed:</strong> {error}
+        <button className="btn-link" onClick={onReanalyze} style={{ marginLeft: "12px" }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (!analysis) return null;
+
+  const confidencePct = Math.round((analysis.confidence || 0) * 100);
+  const confClass = confidencePct >= 75 ? "high" : confidencePct >= 50 ? "med" : "low";
+
+  const priorityBadgeClass = (p) => {
+    switch ((p || "").toLowerCase()) {
+      case "critical": return "badge-critical";
+      case "high":     return "badge-high";
+      case "medium":   return "badge-medium";
+      case "low":      return "badge-low";
+      default:         return "badge-neutral";
+    }
+  };
+
+  const formatAnalysisDate = (iso) => {
+    if (!iso) return "";
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  };
+
+  return (
+    <div className="ai-panel">
+
+      {/* Human Review Warning */}
+      {analysis.human_review_required && (
+        <div className="ai-review-warning">
+          <div className="ai-review-warning-header">
+            ⚠&nbsp; Human Review Recommended — validate before making risk decisions based on this analysis
+          </div>
+          {analysis.human_review_reasons && analysis.human_review_reasons.length > 0 && (
+            <ul className="ai-review-reasons">
+              {analysis.human_review_reasons.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Panel Header: AI priority + model name + timestamp + confidence + re-analyze */}
+      <div className="ai-panel-header">
+        <div className="ai-panel-header-left">
+          <span className={`badge ${priorityBadgeClass(analysis.priority)} ai-priority-badge`}>
+            AI Priority: {analysis.priority}
+          </span>
+          <span className="ai-model-tag" title="AI provider / model used for this analysis">
+            {analysis.model_name}
+          </span>
+          {analysis.created_at && (
+            <span className="ai-timestamp">
+              Generated: {formatAnalysisDate(analysis.created_at)}
+            </span>
+          )}
+        </div>
+        <div className="ai-panel-header-right">
+          <div className="ai-confidence-wrap">
+            <span className="ai-conf-label">Confidence</span>
+            <div className="ai-confidence-bar">
+              <div
+                className={`ai-confidence-fill ai-conf-fill-${confClass}`}
+                style={{ width: `${confidencePct}%` }}
+              />
+            </div>
+            <span className={`ai-conf-pct ai-conf-pct-${confClass}`}>{confidencePct}%</span>
+          </div>
+          <button className="btn-ai-reanalyze" onClick={onReanalyze}>
+            ↺ Re-analyze
+          </button>
+        </div>
+      </div>
+
+      {/* Simple Explanation — most prominent section */}
+      {analysis.simple_explanation && (
+        <div className="ai-simple-explanation">
+          <div className="ai-card-title">AI Security Intelligence Summary</div>
+          <p className="ai-simple-text">{analysis.simple_explanation}</p>
+        </div>
+      )}
+
+      {/* Why It Matters + Severity Assessment — two-column grid */}
+      <div className="ai-content-grid">
+        {analysis.why_it_matters && (
+          <div className="ai-card">
+            <div className="ai-card-title">Why It Matters</div>
+            <div className="ai-card-body">{analysis.why_it_matters}</div>
+          </div>
+        )}
+        {analysis.severity_explanation && (
+          <div className="ai-card">
+            <div className="ai-card-title">Severity Assessment</div>
+            <div className="ai-card-body">{analysis.severity_explanation}</div>
+          </div>
+        )}
+      </div>
+
+      {/* Risk Factors */}
+      {analysis.risk_factors && analysis.risk_factors.length > 0 && (
+        <div className="ai-section">
+          <div className="ai-card-title">Risk Factors</div>
+          <div className="ai-factors-list">
+            {analysis.risk_factors.map((f, i) => (
+              <span key={i} className="ai-factor-chip">{f}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Potential Business Impact */}
+      {analysis.potential_business_impact && analysis.potential_business_impact.length > 0 && (
+        <div className="ai-section">
+          <div className="ai-card-title">Potential Business Impact</div>
+          <ul className="ai-bullet-list">
+            {analysis.potential_business_impact.map((item, i) => <li key={i}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {/* Remediation Steps — 3-tier */}
+      {analysis.remediation && (
+        <div className="ai-section">
+          <div className="ai-card-title">Remediation Steps</div>
+          <div className="ai-remediation-grid">
+            {analysis.remediation.immediate_mitigation && analysis.remediation.immediate_mitigation.length > 0 && (
+              <div className="ai-remediation-tier ai-tier-immediate">
+                <div className="ai-tier-label">🔴 Immediate Mitigation</div>
+                <ul className="ai-bullet-list">
+                  {analysis.remediation.immediate_mitigation.map((s, i) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+            {analysis.remediation.permanent_remediation && analysis.remediation.permanent_remediation.length > 0 && (
+              <div className="ai-remediation-tier ai-tier-permanent">
+                <div className="ai-tier-label">🔵 Permanent Remediation</div>
+                <ul className="ai-bullet-list">
+                  {analysis.remediation.permanent_remediation.map((s, i) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+            {analysis.remediation.validation && analysis.remediation.validation.length > 0 && (
+              <div className="ai-remediation-tier ai-tier-validation">
+                <div className="ai-tier-label">✅ Validation Steps</div>
+                <ul className="ai-bullet-list">
+                  {analysis.remediation.validation.map((s, i) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Recommended Platform Controls */}
+      {analysis.recommended_controls && analysis.recommended_controls.length > 0 && (
+        <div className="ai-section">
+          <div className="ai-card-title">Recommended Platform Controls</div>
+          <div className="ai-controls-rec-list">
+            {analysis.recommended_controls.map((ctrl, i) => (
+              <div key={i} className="ai-control-rec">
+                <span className="ai-control-rec-name">{ctrl.name}</span>
+                <span className="ai-control-rec-reason">{ctrl.reason}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recommendations */}
+      {analysis.recommendation && analysis.recommendation.length > 0 && (
+        <div className="ai-section">
+          <div className="ai-card-title">Recommendations</div>
+          <ul className="ai-bullet-list">
+            {analysis.recommendation.map((r, i) => <li key={i}>{r}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {/* AI Disclaimer — always shown */}
+      <div className="ai-disclaimer">
+        <span className="info-icon">ℹ️</span>
+        <span>
+          <strong>AI Advisory Only:</strong> This output is supplementary intelligence and does not
+          modify official GRC risk scores. The rule-based risk engine remains the authoritative source
+          for inherent/residual risk ratings, likelihood, impact, treatment, and status.
+        </span>
+      </div>
+    </div>
+  );
+}
 
 function App() {
   const [scanning, setScanning] = useState(false);
@@ -20,6 +231,12 @@ function App() {
   const [requirements, setRequirements] = useState([]);
   const [statusFilter, setStatusFilter] = useState("All");
   const [functionFilter, setFunctionFilter] = useState("All");
+
+  // Phase 4B: AI Analysis State — per-risk keyed maps, isolated from authoritative GRC data
+  const [aiAnalysis, setAiAnalysis] = useState({});          // { [riskId]: analysisObject }
+  const [aiLoading, setAiLoading] = useState({});            // { [riskId]: boolean }
+  const [aiError, setAiError] = useState({});                // { [riskId]: string | null }
+  const [expandedAiPanel, setExpandedAiPanel] = useState(null); // riskId | null (one panel open at a time)
 
   // Modals state
   const [editingAsset, setEditingAsset] = useState(null);
@@ -378,6 +595,71 @@ function App() {
   };
 
   // ----------------------------------------
+  // Phase 4B: AI Analysis Handlers
+  // GET-first (stored analysis) → POST-on-404 (trigger new analysis)
+  // Never calls refreshAll() — AI state is isolated from GRC risk data.
+  // ----------------------------------------
+
+  const handleAnalyzeRisk = async (riskId) => {
+    // Toggle panel closed if already open for this risk
+    if (expandedAiPanel === riskId) {
+      setExpandedAiPanel(null);
+      return;
+    }
+    // Open panel immediately; serve from cache if available
+    setExpandedAiPanel(riskId);
+    if (aiAnalysis[riskId]) return;
+
+    // GET stored analysis first; fall back to POST (new analysis) on 404
+    setAiLoading(prev => ({ ...prev, [riskId]: true }));
+    setAiError(prev => ({ ...prev, [riskId]: null }));
+    try {
+      const getRes = await fetch(`${API_BASE}/risks/${riskId}/analysis`);
+      if (getRes.ok) {
+        const data = await getRes.json();
+        setAiAnalysis(prev => ({ ...prev, [riskId]: data.analysis }));
+        return;
+      }
+      if (getRes.status === 404) {
+        const postRes = await fetch(`${API_BASE}/risks/${riskId}/analyze`, { method: "POST" });
+        const postData = await postRes.json().catch(() => null);
+        if (!postRes.ok) {
+          setAiError(prev => ({ ...prev, [riskId]: postData?.detail || `Analysis failed (${postRes.status})` }));
+        } else {
+          setAiAnalysis(prev => ({ ...prev, [riskId]: postData.analysis }));
+        }
+      } else {
+        const errData = await getRes.json().catch(() => null);
+        setAiError(prev => ({ ...prev, [riskId]: errData?.detail || "Failed to load analysis" }));
+      }
+    } catch (err) {
+      setAiError(prev => ({ ...prev, [riskId]: "Network error: " + (err?.message || String(err)) }));
+    } finally {
+      setAiLoading(prev => ({ ...prev, [riskId]: false }));
+    }
+  };
+
+  const handleReanalyzeRisk = async (riskId) => {
+    // Always force a fresh POST, replacing any cached analysis
+    setAiLoading(prev => ({ ...prev, [riskId]: true }));
+    setAiError(prev => ({ ...prev, [riskId]: null }));
+    setAiAnalysis(prev => { const n = { ...prev }; delete n[riskId]; return n; });
+    try {
+      const res = await fetch(`${API_BASE}/risks/${riskId}/analyze`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setAiError(prev => ({ ...prev, [riskId]: data?.detail || `Analysis failed (${res.status})` }));
+      } else {
+        setAiAnalysis(prev => ({ ...prev, [riskId]: data.analysis }));
+      }
+    } catch (err) {
+      setAiError(prev => ({ ...prev, [riskId]: "Network error: " + (err?.message || String(err)) }));
+    } finally {
+      setAiLoading(prev => ({ ...prev, [riskId]: false }));
+    }
+  };
+
+  // ----------------------------------------
   // Helper classes & formatters
   // ----------------------------------------
 
@@ -456,7 +738,7 @@ function App() {
       {/* -------------------------------- */}
       <header>
         <div>
-          <div className="brand-badge">PHASE 3 ACTIVE • NIST CSF 2.0 & ISO/IEC 27001:2022</div>
+          <div className="brand-badge">PHASE 4 ACTIVE • AI-ASSISTED SECURITY INTELLIGENCE</div>
           <h1>AI-GRC Platform</h1>
           <p>
             Automated Governance, Risk Management & Compliance with Inherent/Residual Risk Modeling and Authoritative Framework Mapping
@@ -668,7 +950,8 @@ function App() {
                 risks.map((risk) => {
                   const asset = assets.find(a => a.id === risk.asset_id);
                   return (
-                    <tr key={risk.id}>
+                    <Fragment key={risk.id}>
+                      <tr>
                       <td style={{ minWidth: "200px" }}>
                         <strong>{risk.title}</strong>
                         <div className="sub-text">{risk.recommendation || risk.description}</div>
@@ -778,15 +1061,43 @@ function App() {
                         </span>
                       </td>
                       <td>
-                        <button
-                          className="btn-action"
-                          onClick={() => openRiskModal(risk)}
-                          title="Manage Risk Treatment & Ownership"
-                        >
-                          Manage
-                        </button>
+                        <div className="action-stack">
+                          <button
+                            className="btn-action"
+                            onClick={() => openRiskModal(risk)}
+                            title="Manage Risk Treatment & Ownership"
+                          >
+                            Manage
+                          </button>
+                          <button
+                            className={`btn-ai-analyze${expandedAiPanel === risk.id ? " btn-ai-active" : ""}`}
+                            onClick={() => handleAnalyzeRisk(risk.id)}
+                            disabled={!!aiLoading[risk.id]}
+                            title="Generate AI-assisted security intelligence"
+                            id={`ai-analyze-btn-${risk.id}`}
+                          >
+                            {aiLoading[risk.id]
+                              ? "Analyzing..."
+                              : expandedAiPanel === risk.id
+                                ? "▲ Hide AI"
+                                : "✦ AI Analysis"}
+                          </button>
+                        </div>
                       </td>
-                    </tr>
+                      </tr>
+                      {expandedAiPanel === risk.id && (
+                        <tr className="ai-panel-row">
+                          <td colSpan="9" className="ai-panel-cell">
+                            <AIAnalysisPanel
+                              loading={!!aiLoading[risk.id]}
+                              error={aiError[risk.id] || null}
+                              analysis={aiAnalysis[risk.id] || null}
+                              onReanalyze={() => handleReanalyzeRisk(risk.id)}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })
               )}
