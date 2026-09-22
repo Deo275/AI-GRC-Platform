@@ -1,7 +1,8 @@
-from fastapi import FastAPI, Query, HTTPException, Path, Body, Request
+from fastapi import FastAPI, Query, HTTPException, Path, Body, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
+from typing import Any, Optional, Dict
 import sys
 import os
 import ipaddress
@@ -71,6 +72,18 @@ except ImportError:
         format_evidence,
         delete_evidence_record,
     )
+
+try:
+    from reporting import (
+        generate_report,
+        REPORT_GENERATORS,
+    )
+except ImportError:
+    from backend.reporting import (
+        generate_report,
+        REPORT_GENERATORS,
+    )
+
 
 
 # ---------------------------------------------------------------------------
@@ -2280,5 +2293,172 @@ def delete_evidence(
         if not success:
             raise HTTPException(status_code=404, detail=f"EvidenceRecord with ID {evidence_id} not found")
         return {"message": f"Evidence record #{evidence_id} deleted successfully"}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6B: Reporting & Multi-Format Export Endpoints
+# ---------------------------------------------------------------------------
+
+def _handle_report_response(
+    report_type: str,
+    format_type: str,
+    db: Any,
+    request: Request,
+    filters: Optional[dict] = None,
+) -> Response:
+    actor, _ = get_operator_identity(request)
+    ip_addr = request.client.host if request.client else None
+
+    try:
+        content, media_type, filename = generate_report(
+            report_type=report_type,
+            format_type=format_type,
+            db=db,
+            operator=actor,
+            filters=filters,
+        )
+
+        # Emit tamper-evident audit event for report generation
+        log_audit_event(
+            db=db,
+            source="API",
+            actor=actor,
+            action="EXPORT",
+            entity_type="Report",
+            entity_name=report_type,
+            description=f"Exported '{report_type}' report in '{format_type.upper()}' format",
+            ip_address=ip_addr,
+            commit=True,
+        )
+
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
+        return Response(content=content, media_type=media_type, headers=headers)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@app.get("/reports/executive-summary")
+def get_executive_summary_report(
+    request: Request,
+    format: str = Query("json", description="Export format: json, csv, or html"),
+    risk_level: Optional[str] = Query(None, description="Filter by residual risk level: Low, Medium, High, Critical"),
+):
+    """Generate executive risk and posture summary in JSON, CSV, or HTML format."""
+    db = SessionLocal()
+    try:
+        filters = {}
+        if risk_level:
+            filters["risk_level"] = risk_level
+        return _handle_report_response("executive_summary", format, db, request, filters)
+    finally:
+        db.close()
+
+
+@app.get("/reports/technical-vulnerabilities")
+def get_technical_vulnerabilities_report(
+    request: Request,
+    format: str = Query("json", description="Export format: json, csv, or html"),
+    asset_id: Optional[int] = Query(None, description="Filter by asset ID"),
+    severity: Optional[str] = Query(None, description="Filter by severity: Low, Medium, High, Critical"),
+    status: Optional[str] = Query(None, description="Filter by status: Open, Resolved"),
+):
+    """Generate technical vulnerability & attack surface inventory in JSON, CSV, or HTML format."""
+    db = SessionLocal()
+    try:
+        filters = {}
+        if asset_id:
+            filters["asset_id"] = asset_id
+        if severity:
+            filters["severity"] = severity
+        if status:
+            filters["status"] = status
+        return _handle_report_response("technical_vulnerabilities", format, db, request, filters)
+    finally:
+        db.close()
+
+
+@app.get("/reports/compliance-gap")
+def get_compliance_gap_report(
+    request: Request,
+    format: str = Query("json", description="Export format: json, csv, or html"),
+    framework_id: Optional[int] = Query(None, description="Filter by framework ID"),
+    status: Optional[str] = Query(None, description="Filter by requirement status"),
+):
+    """Generate compliance framework readiness and gap analysis in JSON, CSV, or HTML format."""
+    db = SessionLocal()
+    try:
+        filters = {}
+        if framework_id:
+            filters["framework_id"] = framework_id
+        if status:
+            filters["status"] = status
+        return _handle_report_response("compliance_gap", format, db, request, filters)
+    finally:
+        db.close()
+
+
+@app.get("/reports/risk-register")
+def get_risk_register_report(
+    request: Request,
+    format: str = Query("json", description="Export format: json, csv, or html"),
+    status: Optional[str] = Query(None, description="Filter by status: Open, Mitigated, Accepted, Closed"),
+    treatment: Optional[str] = Query(None, description="Filter by treatment: Mitigate, Accept, Transfer, Avoid"),
+    owner: Optional[str] = Query(None, description="Filter by risk owner"),
+):
+    """Generate complete enterprise risk register in JSON, CSV, or HTML format."""
+    db = SessionLocal()
+    try:
+        filters = {}
+        if status:
+            filters["status"] = status
+        if treatment:
+            filters["treatment"] = treatment
+        if owner:
+            filters["owner"] = owner
+        return _handle_report_response("risk_register", format, db, request, filters)
+    finally:
+        db.close()
+
+
+@app.get("/reports/audit-trail")
+def get_governance_audit_report(
+    request: Request,
+    format: str = Query("json", description="Export format: json, csv, or html"),
+    source: Optional[str] = Query(None, description="Filter by source: USER, SYSTEM, SCANNER, SCHEDULER, AI, API"),
+    actor: Optional[str] = Query(None, description="Filter by actor name"),
+    start_time: Optional[datetime] = Query(None, description="Filter by start timestamp"),
+    end_time: Optional[datetime] = Query(None, description="Filter by end timestamp"),
+):
+    """Generate governance audit trail and evidence report in JSON, CSV, or HTML format."""
+    db = SessionLocal()
+    try:
+        filters = {}
+        if source:
+            filters["source"] = source
+        if actor:
+            filters["actor"] = actor
+        if start_time:
+            filters["start_time"] = start_time
+        if end_time:
+            filters["end_time"] = end_time
+        return _handle_report_response("governance_audit", format, db, request, filters)
+    finally:
+        db.close()
+
+
+@app.get("/reports/{report_type}")
+def get_generic_report(
+    request: Request,
+    report_type: str = Path(..., description="One of: executive_summary, technical_vulnerabilities, compliance_gap, risk_register, governance_audit"),
+    format: str = Query("json", description="Export format: json, csv, or html"),
+):
+    """Unified report export endpoint supporting JSON, CSV, and HTML formats."""
+    db = SessionLocal()
+    try:
+        return _handle_report_response(report_type, format, db, request, filters=None)
     finally:
         db.close()
