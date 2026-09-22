@@ -256,3 +256,60 @@ class AIRiskAnalysis(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     risk = relationship("Risk", back_populates="ai_analyses")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Continuous Network Monitoring, Scan Automation & Asset Drift
+# ---------------------------------------------------------------------------
+
+class ScanJob(Base):
+    __tablename__ = "scan_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    target = Column(String(100), nullable=False)
+    scan_type = Column(String(50), nullable=False)  # single_host, subnet_discovery, scheduled_sweep
+    status = Column(String(30), default="Queued", nullable=False, index=True)  # Queued, Running, Completed, Failed, Cancelled
+    progress_percent = Column(Integer, default=0, nullable=False)
+    discovered_assets_count = Column(Integer, default=0)
+    discovered_vulns_count = Column(Integer, default=0)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    drift_events = relationship("DriftEvent", back_populates="scan_job", cascade="all, delete-orphan")
+
+
+class ScanSchedule(Base):
+    __tablename__ = "scan_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    target = Column(String(100), nullable=False)
+    interval_minutes = Column(Integer, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class DriftEvent(Base):
+    __tablename__ = "drift_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_job_id = Column(ForeignKey("scan_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(ForeignKey("assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_type = Column(String(50), nullable=False)  # NEW_ASSET, PORT_OPENED, PORT_CLOSED, CVE_DETECTED, FINDING_RESOLVED
+    title = Column(String(200), nullable=False)
+    description = Column(String(2000), nullable=True)
+    severity = Column(String(30), default="Low", nullable=False)  # Low, Medium, High, Critical
+    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    scan_job = relationship("ScanJob", back_populates="drift_events")
+    asset = relationship("Asset", backref="drift_events")
