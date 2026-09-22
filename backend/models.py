@@ -34,9 +34,9 @@ class Asset(Base):
     last_seen = Column(DateTime, default=datetime.utcnow)
 
     # Phase 2: Asset Intelligence
-    criticality = Column(String, default="Medium")      # Low, Medium, High, Critical
-    environment = Column(String, default="Production")  # Production, Development, Testing
-    exposure = Column(String, default="Internal")       # Internal, DMZ, External
+    criticality = Column(String, nullable=True, default=None)      # Low, Medium, High, Critical
+    environment = Column(String, nullable=True, default=None)  # Production, Development, Testing
+    exposure = Column(String, nullable=True, default=None)       # Internal, DMZ, External
     owner = Column(String, nullable=True)
     business_function = Column(String, nullable=True)
 
