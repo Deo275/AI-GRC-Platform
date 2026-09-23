@@ -155,7 +155,8 @@ class TestPhase4GeminiIsolated(unittest.TestCase):
             os.environ.pop("AI_PROVIDER", None)
             default_p = get_ai_provider()
             self.assertIsInstance(default_p, (GeminiAIProvider, ProviderChain))
-            self.assertEqual(default_p.model_name, "gemini-3.8-flash")
+            expected_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+            self.assertEqual(default_p.model_name, expected_model)
         finally:
             if old_env is not None:
                 os.environ["AI_PROVIDER"] = old_env
@@ -180,7 +181,8 @@ class TestPhase4GeminiIsolated(unittest.TestCase):
         # Verify Google GenAI client call arguments
         last_call = mock_client.models.last_call
         self.assertIsNotNone(last_call)
-        self.assertEqual(last_call["model"], "gemini-3.8-flash")
+        expected_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+        self.assertEqual(last_call["model"], expected_model)
         cfg = last_call["config"]
         self.assertEqual(cfg.response_mime_type, "application/json")
         self.assertEqual(cfg.response_schema, AIAnalysisResult)
@@ -206,7 +208,8 @@ class TestPhase4GeminiIsolated(unittest.TestCase):
 
         self.assertIsInstance(result, AIAnalysisResult)
         self.assertEqual(result.priority, "High")
-        self.assertEqual(result.model_name, "gemini-3.8-flash")
+        expected_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+        self.assertEqual(result.model_name, expected_model)
         self.assertIn("database", result.simple_explanation.lower())
         self.assertIn("attack surface", result.why_it_matters.lower())
         self.assertTrue(result.human_review_required)

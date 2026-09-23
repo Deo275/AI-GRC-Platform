@@ -2,7 +2,7 @@
 
 An automated Governance, Risk Management, and Compliance (GRC) platform integrating network discovery, vulnerability scanning, CVE enrichment via the NVD REST API, asset intelligence, inherent and residual risk modeling, security controls catalog, and compliance framework mapping.
 
-> **Roadmap & Disclaimer**: Phase 4 introduces the AI-Assisted Security & Risk Intelligence layer. The rule-based GRC risk engine remains the authoritative source for official risk scores, inherent/residual ratings, likelihood, and impact. AI intelligence provides supplementary, transparent, and auditable decision support for both technical and non-technical stakeholders under a strict human-in-the-loop governance model.
+> **Core GRC Separation & Advisory AI Disclaimer**: The platform integrates an AI-Assisted Security & Risk Intelligence layer powered by an automated failover ProviderChain (Gemini → OpenAI → Groq → Rule-Assisted fallback). Official GRC risk scores, inherent/residual ratings, likelihood, impact, and compliance evaluations remain strictly authoritative and rule-based. AI intelligence provides purely advisory, transparent decision support under a mandatory human-in-the-loop governance model. Official risk ratings can never be modified by AI.
 
 ---
 
@@ -387,6 +387,61 @@ To maintain high reliability and strict architectural boundaries, the following 
 
 ---
 
+## Phase 6 — Governance, Evidence, Reporting & Human Sign-Off
+
+Phase 6 completes the platform with an enterprise governance, evidence management, regulatory reporting, and human-in-the-loop review architecture:
+
+### 1. Phase 6A: Evidence Catalog & Tamper-Evident Audit Trail
+- **Evidence Management**: Centralized repository of compliance and security evidence mapped to requirements, controls, and risks.
+- **Tamper-Evident Audit Logging**: Synchronous recording of governance events (`RISK_REVIEW_SUBMITTED`, `RISK_REVIEW_STALE`, `TREATMENT_OVERRIDDEN`, `CONTROL_EFFECTIVENESS_VERIFIED`, `AI_ANALYSIS_RUN`, `REPORT_EXPORTED`).
+- **Cryptographic Hygiene**: Deterministic SHA-256 integrity hash calculated over canonical event payloads with sensitive field redaction (passwords, tokens, API keys).
+- **Integrity Guarantee**: Tamper-evident via application-level append-only constraints and hash validation (no UPDATE or DELETE endpoints exposed).
+
+### 2. Phase 6B: Reporting & Multi-Format Export Engine
+- **5 Comprehensive Report Types**:
+  1. `executive_summary`: High-level GRC posture, KPI summary cards, active findings, and advisory AI insights.
+  2. `technical_vulnerabilities`: Detailed vulnerability findings, CVSS scores, NVD CVE metadata, and asset targets.
+  3. `compliance_gap`: Regulatory readiness breakdown, requirement statuses, mapped controls, and identified gaps.
+  4. `risk_register`: Enterprise risk register, inherent vs residual scores, mitigation assignments, and treatments.
+  5. `governance_audit`: Complete append-only audit trail with SHA-256 integrity verification hashes.
+- **Export Formats**: JSON (`application/json`), CSV (`text/csv`), and HTML (`text/html` with print media formatting).
+- **OWASP CSV Injection Defense**: Cells starting with `=, +, -, @, \t, \r` are prefixed with `'` to neutralize formula injection attacks.
+- **Stored XSS Defense**: Strict HTML entity escaping across all dynamic fields.
+
+### 3. Phase 6C: Human Review & Risk Sign-Off Workflow
+- **Governance State Separation**: `Risk.review_status` (`Pending Review`, `Under Review`, `Approved`, `Rejected`, `Changes Requested`, `Stale`) is maintained strictly separate from operational `Risk.status`.
+- **Single Active Review Invariant**: Enforced via a partial unique database index (`is_current = 1`). Historical reviews are permanently preserved.
+- **Material Change & Stale Invalidation**: SHA-256 snapshot hashing captures vulnerabilities, CVSS scores, and controls. Vulnerability drift automatically invalidates approved reviews to `Stale` and emits a deduplicated `RISK_REVIEW_STALE` audit event.
+- **Independent Treatment Override**: Human sign-off allows operators to independently modify or confirm the agreed risk treatment strategy (`Mitigate`, `Accept`, `Transfer`, `Avoid`).
+
+### 4. Phase 6D: Governance Dashboard Integration
+- **Governance Review Center**: Dedicated dashboard view in React 19.
+- **Review KPIs Ribbon**: Real-time tallies for Pending Review, Stale Reviews, Changes Requested, and Approved Risks.
+- **Attention Queue**: High-priority risks requiring immediate auditor or sign-off attention.
+- **Interactive Review Modal**: Formal sign-off dialog with operator attribution, treatment confirmation, and optional AI acknowledgement.
+- **Audit Trail Viewer**: Paginated, filterable governance timeline with payload diff inspection.
+- **Direct Export Controls**: Instant generation and download of JSON, CSV, and HTML reports.
+
+### 5. Phase 6E: Final Verification & Integration Baseline
+- Complete end-to-end integration and regression verification suite consisting of **207 automated tests passing with 0 failures and 0 errors**.
+
+---
+
+## Prototype Disclaimers & Operational Guardrails
+
+> [!IMPORTANT]
+> **1. Prototype Authentication & Access Control**: Authentication and Role-Based Access Control (RBAC) are **not** implemented in this prototype. User and reviewer identities captured in sign-offs and audit logs represent session attribution metadata for tracking purposes and do not imply cryptographically authenticated authorization.
+>
+> **2. Reviewer Attribution**: The reviewer identity in review dialogs and audit records is captured as attribution metadata without role enforcement.
+>
+> **3. Compliance Non-Certification Disclaimer**: Compliance framework mappings (NIST CSF 2.0 and ISO/IEC 27001:2022) are internal readiness and gap-tracking tools. Mapping a control or achieving a percentage score **does not constitute formal regulatory certification, external audit accreditation, or legal compliance**.
+>
+> **4. Report & Legal Disclaimer**: Reports generated and exported by the platform are intended for internal risk-management, vulnerability prioritization, and compliance-tracking purposes only. They do not constitute formal legal counsel, regulatory certification, or guarantee of third-party audit attestation.
+>
+> **5. Advisory AI Non-Authoritative Guarantee**: The AI advisory intelligence layer provides supplementary decision support. It **cannot modify official risk scores, residual calculations, or compliance determinations**.
+
+---
+
 ## Getting Started
 
 ### 1. Database Migrations
@@ -404,6 +459,12 @@ python scripts/migrate_phase4.py
 
 # Phase 5 (Continuous Monitoring, Scan Jobs, Schedules, Drift Events)
 python scripts/migrate_phase5.py
+
+# Phase 6A (Evidence Catalog & Audit Log Tables)
+python scripts/migrate_phase6a.py
+
+# Phase 6C (Risk Reviews Table & Governance State Indices)
+python scripts/migrate_phase6c.py
 ```
 
 ### 2. Backend Setup
@@ -414,7 +475,7 @@ python scripts/migrate_phase5.py
    AI_PROVIDER=chain
    AI_PROVIDER_CHAIN=gemini,openai,groq
    GEMINI_API_KEY=your_gemini_api_key_here
-   GEMINI_MODEL=gemini-3.8-flash
+   GEMINI_MODEL=gemini-3.6-flash
    GEMINI_TIMEOUT_SECONDS=8
    OPENAI_API_KEY=your_openai_api_key_here
    OPENAI_MODEL=gpt-4o-mini
@@ -441,52 +502,23 @@ python scripts/migrate_phase5.py
    ```
    Dashboard: `http://127.0.0.1:5173`.
 
-### 4. Running Tests
+### 4. Running Automated Tests
 
-- **Phase 2 Isolated Test Suite (11 Tests)**:
-  ```powershell
-  python tests/test_phase2_isolated.py
-  ```
+Run the full unified automated test suite:
+```powershell
+backend\venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
 
-- **Phase 3 Isolated Test Suite (7 Tests)**:
-  ```powershell
-  python tests/test_phase3_isolated.py
-  ```
-
-- **Phase 4A Isolated Test Suite (14 Tests)**:
-  ```powershell
-  python tests/test_phase4_isolated.py
-  ```
-
-- **Phase 4C Multi-LLM Failover Test Suite (26 Tests)**:
-  ```powershell
-  python tests/test_phase4c_isolated.py
-  ```
-
-- **Phase 5 Continuous Monitoring & Drift Test Suite (50 Tests)**:
-  ```powershell
-  python tests/test_phase5_isolated.py
-  ```
-
-- **Complete Multi-Phase Regression Suite (108 Tests)**:
-  ```powershell
-  python -m unittest tests/test_phase2_isolated.py tests/test_phase3_isolated.py tests/test_phase4_isolated.py tests/test_phase4c_isolated.py tests/test_phase5_isolated.py
-  ```
-
-- **Live REST API Verification Scripts**:
-  ```powershell
-  # Phase 3 Compliance Mapping Verification
-  python scripts/verify_phase3_api.py
-
-  # Phase 4A AI Intelligence Verification
-  python scripts/verify_phase4_api.py
-
-  # Phase 4C Multi-LLM Failover Verification
-  python scripts/verify_phase4c_api.py
-
-  # Phase 5 Monitoring & Drift API Verification
-  python scripts/verify_phase5_api.py
-  ```
+**Expected Baseline**: **207 tests passing (0 failures, 0 errors)** across 9 comprehensive suites:
+- `test_phase2_isolated.py`: 16 tests (GRC scoring, matrix thresholds, control mitigations)
+- `test_phase3_isolated.py`: 18 tests (NIST CSF 2.0 & ISO 27001 mappings, requirement semantics)
+- `test_phase4_isolated.py`: 27 tests (Gemini structured outputs, schemas, immutability)
+- `test_phase4c_isolated.py`: 23 tests (ProviderChain multi-LLM failover, credential sanitization)
+- `test_phase5_isolated.py`: 37 tests (Scan jobs queue, scheduler, drift detection, cancellations)
+- `test_phase6_isolated.py`: 24 tests (Evidence catalog, SHA-256 audit log, redactions)
+- `test_phase6b_isolated.py`: 26 tests (5 report types, JSON/CSV/HTML exports, formula injection defenses)
+- `test_phase6c_isolated.py`: 24 tests (Human review workflow, partial unique index, stale invalidations)
+- `test_phase6e_integration.py`: 12 tests (End-to-end cross-phase lifecycle integration)
 
 ---
 
@@ -529,3 +561,11 @@ python scripts/migrate_phase5.py
 | `DELETE` | `/monitoring/schedules/{id}` | **(Phase 5)** Delete an automated scan schedule |
 | `GET` | `/monitoring/drift` | **(Phase 5)** Retrieve attack surface drift feed with severity and type filters |
 | `GET` | `/monitoring/metrics` | **(Phase 5)** Retrieve aggregated monitoring KPI metrics for the dashboard |
+| `GET` | `/evidence` | **(Phase 6A)** Retrieve evidence catalog items with optional requirement/control filters |
+| `POST` | `/evidence` | **(Phase 6A)** Register new evidence item in the governance catalog |
+| `GET` | `/audit/logs` | **(Phase 6A)** Retrieve paginated, tamper-evident audit logs with action and entity filters |
+| `GET` | `/reports/{report_type}` | **(Phase 6B)** Export report in `json`, `csv`, or `html` format |
+| `GET` | `/risks/{id}/reviews` | **(Phase 6C)** Retrieve current human review, status, and historical review log |
+| `POST` | `/risks/{id}/reviews` | **(Phase 6C)** Submit formal human sign-off review (APPROVED, REJECTED, CHANGES_REQUESTED) |
+| `POST` | `/governance/reviews/evaluate-stale` | **(Phase 6C)** Trigger on-demand staleness evaluation across all current reviews |
+| `GET` | `/governance/kpis` | **(Phase 6D)** Retrieve governance metrics (Pending, Stale, Changes Requested, Approved) |
