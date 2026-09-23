@@ -3,6 +3,39 @@ import "./App.css";
 
 const API_BASE = "http://127.0.0.1:8000";
 
+const REPORT_TYPES = [
+  {
+    id: "executive_summary",
+    title: "Executive Summary",
+    category: "EXECUTIVE POSTURE",
+    desc: "C-suite strategic overview of organization-wide risk posture, Inherent vs. Residual risk scores, top critical risks, and compliance coverage.",
+  },
+  {
+    id: "technical_vulnerabilities",
+    title: "Technical Vulnerabilities",
+    category: "ATTACK SURFACE",
+    desc: "Complete technical inventory of hosts, open ports, correlated CVE findings, CVSS v3.1 scores, and automated vulnerability intelligence.",
+  },
+  {
+    id: "compliance_gap",
+    title: "Compliance Gap Analysis",
+    category: "REGULATORY COMPLIANCE",
+    desc: "Readiness assessment mapped against NIST CSF 2.0 and ISO/IEC 27001:2022, detailing control coverage, implemented safeguards, and open gaps.",
+  },
+  {
+    id: "risk_register",
+    title: "Enterprise Risk Register",
+    category: "RISK MANAGEMENT",
+    desc: "Comprehensive GRC risk register with Likelihood × Impact matrix coordinates, assigned mitigating controls, treatments, and governance review sign-offs.",
+  },
+  {
+    id: "governance_audit",
+    title: "Governance Audit Trail",
+    category: "AUDIT & EVIDENCE",
+    desc: "Append-only chronological audit log of all administrative actions, human risk reviews, state transitions, and deterministic SHA-256 integrity hashes.",
+  },
+];
+
 // ---------------------------------------------------------------------------
 // AIAnalysisPanel — Phase 4B: Pure display component for AI security intelligence
 // Receives pre-fetched analysis data; no API calls, no GRC state mutations.
@@ -319,6 +352,50 @@ function App() {
   const [submittingSchedule, setSubmittingSchedule] = useState(false);
 
   // ----------------------------------------
+  // Phase 6: Governance Review & Audit Center State
+  // ----------------------------------------
+  const [govActiveTab, setGovActiveTab] = useState("queue"); // "queue" | "audit" | "reports"
+
+  // 1. Governance Review Queue
+  const [govReviews, setGovReviews] = useState([]);
+  const [govReviewsLoading, setGovReviewsLoading] = useState(false);
+  const [govReviewsError, setGovReviewsError] = useState(null);
+  const [govQueueFilter, setGovQueueFilter] = useState("All");
+
+  // 2. Audit Trail
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState(null);
+  const [auditLimit] = useState(25);
+  const [auditOffset, setAuditOffset] = useState(0);
+  const [auditSourceFilter, setAuditSourceFilter] = useState("All");
+  const [auditActionFilter, setAuditActionFilter] = useState("All");
+
+  // 3. Review Submission Modal State
+  const [reviewingRisk, setReviewingRisk] = useState(null);
+  const [reviewForm, setReviewForm] = useState({
+    reviewer_name: "Security Analyst",
+    reviewer_role: "GRC Operator",
+    decision: "APPROVED",
+    agreed_treatment: "Mitigate",
+    comments: "",
+    ai_analysis_acknowledged: false,
+  });
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [reviewSubmitError, setReviewSubmitError] = useState(null);
+
+  // 4. Review History Modal State
+  const [historyRisk, setHistoryRisk] = useState(null);
+  const [historyData, setHistoryData] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+
+  // 5. Reports Export Center State
+  const [downloadingReport, setDownloadingReport] = useState(null); // { type, format } | null
+  const [reportDownloadError, setReportDownloadError] = useState(null);
+
+  // ----------------------------------------
   // Data Fetching Functions
   // ----------------------------------------
 
@@ -471,6 +548,56 @@ function App() {
       setDriftEventsError("Unable to connect to drift feed service");
     } finally {
       setDriftEventsLoading(false);
+    }
+  };
+
+  // ----------------------------------------
+  // Phase 6: Governance Fetchers
+  // ----------------------------------------
+
+  const fetchGovReviews = async () => {
+    setGovReviewsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/governance/reviews/pending?limit=200`);
+      if (response.ok) {
+        const data = await response.json();
+        setGovReviews(data.risks || []);
+        setGovReviewsError(null);
+      } else {
+        const err = await response.json().catch(() => null);
+        setGovReviewsError(err?.detail || "Failed to load governance review queue");
+      }
+    } catch {
+      setGovReviewsError("Unable to connect to governance review service");
+    } finally {
+      setGovReviewsLoading(false);
+    }
+  };
+
+  const fetchAuditLogs = async (customOffset = auditOffset, customSource = auditSourceFilter, customAction = auditActionFilter) => {
+    setAuditLoading(true);
+    try {
+      let url = `${API_BASE}/audit-logs?limit=${auditLimit}&offset=${customOffset}`;
+      if (customSource && customSource !== "All") {
+        url += `&source=${encodeURIComponent(customSource)}`;
+      }
+      if (customAction && customAction !== "All") {
+        url += `&action=${encodeURIComponent(customAction)}`;
+      }
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        setAuditLogs(data.logs || []);
+        setAuditTotal(data.total || 0);
+        setAuditError(null);
+      } else {
+        const err = await response.json().catch(() => null);
+        setAuditError(err?.detail || "Failed to load audit logs");
+      }
+    } catch {
+      setAuditError("Unable to connect to audit logging service");
+    } finally {
+      setAuditLoading(false);
     }
   };
 
@@ -703,8 +830,15 @@ function App() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Phase 6: Dedicated initial load for Governance reviews and audit trail
+  // Independent of Phase 5 adaptive polling and refreshAll()
+  useEffect(() => {
+    fetchGovReviews();
+    fetchAuditLogs(0, "All", "All");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1094,6 +1228,193 @@ function App() {
     metric_label: "Implementation Coverage"
   };
 
+  // ----------------------------------------
+  // Phase 6: Governance Review & Reporting Handlers
+  // ----------------------------------------
+
+  const openSubmitReviewModal = (risk) => {
+    setReviewingRisk(risk);
+    setReviewForm({
+      reviewer_name: "Security Analyst",
+      reviewer_role: "GRC Operator",
+      decision: "APPROVED",
+      agreed_treatment: risk.treatment || "Mitigate",
+      comments: "",
+      ai_analysis_acknowledged: false,
+    });
+    setReviewSubmitError(null);
+  };
+
+  const handleReviewSubmit = async (e) => {
+    if (e) e.preventDefault();
+    if (!reviewingRisk) return;
+
+    if (!reviewForm.comments || reviewForm.comments.trim().length < 5) {
+      setReviewSubmitError("Comments must be at least 5 characters in length.");
+      return;
+    }
+
+    setSubmittingReview(true);
+    setReviewSubmitError(null);
+    try {
+      const actorName = reviewForm.reviewer_name.trim() || "Security Analyst";
+      const actorRole = reviewForm.reviewer_role.trim() || "GRC Operator";
+
+      const response = await fetch(`${API_BASE}/risks/${reviewingRisk.id}/reviews`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator-Name": actorName,
+          "X-Operator-Role": actorRole,
+        },
+        body: JSON.stringify({
+          decision: reviewForm.decision,
+          agreed_treatment: reviewForm.agreed_treatment,
+          comments: reviewForm.comments.trim(),
+          ai_analysis_acknowledged: Boolean(reviewForm.ai_analysis_acknowledged),
+          reviewer_name: actorName,
+          reviewer_role: actorRole,
+        }),
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setReviewSubmitError(data?.detail || `Review submission failed (${response.status})`);
+        return;
+      }
+
+      // Successful submission: close modal and perform targeted governance refresh
+      setReviewingRisk(null);
+      await Promise.all([fetchGovReviews(), fetchRisks()]);
+    } catch (error) {
+      setReviewSubmitError(error.message || "Network error while submitting review");
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  const openReviewHistoryModal = async (risk) => {
+    setHistoryRisk(risk);
+    setHistoryLoading(true);
+    setHistoryError(null);
+    setHistoryData(null);
+    try {
+      const response = await fetch(`${API_BASE}/risks/${risk.id}/reviews`);
+      if (response.ok) {
+        const data = await response.json();
+        setHistoryData(data);
+      } else {
+        const err = await response.json().catch(() => null);
+        setHistoryError(err?.detail || `Failed to load review history (${response.status})`);
+      }
+    } catch (error) {
+      setHistoryError(error.message || "Network error loading review history");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const handleExportReport = async (reportType, format) => {
+    setDownloadingReport({ type: reportType, format });
+    setReportDownloadError(null);
+    try {
+      const actorName = reviewForm.reviewer_name.trim() || "Security Analyst";
+      const actorRole = reviewForm.reviewer_role.trim() || "GRC Operator";
+
+      const response = await fetch(`${API_BASE}/reports/${reportType}?format=${format}`, {
+        headers: {
+          "X-Operator-Name": actorName,
+          "X-Operator-Role": actorRole,
+        },
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => null);
+        throw new Error(err?.detail || `Export failed with status ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      let filename = `${reportType}.${format}`;
+      const disposition = response.headers.get("Content-Disposition");
+      if (disposition && disposition.includes("filename=")) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) {
+          filename = match[1];
+        }
+      }
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setReportDownloadError(`Download failed for ${reportType} (${format}): ${err.message}`);
+    } finally {
+      setDownloadingReport(null);
+    }
+  };
+
+  const getReviewStatusBadge = (status) => {
+    switch (status) {
+      case "Pending Review":
+        return <span className="badge badge-pending-review"><span className="status-indicator-dot dot-amber" />Pending Review</span>;
+      case "Approved":
+        return <span className="badge badge-approved"><span className="status-indicator-dot dot-green" />Approved</span>;
+      case "Rejected":
+        return <span className="badge badge-rejected"><span className="status-indicator-dot dot-red" />Rejected</span>;
+      case "Stale":
+        return <span className="badge badge-stale"><span className="status-indicator-dot dot-stale" />Stale</span>;
+      case "Changes Requested":
+        return <span className="badge badge-changes-requested"><span className="status-indicator-dot dot-orange" />Changes Requested</span>;
+      default:
+        return <span className="badge badge-neutral">{status || "Pending Review"}</span>;
+    }
+  };
+
+  const getAuditSourceBadge = (source) => {
+    switch (source) {
+      case "USER": return <span className="badge badge-source-user">USER</span>;
+      case "SYSTEM": return <span className="badge badge-source-system">SYSTEM</span>;
+      case "AI": return <span className="badge badge-source-ai">AI</span>;
+      case "SCANNER": return <span className="badge badge-source-scanner">SCANNER</span>;
+      case "SCHEDULER": return <span className="badge badge-source-scheduler">SCHEDULER</span>;
+      case "API": return <span className="badge badge-source-api">API</span>;
+      default: return <span className="badge badge-neutral">{source || "API"}</span>;
+    }
+  };
+
+  const getAuditActionBadge = (action) => {
+    switch (action) {
+      case "RISK_REVIEW_SUBMITTED":
+        return <span className="badge badge-action-review">Review Submitted</span>;
+      case "RISK_REVIEW_STALE":
+        return <span className="badge badge-action-stale">Review Stale</span>;
+      case "EXPORT":
+        return <span className="badge badge-action-export">Export</span>;
+      case "CREATE":
+        return <span className="badge badge-low">Create</span>;
+      case "UPDATE":
+        return <span className="badge badge-medium">Update</span>;
+      case "DELETE":
+        return <span className="badge badge-critical">Delete</span>;
+      case "SCAN_COMPLETED":
+        return <span className="badge badge-low">Scan Done</span>;
+      case "SCAN_TRIGGERED":
+        return <span className="badge badge-action-trigger">Scan Trigger</span>;
+      default:
+        return <span className="badge badge-neutral">{action}</span>;
+    }
+  };
+
+  const filteredGovQueue = govReviews.filter((item) => {
+    if (govQueueFilter === "All") return true;
+    return item.review_status === govQueueFilter;
+  });
+
   return (
     <div className="dashboard">
       {/* -------------------------------- */}
@@ -1101,7 +1422,7 @@ function App() {
       {/* -------------------------------- */}
       <header>
         <div>
-          <div className="brand-badge">PHASE 4 ACTIVE • AI-ASSISTED SECURITY INTELLIGENCE</div>
+          <div className="brand-badge">PHASE 6 ACTIVE • FULL GOVERNANCE PLATFORM</div>
           <h1>AI-GRC Platform</h1>
           <p>
             Automated Governance, Risk Management & Compliance with Inherent/Residual Risk Modeling and Authoritative Framework Mapping
@@ -1115,7 +1436,7 @@ function App() {
       {/* -------------------------------- */}
       {/* SUMMARY CARDS */}
       {/* -------------------------------- */}
-      <section className="cards cards-five">
+      <section className="cards cards-six">
         <div className="card">
           <div className="card-label">Monitored Assets</div>
           <div className="card-val">{assets.length}</div>
@@ -1148,6 +1469,14 @@ function App() {
           <div className="card-label">Vulnerability Findings</div>
           <div className="card-val highlight-orange">{vulnerabilities.length}</div>
           <div className="card-sub">Identified technical findings</div>
+        </div>
+
+        <div className="card">
+          <div className="card-label">Reviews Pending</div>
+          <div className="card-val highlight-amber">
+            {govReviews.filter((e) => e.review_status === "Pending Review").length}
+          </div>
+          <div className="card-sub">Human sign-off queue</div>
         </div>
       </section>
 
@@ -1926,6 +2255,9 @@ function App() {
                         <span className={`status-pill ${getStatusClass(risk.status)}`}>
                           {risk.status || "Open"}
                         </span>
+                        <div style={{ marginTop: "6px" }}>
+                          {getReviewStatusBadge(risk.review_status || "Pending Review")}
+                        </div>
                       </td>
                       <td>
                         <div className="action-stack">
@@ -1935,6 +2267,20 @@ function App() {
                             title="Manage Risk Treatment & Ownership"
                           >
                             Manage
+                          </button>
+                          <button
+                            className="btn-action"
+                            onClick={() => openSubmitReviewModal(risk)}
+                            title="Submit Human Governance Sign-Off"
+                          >
+                            Sign-Off
+                          </button>
+                          <button
+                            className="btn-action"
+                            onClick={() => openReviewHistoryModal(risk)}
+                            title="View Governance Review History"
+                          >
+                            History
                           </button>
                           <button
                             className={`btn-ai-analyze${expandedAiPanel === risk.id ? " btn-ai-active" : ""}`}
@@ -2286,6 +2632,516 @@ function App() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      {/* ------------------------------------------------ */}
+      {/* PHASE 6: GOVERNANCE REVIEW CENTER & AUDIT TRAIL */}
+      {/* ------------------------------------------------ */}
+      <section className="panel governance-panel">
+        <div className="panel-header governance-panel-header">
+          <div>
+            <div className="gov-tag">PHASE 6: HUMAN GOVERNANCE & AUDIT TRAIL</div>
+            <h2>Governance Review Center</h2>
+            <p className="panel-desc">
+              Human-in-the-loop risk sign-offs, dynamic staleness invalidation, tamper-evident audit logging with SHA-256 integrity hashes, and regulatory report exports.
+            </p>
+          </div>
+          <div className="gov-header-actions">
+            <button
+              className="btn-secondary btn-sm"
+              onClick={() => {
+                fetchGovReviews();
+                if (govActiveTab === "audit") {
+                  fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter);
+                }
+              }}
+              title="Refresh Governance reviews and feeds"
+            >
+              ↻ Refresh Governance
+            </button>
+          </div>
+        </div>
+
+        {/* Governance KPIs (4 cards) */}
+        <div className="gov-kpis">
+          <div className="gov-kpi-card">
+            <div className="kpi-icon-wrap kpi-amber">⏳</div>
+            <div>
+              <div className="kpi-val">
+                {govReviews.filter((e) => e.review_status === "Pending Review").length}
+              </div>
+              <div className="kpi-label">Pending Review</div>
+            </div>
+          </div>
+
+          <div className="gov-kpi-card">
+            <div className="kpi-icon-wrap kpi-orange">⚠</div>
+            <div>
+              <div className="kpi-val">
+                {govReviews.filter((e) => e.review_status === "Stale").length}
+              </div>
+              <div className="kpi-label">Stale Reviews</div>
+            </div>
+          </div>
+
+          <div className="gov-kpi-card">
+            <div className="kpi-icon-wrap kpi-purple">💬</div>
+            <div>
+              <div className="kpi-val">
+                {govReviews.filter((e) => e.review_status === "Changes Requested").length}
+              </div>
+              <div className="kpi-label">Changes Requested</div>
+            </div>
+          </div>
+
+          <div className="gov-kpi-card">
+            <div className="kpi-icon-wrap kpi-blue">✅</div>
+            <div>
+              <div className="kpi-val">
+                {risks.filter((r) => r.review_status === "Approved").length}
+              </div>
+              <div className="kpi-label">Approved</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Sub-Tab Navigation */}
+        <div className="gov-subtabs">
+          <button
+            className={`btn-subtab ${govActiveTab === "queue" ? "active" : ""}`}
+            onClick={() => setGovActiveTab("queue")}
+          >
+            <span>Attention Queue</span>
+            <span className="subtab-count">{govReviews.length}</span>
+          </button>
+          <button
+            className={`btn-subtab ${govActiveTab === "audit" ? "active" : ""}`}
+            onClick={() => {
+              setGovActiveTab("audit");
+              if (auditLogs.length === 0) {
+                fetchAuditLogs(0, auditSourceFilter, auditActionFilter);
+              }
+            }}
+          >
+            <span>Audit Trail</span>
+            <span className="subtab-count">{auditTotal}</span>
+          </button>
+          <button
+            className={`btn-subtab ${govActiveTab === "reports" ? "active" : ""}`}
+            onClick={() => setGovActiveTab("reports")}
+          >
+            <span>Export Reports</span>
+            <span className="subtab-count">5</span>
+          </button>
+        </div>
+
+        {/* TAB 1: ATTENTION QUEUE */}
+        {govActiveTab === "queue" && (
+          <div className="gov-tab-content">
+            <div className="gov-queue-filter-bar">
+              <div className="filter-group">
+                <label>Filter Attention Queue:</label>
+                <select
+                  className="select-filter"
+                  value={govQueueFilter}
+                  onChange={(e) => setGovQueueFilter(e.target.value)}
+                >
+                  <option value="All">All Attention Items ({govReviews.length})</option>
+                  <option value="Pending Review">Pending Review ({govReviews.filter((e) => e.review_status === "Pending Review").length})</option>
+                  <option value="Stale">Stale Reviews ({govReviews.filter((e) => e.review_status === "Stale").length})</option>
+                  <option value="Changes Requested">Changes Requested ({govReviews.filter((e) => e.review_status === "Changes Requested").length})</option>
+                </select>
+              </div>
+              <div className="drift-count-summary">
+                Showing {filteredGovQueue.length} attention queue items
+              </div>
+            </div>
+
+            {govReviewsLoading && govReviews.length === 0 ? (
+              <div className="monitoring-loading-box">
+                <span className="ai-spinner" /> Loading governance review queue...
+              </div>
+            ) : govReviewsError ? (
+              <div className="monitoring-error-box">
+                <div>⚠ {govReviewsError}</div>
+                <button className="btn-secondary btn-sm" onClick={fetchGovReviews}>Retry</button>
+              </div>
+            ) : filteredGovQueue.length === 0 ? (
+              <div className="gov-empty-box">
+                <div className="empty-icon">🛡</div>
+                <div><strong>No risks require attention</strong></div>
+                <div className="sub-text">
+                  All identified risks have been reviewed or no items match the selected filter.
+                </div>
+              </div>
+            ) : (
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Risk Title</th>
+                      <th>Asset / Target</th>
+                      <th>Inherent Risk</th>
+                      <th>Residual Risk</th>
+                      <th>Review Status</th>
+                      <th>Treatment</th>
+                      <th>Due Date</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredGovQueue.map((item) => {
+                      const r = item.risk;
+                      const asset = assets.find((a) => a.id === r.asset_id);
+                      return (
+                        <Fragment key={r.id}>
+                          <tr>
+                            <td style={{ minWidth: "220px" }}>
+                              <strong>{r.title}</strong>
+                              <div className="sub-text">Risk ID #{r.id}</div>
+                            </td>
+                            <td>
+                              <span className="ip-pill">
+                                {asset ? asset.ip_address : `Asset #${r.asset_id}`}
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`badge ${getRiskClass(r.inherent_risk_level)}`}>
+                                {r.inherent_risk_level || "Medium"} ({r.inherent_risk_score || r.risk_score})
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`badge ${getRiskClass(r.residual_risk_level)}`}>
+                                {r.residual_risk_level || "Medium"} ({r.residual_risk_score || r.risk_score})
+                              </span>
+                            </td>
+                            <td>
+                              {getReviewStatusBadge(item.review_status)}
+                            </td>
+                            <td>
+                              <span className="badge badge-treatment">
+                                {r.treatment || "Mitigate"}
+                              </span>
+                            </td>
+                            <td>
+                              <span className="text-xs text-slate">
+                                {r.due_date ? new Date(r.due_date).toLocaleDateString() : "—"}
+                              </span>
+                            </td>
+                            <td>
+                              <div className="action-buttons-group">
+                                <button
+                                  className="btn-action"
+                                  onClick={() => openSubmitReviewModal(r)}
+                                  title="Submit Human Sign-Off Decision"
+                                >
+                                  Submit Sign-Off
+                                </button>
+                                <button
+                                  className="btn-action"
+                                  onClick={() => openReviewHistoryModal(r)}
+                                  title="View Review History"
+                                >
+                                  View History
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                          {item.review_status === "Stale" && (
+                            <tr className="stale-callout-row">
+                              <td colSpan="8" style={{ padding: "0 16px 12px 16px", background: "transparent" }}>
+                                <div className="gov-stale-callout">
+                                  <span className="stale-callout-icon">⚠</span>
+                                  <div>
+                                    <strong>Review Invalidation (Stale Baseline):</strong>
+                                    {item.current_review?.stale_reasons && item.current_review.stale_reasons.length > 0 ? (
+                                      <ul className="stale-reasons-list">
+                                        {item.current_review.stale_reasons.map((reason, idx) => (
+                                          <li key={idx}>{reason}</li>
+                                        ))}
+                                      </ul>
+                                    ) : (
+                                      <div className="sub-text" style={{ color: "#fef08a", marginTop: "4px" }}>
+                                        Technical baseline changes (drift, port status, or CVSS update) invalidated the previous sign-off.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                          {item.review_status === "Changes Requested" && (
+                            <tr className="changes-callout-row">
+                              <td colSpan="8" style={{ padding: "0 16px 12px 16px", background: "transparent" }}>
+                                <div className="gov-changes-requested-callout">
+                                  <span className="changes-callout-icon">💬</span>
+                                  <div>
+                                    <strong>Changes Requested:</strong>{" "}
+                                    {item.current_review?.comments || "Additional mitigating controls or treatment revisions requested by reviewer."}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: AUDIT TRAIL */}
+        {govActiveTab === "audit" && (
+          <div className="gov-tab-content">
+            <div className="audit-filter-bar">
+              <div className="filter-group">
+                <label>Source:</label>
+                <select
+                  className="select-filter"
+                  value={auditSourceFilter}
+                  onChange={(e) => {
+                    const newSource = e.target.value;
+                    setAuditSourceFilter(newSource);
+                    setAuditOffset(0);
+                    fetchAuditLogs(0, newSource, auditActionFilter);
+                  }}
+                >
+                  <option value="All">All Sources</option>
+                  <option value="USER">USER</option>
+                  <option value="SYSTEM">SYSTEM</option>
+                  <option value="SCANNER">SCANNER</option>
+                  <option value="SCHEDULER">SCHEDULER</option>
+                  <option value="AI">AI</option>
+                  <option value="API">API</option>
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <label>Action:</label>
+                <select
+                  className="select-filter"
+                  value={auditActionFilter}
+                  onChange={(e) => {
+                    const newAction = e.target.value;
+                    setAuditActionFilter(newAction);
+                    setAuditOffset(0);
+                    fetchAuditLogs(0, auditSourceFilter, newAction);
+                  }}
+                >
+                  <option value="All">All Actions</option>
+                  <option value="RISK_REVIEW_SUBMITTED">RISK_REVIEW_SUBMITTED</option>
+                  <option value="RISK_REVIEW_STALE">RISK_REVIEW_STALE</option>
+                  <option value="EXPORT">EXPORT</option>
+                  <option value="EVIDENCE_CREATED">EVIDENCE_CREATED</option>
+                  <option value="EVIDENCE_DELETED">EVIDENCE_DELETED</option>
+                  <option value="SCAN_COMPLETED">SCAN_COMPLETED</option>
+                  <option value="SCAN_TRIGGERED">SCAN_TRIGGERED</option>
+                  <option value="CREATE">CREATE</option>
+                  <option value="UPDATE">UPDATE</option>
+                  <option value="DELETE">DELETE</option>
+                </select>
+              </div>
+
+              <button
+                className="btn-secondary btn-sm"
+                onClick={() => fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter)}
+                title="Refresh audit trail"
+              >
+                ↻ Refresh Audit
+              </button>
+
+              <div className="drift-count-summary" style={{ marginLeft: "auto" }}>
+                Showing {auditLogs.length} of {auditTotal} audit events (newest first)
+              </div>
+            </div>
+
+            {auditLoading && auditLogs.length === 0 ? (
+              <div className="monitoring-loading-box">
+                <span className="ai-spinner" /> Loading audit trail...
+              </div>
+            ) : auditError ? (
+              <div className="monitoring-error-box">
+                <div>⚠ {auditError}</div>
+                <button
+                  className="btn-secondary btn-sm"
+                  onClick={() => fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter)}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : auditLogs.length === 0 ? (
+              <div className="gov-empty-box">
+                <div className="empty-icon">📜</div>
+                <div><strong>No audit log entries found</strong></div>
+                <div className="sub-text">
+                  Events matching the current filter will be recorded here in an append-only, tamper-evident log.
+                </div>
+              </div>
+            ) : (
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>Source & Action</th>
+                      <th>Actor</th>
+                      <th>Entity</th>
+                      <th>Description & Diff</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditLogs.map((log) => (
+                      <tr key={log.id}>
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          <div className="text-xs font-semibold">{formatDateTime(log.timestamp)}</div>
+                          <div className="sub-text">Event #{log.id}</div>
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
+                            {getAuditSourceBadge(log.source)}
+                            {getAuditActionBadge(log.action)}
+                          </div>
+                        </td>
+                        <td>
+                          <strong>{log.actor}</strong>
+                          {log.ip_address && (
+                            <div className="sub-text">{log.ip_address}</div>
+                          )}
+                        </td>
+                        <td>
+                          <strong>{log.entity_type || "—"}</strong>
+                          <div className="sub-text">
+                            {log.entity_name ? log.entity_name : (log.entity_id ? `ID #${log.entity_id}` : "")}
+                          </div>
+                        </td>
+                        <td style={{ minWidth: "320px" }}>
+                          <div>{log.description}</div>
+                          {(log.old_values || log.new_values) && (
+                            <details className="audit-diff-details">
+                              <summary className="audit-diff-summary">
+                                View State Changes / Diff
+                              </summary>
+                              <div className="audit-diff-content">
+                                {log.old_values && (
+                                  <div className="diff-col">
+                                    <div className="diff-col-header">Previous State</div>
+                                    <pre className="diff-json">{JSON.stringify(log.old_values, null, 2)}</pre>
+                                  </div>
+                                )}
+                                {log.new_values && (
+                                  <div className="diff-col">
+                                    <div className="diff-col-header">Updated State</div>
+                                    <pre className="diff-json">{JSON.stringify(log.new_values, null, 2)}</pre>
+                                  </div>
+                                )}
+                              </div>
+                            </details>
+                          )}
+                          {log.integrity_hash && (
+                            <div className="audit-hash" title={`SHA-256 Digest: ${log.integrity_hash}`}>
+                              <span className="hash-label">Integrity Hash:</span>
+                              <code>{log.integrity_hash.substring(0, 16)}...</code>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {/* Audit Pagination */}
+                {auditTotal > auditLimit && (
+                  <div className="drift-pagination-bar">
+                    <button
+                      className="btn-secondary btn-sm"
+                      disabled={auditOffset === 0}
+                      onClick={() => {
+                        const newOffset = Math.max(0, auditOffset - auditLimit);
+                        setAuditOffset(newOffset);
+                        fetchAuditLogs(newOffset, auditSourceFilter, auditActionFilter);
+                      }}
+                    >
+                      ← Previous Page
+                    </button>
+                    <span className="pagination-info">
+                      Page {Math.floor(auditOffset / auditLimit) + 1} of {Math.ceil(auditTotal / auditLimit)}
+                    </span>
+                    <button
+                      className="btn-secondary btn-sm"
+                      disabled={auditOffset + auditLimit >= auditTotal}
+                      onClick={() => {
+                        const newOffset = auditOffset + auditLimit;
+                        setAuditOffset(newOffset);
+                        fetchAuditLogs(newOffset, auditSourceFilter, auditActionFilter);
+                      }}
+                    >
+                      Next Page →
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: EXPORT REPORTS */}
+        {govActiveTab === "reports" && (
+          <div className="gov-tab-content">
+            {reportDownloadError && (
+              <div className="monitoring-error-banner" style={{ marginBottom: "16px" }}>
+                <span>⚠ {reportDownloadError}</span>
+                <button className="btn-link" onClick={() => setReportDownloadError(null)}>Dismiss</button>
+              </div>
+            )}
+
+            <div className="reports-grid">
+              {REPORT_TYPES.map((rep) => (
+                <div key={rep.id} className="report-card">
+                  <div>
+                    <div className="report-card-tag">{rep.category}</div>
+                    <div className="report-card-title">{rep.title}</div>
+                    <p className="report-card-desc">{rep.desc}</p>
+                  </div>
+                  <div className="report-card-actions">
+                    <button
+                      className="btn-format btn-format-json"
+                      disabled={downloadingReport?.type === rep.id}
+                      onClick={() => handleExportReport(rep.id, "json")}
+                      title="Export structured JSON report"
+                    >
+                      {downloadingReport?.type === rep.id && downloadingReport?.format === "json"
+                        ? "Exporting..."
+                        : "JSON"}
+                    </button>
+                    <button
+                      className="btn-format btn-format-csv"
+                      disabled={downloadingReport?.type === rep.id}
+                      onClick={() => handleExportReport(rep.id, "csv")}
+                      title="Export tabular CSV report"
+                    >
+                      {downloadingReport?.type === rep.id && downloadingReport?.format === "csv"
+                        ? "Exporting..."
+                        : "CSV"}
+                    </button>
+                    <button
+                      className="btn-format btn-format-html"
+                      disabled={downloadingReport?.type === rep.id}
+                      onClick={() => handleExportReport(rep.id, "html")}
+                      title="Export formatted HTML report"
+                    >
+                      {downloadingReport?.type === rep.id && downloadingReport?.format === "html"
+                        ? "Exporting..."
+                        : "HTML"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* -------------------------------- */}
@@ -2642,6 +3498,260 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* -------------------------------- */}
+      {/* MODAL: SUBMIT RISK REVIEW (PHASE 6C) */}
+      {/* -------------------------------- */}
+      {reviewingRisk && (
+        <div className="modal-backdrop" onClick={() => setReviewingRisk(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "620px" }}>
+            <div className="modal-header">
+              <h3>Submit Governance Risk Review — #{reviewingRisk.id}</h3>
+              <button className="modal-close" onClick={() => setReviewingRisk(null)}>×</button>
+            </div>
+            <form onSubmit={handleReviewSubmit}>
+              <div className="modal-body">
+                {reviewSubmitError && (
+                  <div className="modal-error-banner">⚠ {reviewSubmitError}</div>
+                )}
+
+                <div className="risk-summary-box">
+                  <strong>{reviewingRisk.title}</strong>
+                  <div>
+                    Inherent: {reviewingRisk.inherent_risk_level || "Medium"} ({reviewingRisk.inherent_risk_score || reviewingRisk.risk_score}) • Residual: {reviewingRisk.residual_risk_level || "Medium"} ({reviewingRisk.residual_risk_score || reviewingRisk.risk_score})
+                  </div>
+                  <div className="sub-text">
+                    Current Treatment: {reviewingRisk.treatment || "Mitigate"} • Lifecycle: {reviewingRisk.status || "Open"} • Review Status: {reviewingRisk.review_status || "Pending Review"}
+                  </div>
+                </div>
+
+                {/* Reviewer Attribution (Prototype) */}
+                <div style={{ marginTop: "14px" }}>
+                  <div className="card-label" style={{ marginBottom: "4px" }}>Reviewer Attribution (Prototype)</div>
+                  <div className="attribution-prototype-note">
+                    ℹ️ Attribution metadata only — authentication is not enabled in this prototype.
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label>Reviewer Name</label>
+                      <input
+                        type="text"
+                        value={reviewForm.reviewer_name}
+                        onChange={(e) => setReviewForm({ ...reviewForm, reviewer_name: e.target.value })}
+                        placeholder="e.g. Security Analyst"
+                        required
+                      />
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label>Reviewer Role</label>
+                      <input
+                        type="text"
+                        value={reviewForm.reviewer_role}
+                        onChange={(e) => setReviewForm({ ...reviewForm, reviewer_role: e.target.value })}
+                        placeholder="e.g. GRC Operator"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Review Decision */}
+                <div className="form-group" style={{ marginTop: "16px" }}>
+                  <label>Review Decision *</label>
+                  <select
+                    value={reviewForm.decision}
+                    onChange={(e) => setReviewForm({ ...reviewForm, decision: e.target.value })}
+                  >
+                    <option value="APPROVED">APPROVED — Formally accept/sign-off on current risk posture</option>
+                    <option value="REJECTED">REJECTED — Risk treatment or findings rejected</option>
+                    <option value="CHANGES_REQUESTED">CHANGES_REQUESTED — Additional controls or adjustments required</option>
+                  </select>
+                </div>
+
+                {/* Explanatory note */}
+                <div className="form-independent-note">
+                  ⚠ Treatment selection records your agreed response strategy independently of the approval decision. The backend validates both fields separately.
+                </div>
+
+                {/* Agreed Treatment */}
+                <div className="form-group">
+                  <label>Agreed Treatment Strategy *</label>
+                  <select
+                    value={reviewForm.agreed_treatment}
+                    onChange={(e) => setReviewForm({ ...reviewForm, agreed_treatment: e.target.value })}
+                  >
+                    <option value="Mitigate">Mitigate (Deploy Controls)</option>
+                    <option value="Accept">Accept (Document Business Acceptance)</option>
+                    <option value="Transfer">Transfer (Insurance / Third-party)</option>
+                    <option value="Avoid">Avoid (Decommission Service)</option>
+                  </select>
+                </div>
+
+                {/* Mandatory Justification Comments */}
+                <div className="form-group">
+                  <label>Auditor Justification & Comments * (min 5 chars)</label>
+                  <textarea
+                    rows="3"
+                    required
+                    placeholder="Document the formal justification for this governance decision..."
+                    value={reviewForm.comments}
+                    onChange={(e) => setReviewForm({ ...reviewForm, comments: e.target.value })}
+                  />
+                </div>
+
+                {/* AI Advisory Acknowledgement */}
+                <div className="form-group">
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={reviewForm.ai_analysis_acknowledged}
+                      onChange={(e) => setReviewForm({ ...reviewForm, ai_analysis_acknowledged: e.target.checked })}
+                    />
+                    <span>
+                      I acknowledge reviewing the AI security intelligence and confirm that this sign-off represents an authoritative human governance decision.
+                    </span>
+                  </label>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setReviewingRisk(null)}
+                  disabled={submittingReview}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={submittingReview}
+                >
+                  {submittingReview ? "Submitting Sign-Off..." : "Submit Risk Review"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* -------------------------------- */}
+      {/* MODAL: VIEW REVIEW HISTORY (PHASE 6C) */}
+      {/* -------------------------------- */}
+      {historyRisk && (
+        <div className="modal-backdrop" onClick={() => setHistoryRisk(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "680px" }}>
+            <div className="modal-header">
+              <div>
+                <h3>Review History — #{historyRisk.id}</h3>
+                <div className="sub-text">{historyRisk.title}</div>
+              </div>
+              <button className="modal-close" onClick={() => setHistoryRisk(null)}>×</button>
+            </div>
+            <div className="modal-body history-modal-body">
+              {historyLoading ? (
+                <div className="monitoring-loading-box">
+                  <span className="ai-spinner" /> Loading review history...
+                </div>
+              ) : historyError ? (
+                <div className="monitoring-error-box">
+                  <div>⚠ {historyError}</div>
+                  <button className="btn-secondary btn-sm" onClick={() => openReviewHistoryModal(historyRisk)}>
+                    Retry
+                  </button>
+                </div>
+              ) : historyData ? (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+                    <div>
+                      <span className="text-slate text-xs">Current Governance Status: </span>
+                      {getReviewStatusBadge(historyData.review_status)}
+                    </div>
+                    {historyData.is_stale && (
+                      <span className="badge badge-stale">Stale Baseline</span>
+                    )}
+                  </div>
+
+                  {historyData.is_stale && historyData.stale_reasons && historyData.stale_reasons.length > 0 && (
+                    <div className="stale-alert-box">
+                      <strong>⚠ Current Review Invalidated (Stale):</strong>
+                      <ul className="stale-reasons-list">
+                        {historyData.stale_reasons.map((r, i) => (
+                          <li key={i}>{r}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {!historyData.history || historyData.history.length === 0 ? (
+                    <div className="empty-cell" style={{ textAlign: "center", padding: "24px" }}>
+                      No prior governance reviews recorded for this risk.
+                    </div>
+                  ) : (
+                    historyData.history.map((rev) => (
+                      <div key={rev.id} className="history-card">
+                        <div className="history-card-header">
+                          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                            <span className={`badge ${rev.decision === "APPROVED" ? "badge-approved" : rev.decision === "REJECTED" ? "badge-rejected" : "badge-changes-requested"}`}>
+                              {rev.decision}
+                            </span>
+                            <span className="badge badge-treatment">
+                              {rev.agreed_treatment}
+                            </span>
+                            {rev.is_current ? (
+                              <span className="badge badge-low">Active</span>
+                            ) : (
+                              <span className="badge badge-neutral">Superseded</span>
+                            )}
+                            {rev.is_stale && (
+                              <span className="badge badge-stale">Stale</span>
+                            )}
+                          </div>
+                          <span className="text-xs text-slate">{formatDateTime(rev.created_at)}</span>
+                        </div>
+
+                        <div className="text-xs" style={{ color: "#94a3b8", marginBottom: "6px" }}>
+                          Reviewer: <strong>{rev.reviewer_name}</strong> ({rev.reviewer_role})
+                        </div>
+
+                        {rev.stale_reasons && rev.stale_reasons.length > 0 && (
+                          <div className="gov-stale-callout" style={{ marginTop: "6px", marginBottom: "8px" }}>
+                            <span className="stale-callout-icon">⚠</span>
+                            <div>
+                              <strong>Stale Reasons:</strong> {rev.stale_reasons.join("; ")}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="history-comments">
+                          "{rev.comments}"
+                        </div>
+
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span className="text-xs text-slate">
+                            {rev.ai_analysis_acknowledged ? "✓ AI Advisory Acknowledged" : "—"}
+                          </span>
+                          {rev.snapshot && (
+                            <span className="history-snapshot">
+                              Snapshot: Inherent {rev.snapshot.inherent_level || "—"} ({rev.snapshot.inherent_score || "—"}) • Residual {rev.snapshot.residual_level || "—"} ({rev.snapshot.residual_score || "—"})
+                              {rev.snapshot.cvss_score != null ? ` • CVSS ${rev.snapshot.cvss_score}` : ""}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setHistoryRisk(null)}>
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
