@@ -1,4 +1,4 @@
-import { useEffect, useState, Fragment } from "react";
+import { useEffect, useState, useRef, Fragment } from "react";
 import "./App.css";
 
 const API_BASE = "http://127.0.0.1:8000";
@@ -317,6 +317,7 @@ function App() {
   const [monitoringJobs, setMonitoringJobs] = useState([]);
   const [monitoringJobsLoading, setMonitoringJobsLoading] = useState(false);
   const [monitoringJobsError, setMonitoringJobsError] = useState(null);
+  const lastTerminalJobSigRef = useRef(null);
 
   const [monitoringSchedules, setMonitoringSchedules] = useState([]);
   const [monitoringSchedulesLoading, setMonitoringSchedulesLoading] = useState(false);
@@ -856,15 +857,35 @@ function App() {
           const data = await res.json();
           const newJobs = data.jobs || [];
 
-          const justFinished = newJobs.some(
-            (nj) => (nj.status === "Completed" || nj.status === "Failed") &&
-              monitoringJobs.some((oj) => oj.id === nj.id && (oj.status === "Running" || oj.status === "Queued"))
-          );
+          // Deterministically sort completed jobs by completed_at descending, with job ID tie-breaker
+          const completedJobs = newJobs
+            .filter((j) => j.status === "Completed")
+            .sort((a, b) => {
+              const timeA = a.completed_at ? new Date(a.completed_at).getTime() : 0;
+              const timeB = b.completed_at ? new Date(b.completed_at).getTime() : 0;
+              if (timeB !== timeA) {
+                return timeB - timeA;
+              }
+              return (b.id || 0) - (a.id || 0);
+            });
+
+          const latestCompleted = completedJobs[0] || null;
+          const terminalSig = latestCompleted
+            ? `Completed-${latestCompleted.id}-${latestCompleted.completed_at || ""}`
+            : null;
+
+          const needsStateRefresh =
+            terminalSig &&
+            lastTerminalJobSigRef.current !== terminalSig;
+
+          if (terminalSig) {
+            lastTerminalJobSigRef.current = terminalSig;
+          }
 
           setMonitoringJobs(newJobs);
           setMonitoringJobsError(null);
 
-          if (justFinished) {
+          if (needsStateRefresh) {
             fetchAssets();
             fetchVulnerabilities();
             fetchRisks();
@@ -880,6 +901,23 @@ function App() {
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monitoringJobs, driftOffset, driftSeverityFilter, driftTypeFilter]);
+
+  // Refresh assets, risks, and drift events when tab becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        fetchAssets();
+        fetchRisks();
+        fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driftOffset, driftSeverityFilter, driftTypeFilter]);
 
   // ----------------------------------------
   // Network Scanning
@@ -1595,21 +1633,30 @@ function App() {
         <div className="monitoring-subtabs">
           <button
             className={`btn-subtab ${monitoringActiveTab === "jobs" ? "active" : ""}`}
-            onClick={() => setMonitoringActiveTab("jobs")}
+            onClick={() => {
+              setMonitoringActiveTab("jobs");
+              fetchMonitoringJobs();
+            }}
           >
             <span>Scan Jobs & Queue</span>
             <span className="subtab-count">{monitoringJobs.length}</span>
           </button>
           <button
             className={`btn-subtab ${monitoringActiveTab === "schedules" ? "active" : ""}`}
-            onClick={() => setMonitoringActiveTab("schedules")}
+            onClick={() => {
+              setMonitoringActiveTab("schedules");
+              fetchMonitoringSchedules();
+            }}
           >
             <span>Automated Schedules</span>
             <span className="subtab-count">{monitoringSchedules.length}</span>
           </button>
           <button
             className={`btn-subtab ${monitoringActiveTab === "drift" ? "active" : ""}`}
-            onClick={() => setMonitoringActiveTab("drift")}
+            onClick={() => {
+              setMonitoringActiveTab("drift");
+              fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
+            }}
           >
             <span>Network Drift & Audit Feed</span>
             <span className="subtab-count">{driftTotal}</span>
@@ -2035,6 +2082,16 @@ function App() {
             <p className="panel-desc">
               Manage business context: criticality, exposure, and environment dynamically inform Inherent Risk.
             </p>
+          </div>
+          <div>
+            <button
+              type="button"
+              className="btn-secondary btn-sm"
+              onClick={() => fetchAssets()}
+              title="Refresh assets from backend"
+            >
+              ↻ Refresh Assets
+            </button>
           </div>
         </div>
 
