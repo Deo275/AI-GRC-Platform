@@ -397,6 +397,11 @@ function App() {
   const [reportDownloadError, setReportDownloadError] = useState(null);
 
   // ----------------------------------------
+  // Navigation State
+  // ----------------------------------------
+  const [activePage, setActivePage] = useState("overview");
+
+  // ----------------------------------------
   // Data Fetching Functions
   // ----------------------------------------
 
@@ -1453,27 +1458,118 @@ function App() {
     return item.review_status === govQueueFilter;
   });
 
+  // ----------------------------------------
+  // Navigation Helpers
+  // ----------------------------------------
+  const handleNavClick = (page) => {
+    setActivePage(page);
+    if (page === "reviews") setGovActiveTab("queue");
+    else if (page === "audit") {
+      setGovActiveTab("audit");
+      if (auditLogs.length === 0) fetchAuditLogs(0, auditSourceFilter, auditActionFilter);
+    }
+    else if (page === "reports") setGovActiveTab("reports");
+  };
+
+  const PAGE_META = {
+    overview: { title: "Security Overview", desc: "Executive security posture dashboard" },
+    assets: { title: "Asset Inventory", desc: "Infrastructure discovery and business context management" },
+    vulnerabilities: { title: "Vulnerability Findings", desc: "Technical security findings with CVE/NVD correlation" },
+    "risk-management": { title: "Risk Management", desc: "Enterprise risk register, heat map, controls & treatment" },
+    compliance: { title: "Compliance", desc: "Framework mapping and implementation tracking" },
+    monitoring: { title: "Continuous Monitoring", desc: "Automated scanning, schedules, and drift detection" },
+    reviews: { title: "Reviews & Sign-off", desc: "Human governance risk review queue" },
+    audit: { title: "Audit Trail", desc: "Tamper-evident chronological event log" },
+    reports: { title: "Reports", desc: "Regulatory and compliance report exports" },
+  };
+  const currentPageMeta = PAGE_META[activePage] || PAGE_META.overview;
+
   return (
-    <div className="dashboard">
-      {/* -------------------------------- */}
-      {/* HEADER */}
-      {/* -------------------------------- */}
-      <header>
-        <div>
-          <div className="brand-badge">PHASE 6 ACTIVE • FULL GOVERNANCE PLATFORM</div>
-          <h1>AI-GRC Platform</h1>
-          <p>
-            Automated Governance, Risk Management & Compliance with Inherent/Residual Risk Modeling and Authoritative Framework Mapping
-          </p>
+    <div className="app-layout">
+      {/* ================================ */}
+      {/* SIDEBAR NAVIGATION              */}
+      {/* ================================ */}
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <div className="sidebar-logo">🛡</div>
+          <div>
+            <div className="sidebar-title">AI-GRC</div>
+            <div className="sidebar-subtitle">Governance · Risk · Compliance</div>
+          </div>
         </div>
-        <div className="system-status">
-          <span className="pulse-dot"></span> System Online
+        <nav className="sidebar-nav">
+          <div className="nav-group-label">CORE</div>
+          <button className={`nav-item${activePage === "overview" ? " active" : ""}`} onClick={() => setActivePage("overview")}>
+            <span className="nav-icon">🏠</span><span className="nav-label">Overview</span>
+          </button>
+          <button className={`nav-item${activePage === "assets" ? " active" : ""}`} onClick={() => setActivePage("assets")}>
+            <span className="nav-icon">🖥</span><span className="nav-label">Assets</span>
+          </button>
+          <button className={`nav-item${activePage === "vulnerabilities" ? " active" : ""}`} onClick={() => setActivePage("vulnerabilities")}>
+            <span className="nav-icon">🛡</span><span className="nav-label">Vulnerabilities</span>
+          </button>
+          <button className={`nav-item${activePage === "risk-management" ? " active" : ""}`} onClick={() => setActivePage("risk-management")}>
+            <span className="nav-icon">⚠</span><span className="nav-label">Risk Management</span>
+          </button>
+          <button className={`nav-item${activePage === "compliance" ? " active" : ""}`} onClick={() => setActivePage("compliance")}>
+            <span className="nav-icon">📋</span><span className="nav-label">Compliance</span>
+          </button>
+          <button className={`nav-item${activePage === "monitoring" ? " active" : ""}`} onClick={() => setActivePage("monitoring")}>
+            <span className="nav-icon">📡</span><span className="nav-label">Continuous Monitoring</span>
+          </button>
+
+          <div className="nav-group-label">GOVERNANCE</div>
+          <button className={`nav-item${activePage === "reviews" ? " active" : ""}`} onClick={() => handleNavClick("reviews")}>
+            <span className="nav-icon">✅</span><span className="nav-label">Reviews & Sign-off</span>
+          </button>
+          <button className={`nav-item${activePage === "audit" ? " active" : ""}`} onClick={() => handleNavClick("audit")}>
+            <span className="nav-icon">🧾</span><span className="nav-label">Audit Trail</span>
+          </button>
+
+          <div className="nav-group-label">OUTPUT</div>
+          <button className={`nav-item${activePage === "reports" ? " active" : ""}`} onClick={() => handleNavClick("reports")}>
+            <span className="nav-icon">📊</span><span className="nav-label">Reports</span>
+          </button>
+        </nav>
+        <div className="sidebar-footer">
+          <div className="sidebar-status">
+            <span className="pulse-dot"></span>
+            <span>System Online</span>
+          </div>
         </div>
-      </header>
+      </aside>
+
+      {/* ================================ */}
+      {/* MAIN CONTENT AREA               */}
+      {/* ================================ */}
+      <div className="main-content">
+        <header className="top-bar">
+          <div className="top-bar-left">
+            <h1 className="top-bar-title">{currentPageMeta.title}</h1>
+            <p className="top-bar-desc">{currentPageMeta.desc}</p>
+          </div>
+          <div className="top-bar-right">
+            <button
+              className={`ai-copilot-btn${activePage === "risk-management" ? " ai-copilot-available" : ""}`}
+              disabled={activePage !== "risk-management"}
+              title={activePage === "risk-management"
+                ? "AI Risk Analysis available \u2014 use \u2726 AI Analysis on individual risk entries below"
+                : "AI analysis is available on the Risk Management page"}
+            >
+              <span className="ai-copilot-icon">✦</span>
+              <span className="ai-copilot-label">AI Copilot</span>
+              {activePage === "risk-management" && <span className="ai-copilot-status-dot" />}
+            </button>
+          </div>
+        </header>
+
+        <div className="page-content">
 
       {/* -------------------------------- */}
-      {/* SUMMARY CARDS */}
+      {/* OVERVIEW PAGE                   */}
       {/* -------------------------------- */}
+      {activePage === "overview" && (
+      <>
       <section className="cards cards-six">
         <div className="card">
           <div className="card-label">Monitored Assets</div>
@@ -1558,10 +1654,12 @@ function App() {
           </div>
         )}
       </section>
+      </>)}
 
       {/* ------------------------------------------------ */}
-      {/* PHASE 5: CONTINUOUS MONITORING & DRIFT CENTER    */}
+      {/* CONTINUOUS MONITORING                            */}
       {/* ------------------------------------------------ */}
+      {activePage === "monitoring" && (
       <section className="panel monitoring-panel">
         <div className="panel-header monitoring-panel-header">
           <div>
@@ -2071,10 +2169,12 @@ function App() {
           </div>
         )}
       </section>
+      )}
 
       {/* -------------------------------- */}
       {/* ASSET INVENTORY & INTELLIGENCE */}
       {/* -------------------------------- */}
+      {activePage === "assets" && (
       <section className="panel">
         <div className="panel-header">
           <div>
@@ -2165,10 +2265,13 @@ function App() {
           </table>
         </div>
       </section>
+      )}
 
       {/* -------------------------------- */}
-      {/* RISK REGISTER */}
+      {/* RISK MANAGEMENT                */}
       {/* -------------------------------- */}
+      {activePage === "risk-management" && (
+      <>
       <section className="panel">
         <div className="panel-header">
           <div>
@@ -2444,10 +2547,12 @@ function App() {
           </table>
         </div>
       </section>
+      </>)}
 
       {/* -------------------------------- */}
-      {/* PHASE 3: COMPLIANCE MAPPING */}
+      {/* COMPLIANCE                      */}
       {/* -------------------------------- */}
+      {activePage === "compliance" && (
       <section className="panel">
         <div className="panel-header">
           <div>
@@ -2621,10 +2726,12 @@ function App() {
           </table>
         </div>
       </section>
+      )}
 
       {/* -------------------------------- */}
-      {/* VULNERABILITY FINDINGS (PHASE 1) */}
+      {/* VULNERABILITY FINDINGS          */}
       {/* -------------------------------- */}
+      {activePage === "vulnerabilities" && (
       <section className="panel">
         <div className="panel-header">
           <div>
@@ -2690,10 +2797,12 @@ function App() {
           </table>
         </div>
       </section>
+      )}
 
       {/* ------------------------------------------------ */}
-      {/* PHASE 6: GOVERNANCE REVIEW CENTER & AUDIT TRAIL */}
+      {/* GOVERNANCE: REVIEWS, AUDIT & REPORTS            */}
       {/* ------------------------------------------------ */}
+      {(activePage === "reviews" || activePage === "audit" || activePage === "reports") && (
       <section className="panel governance-panel">
         <div className="panel-header governance-panel-header">
           <div>
@@ -2766,7 +2875,7 @@ function App() {
         <div className="gov-subtabs">
           <button
             className={`btn-subtab ${govActiveTab === "queue" ? "active" : ""}`}
-            onClick={() => setGovActiveTab("queue")}
+            onClick={() => { setGovActiveTab("queue"); setActivePage("reviews"); }}
           >
             <span>Attention Queue</span>
             <span className="subtab-count">{govReviews.length}</span>
@@ -2775,6 +2884,7 @@ function App() {
             className={`btn-subtab ${govActiveTab === "audit" ? "active" : ""}`}
             onClick={() => {
               setGovActiveTab("audit");
+              setActivePage("audit");
               if (auditLogs.length === 0) {
                 fetchAuditLogs(0, auditSourceFilter, auditActionFilter);
               }
@@ -2785,7 +2895,7 @@ function App() {
           </button>
           <button
             className={`btn-subtab ${govActiveTab === "reports" ? "active" : ""}`}
-            onClick={() => setGovActiveTab("reports")}
+            onClick={() => { setGovActiveTab("reports"); setActivePage("reports"); }}
           >
             <span>Export Reports</span>
             <span className="subtab-count">5</span>
@@ -3200,10 +3310,14 @@ function App() {
           </div>
         )}
       </section>
+      )}
 
-      {/* -------------------------------- */}
-      {/* MODAL: EDIT ASSET INTELLIGENCE */}
-      {/* -------------------------------- */}
+        </div>{/* end page-content */}
+      </div>{/* end main-content */}
+
+      {/* ================================ */}
+      {/* MODALS (global, outside pages)  */}
+      {/* ================================ */}
       {editingAsset && (
         <div className="modal-backdrop" onClick={() => setEditingAsset(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
