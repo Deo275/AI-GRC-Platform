@@ -37,6 +37,38 @@ const REPORT_TYPES = [
 ];
 
 // ---------------------------------------------------------------------------
+// Timestamp formatting utility
+// Backend/database timestamps are in UTC without an explicit timezone suffix.
+// We normalize ISO datetime strings to UTC so standard Date/Intl methods
+// correctly convert them into the user's browser/local timezone.
+// ---------------------------------------------------------------------------
+const parseUtcDate = (val) => {
+  if (!val) return null;
+  if (val instanceof Date) return val;
+  if (typeof val === "string") {
+    let s = val.trim();
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) {
+      s = s.replace(" ", "T");
+    }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) && !/(Z|[+-]\d{2}(:?\d{2})?)$/i.test(s)) {
+      s += "Z";
+    }
+    return new Date(s);
+  }
+  return new Date(val);
+};
+
+const formatDateTime = (iso, fallback = "—") => {
+  if (!iso) return fallback;
+  try {
+    const d = parseUtcDate(iso);
+    return !d || isNaN(d.getTime()) ? iso : d.toLocaleString();
+  } catch {
+    return iso;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // AIAnalysisPanel — Phase 4B: Pure display component for AI security intelligence
 // Receives pre-fetched analysis data; no API calls, no GRC state mutations.
 // ---------------------------------------------------------------------------
@@ -76,10 +108,7 @@ function AIAnalysisPanel({ loading, error, analysis, onReanalyze }) {
     }
   };
 
-  const formatAnalysisDate = (iso) => {
-    if (!iso) return "";
-    try { return new Date(iso).toLocaleString(); } catch { return iso; }
-  };
+  const formatAnalysisDate = (iso) => formatDateTime(iso, "");
 
   return (
     <div className="ai-panel">
@@ -761,15 +790,7 @@ function App() {
     }
   };
 
-  const formatDateTime = (iso) => {
-    if (!iso) return "—";
-    try {
-      const d = new Date(iso);
-      return isNaN(d.getTime()) ? iso : d.toLocaleString();
-    } catch {
-      return iso;
-    }
-  };
+  // formatDateTime is defined at module scope for reuse across all views
 
   const getJobStatusBadge = (status) => {
     switch (status) {
