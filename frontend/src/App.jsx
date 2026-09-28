@@ -276,6 +276,637 @@ function AIAnalysisPanel({ loading, error, analysis, onReanalyze }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2: Security Overview Sub-Components
+// ---------------------------------------------------------------------------
+
+function RiskDistribution({ risks }) {
+  if (!risks || risks.length === 0) {
+    return (
+      <div className="overview-widget">
+        <div className="overview-widget-header">
+          <div className="overview-widget-title">
+            <span>⚖️</span> Risk Severity Distribution
+          </div>
+          <span className="overview-widget-subtitle">Risk Register</span>
+        </div>
+        <div className="overview-empty">
+          <span className="overview-empty-icon">🛡️</span>
+          No registered risks in the risk register.
+        </div>
+      </div>
+    );
+  }
+
+  const total = risks.length;
+  const critical = risks.filter(r => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "critical").length;
+  const high = risks.filter(r => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "high").length;
+  const medium = risks.filter(r => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "medium").length;
+  const low = risks.filter(r => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "low").length;
+
+  const pct = (cnt) => (total > 0 ? ((cnt / total) * 100).toFixed(1) : "0.0");
+  const openCount = risks.filter(r => r.status === "Open").length;
+  const resolvedCount = risks.filter(r => r.status === "Resolved").length;
+
+  return (
+    <div className="overview-widget">
+      <div className="overview-widget-header">
+        <div className="overview-widget-title">
+          <span>⚖️</span> Risk Severity Distribution
+        </div>
+        <span className="overview-widget-subtitle">{total} Registered Risks</span>
+      </div>
+
+      {/* Segmented proportional bar */}
+      <div className="segmented-bar" title={`Critical: ${critical}, High: ${high}, Medium: ${medium}, Low: ${low}`}>
+        {critical > 0 && <div className="segmented-segment critical" style={{ width: `${pct(critical)}%` }} />}
+        {high > 0 && <div className="segmented-segment high" style={{ width: `${pct(high)}%` }} />}
+        {medium > 0 && <div className="segmented-segment medium" style={{ width: `${pct(medium)}%` }} />}
+        {low > 0 && <div className="segmented-segment low" style={{ width: `${pct(low)}%` }} />}
+      </div>
+
+      <div className="breakdown-list">
+        <div className="breakdown-row">
+          <div className="breakdown-row-meta">
+            <span className="breakdown-row-label">
+              <span className="breakdown-dot critical" />
+              Critical Risk
+            </span>
+            <div className="breakdown-row-counts">
+              <span className="breakdown-count">{critical}</span>
+              <span className="breakdown-pct">{pct(critical)}%</span>
+            </div>
+          </div>
+          <div className="breakdown-bar-track">
+            <div className="breakdown-bar-fill critical" style={{ width: `${pct(critical)}%` }} />
+          </div>
+        </div>
+
+        <div className="breakdown-row">
+          <div className="breakdown-row-meta">
+            <span className="breakdown-row-label">
+              <span className="breakdown-dot high" />
+              High Risk
+            </span>
+            <div className="breakdown-row-counts">
+              <span className="breakdown-count">{high}</span>
+              <span className="breakdown-pct">{pct(high)}%</span>
+            </div>
+          </div>
+          <div className="breakdown-bar-track">
+            <div className="breakdown-bar-fill high" style={{ width: `${pct(high)}%` }} />
+          </div>
+        </div>
+
+        <div className="breakdown-row">
+          <div className="breakdown-row-meta">
+            <span className="breakdown-row-label">
+              <span className="breakdown-dot medium" />
+              Medium Risk
+            </span>
+            <div className="breakdown-row-counts">
+              <span className="breakdown-count">{medium}</span>
+              <span className="breakdown-pct">{pct(medium)}%</span>
+            </div>
+          </div>
+          <div className="breakdown-bar-track">
+            <div className="breakdown-bar-fill medium" style={{ width: `${pct(medium)}%` }} />
+          </div>
+        </div>
+
+        <div className="breakdown-row">
+          <div className="breakdown-row-meta">
+            <span className="breakdown-row-label">
+              <span className="breakdown-dot low" />
+              Low Risk
+            </span>
+            <div className="breakdown-row-counts">
+              <span className="breakdown-count">{low}</span>
+              <span className="breakdown-pct">{pct(low)}%</span>
+            </div>
+          </div>
+          <div className="breakdown-bar-track">
+            <div className="breakdown-bar-fill low" style={{ width: `${pct(low)}%` }} />
+          </div>
+        </div>
+      </div>
+
+      <div className="overview-widget-footer">
+        <span>Lifecycle: {openCount} Open • {resolvedCount} Resolved</span>
+        <span>Authoritative GRC Matrix</span>
+      </div>
+    </div>
+  );
+}
+
+function VulnerabilityDistribution({ vulnerabilities }) {
+  if (!vulnerabilities || vulnerabilities.length === 0) {
+    return (
+      <div className="overview-widget">
+        <div className="overview-widget-header">
+          <div className="overview-widget-title">
+            <span>🎯</span> Vulnerability Severity Distribution
+          </div>
+          <span className="overview-widget-subtitle">Technical Findings</span>
+        </div>
+        <div className="overview-empty">
+          <span className="overview-empty-icon">🔍</span>
+          No vulnerability findings available.
+        </div>
+      </div>
+    );
+  }
+
+  const total = vulnerabilities.length;
+  const critical = vulnerabilities.filter(v => (v.severity || "").toLowerCase() === "critical").length;
+  const high = vulnerabilities.filter(v => (v.severity || "").toLowerCase() === "high").length;
+  const medium = vulnerabilities.filter(v => (v.severity || "").toLowerCase() === "medium").length;
+  const low = vulnerabilities.filter(v => (v.severity || "").toLowerCase() === "low").length;
+
+  const pct = (cnt) => (total > 0 ? ((cnt / total) * 100).toFixed(1) : "0.0");
+
+  return (
+    <div className="overview-widget">
+      <div className="overview-widget-header">
+        <div className="overview-widget-title">
+          <span>🎯</span> Vulnerability Severity Distribution
+        </div>
+        <span className="overview-widget-subtitle">{total} Total Findings</span>
+      </div>
+
+      {/* Segmented proportional bar */}
+      <div className="segmented-bar" title={`Critical: ${critical}, High: ${high}, Medium: ${medium}, Low: ${low}`}>
+        {critical > 0 && <div className="segmented-segment critical" style={{ width: `${pct(critical)}%` }} />}
+        {high > 0 && <div className="segmented-segment high" style={{ width: `${pct(high)}%` }} />}
+        {medium > 0 && <div className="segmented-segment medium" style={{ width: `${pct(medium)}%` }} />}
+        {low > 0 && <div className="segmented-segment low" style={{ width: `${pct(low)}%` }} />}
+      </div>
+
+      <div className="breakdown-list">
+        <div className="breakdown-row">
+          <div className="breakdown-row-meta">
+            <span className="breakdown-row-label">
+              <span className="breakdown-dot critical" />
+              Critical (CVSS 9.0–10.0)
+            </span>
+            <div className="breakdown-row-counts">
+              <span className="breakdown-count">{critical}</span>
+              <span className="breakdown-pct">{pct(critical)}%</span>
+            </div>
+          </div>
+          <div className="breakdown-bar-track">
+            <div className="breakdown-bar-fill critical" style={{ width: `${pct(critical)}%` }} />
+          </div>
+        </div>
+
+        <div className="breakdown-row">
+          <div className="breakdown-row-meta">
+            <span className="breakdown-row-label">
+              <span className="breakdown-dot high" />
+              High (CVSS 7.0–8.9)
+            </span>
+            <div className="breakdown-row-counts">
+              <span className="breakdown-count">{high}</span>
+              <span className="breakdown-pct">{pct(high)}%</span>
+            </div>
+          </div>
+          <div className="breakdown-bar-track">
+            <div className="breakdown-bar-fill high" style={{ width: `${pct(high)}%` }} />
+          </div>
+        </div>
+
+        <div className="breakdown-row">
+          <div className="breakdown-row-meta">
+            <span className="breakdown-row-label">
+              <span className="breakdown-dot medium" />
+              Medium (CVSS 4.0–6.9)
+            </span>
+            <div className="breakdown-row-counts">
+              <span className="breakdown-count">{medium}</span>
+              <span className="breakdown-pct">{pct(medium)}%</span>
+            </div>
+          </div>
+          <div className="breakdown-bar-track">
+            <div className="breakdown-bar-fill medium" style={{ width: `${pct(medium)}%` }} />
+          </div>
+        </div>
+
+        <div className="breakdown-row">
+          <div className="breakdown-row-meta">
+            <span className="breakdown-row-label">
+              <span className="breakdown-dot low" />
+              Low (CVSS 0.1–3.9)
+            </span>
+            <div className="breakdown-row-counts">
+              <span className="breakdown-count">{low}</span>
+              <span className="breakdown-pct">{pct(low)}%</span>
+            </div>
+          </div>
+          <div className="breakdown-bar-track">
+            <div className="breakdown-bar-fill low" style={{ width: `${pct(low)}%` }} />
+          </div>
+        </div>
+      </div>
+
+      <div className="overview-widget-footer">
+        <span>Technical vulnerability findings by severity</span>
+        <span>NVD / NIST CVSS v3.1</span>
+      </div>
+    </div>
+  );
+}
+
+function RiskHeatMap({ risks }) {
+  if (!risks || risks.length === 0) {
+    return (
+      <div className="overview-widget">
+        <div className="overview-widget-header">
+          <div className="overview-widget-title">
+            <span>🗺️</span> Risk Heat Map (4×4 Matrix)
+          </div>
+          <span className="overview-widget-subtitle">Likelihood × Impact</span>
+        </div>
+        <div className="overview-empty">
+          <span className="overview-empty-icon">📊</span>
+          No risk data available to plot heat map.
+        </div>
+      </div>
+    );
+  }
+
+  // Model: Likelihood 1–4, Impact 1–4
+  // Y-axis: Likelihood rows from 4 (Frequent) down to 1 (Rare)
+  // X-axis: Impact columns from 1 (Low) up to 4 (Critical)
+  const likelihoodLevels = [
+    { level: 4, label: "4 - Frequent" },
+    { level: 3, label: "3 - Likely" },
+    { level: 2, label: "2 - Possible" },
+    { level: 1, label: "1 - Rare" },
+  ];
+
+  const impactLevels = [
+    { level: 1, label: "1 - Low" },
+    { level: 2, label: "2 - Moderate" },
+    { level: 3, label: "3 - Major" },
+    { level: 4, label: "4 - Critical" },
+  ];
+
+  const parseScore = (val) => {
+    if (val === null || val === undefined || val === "") return null;
+    const num = Number(val);
+    return Number.isInteger(num) && num >= 1 && num <= 4 ? num : null;
+  };
+
+  const getValidLikelihood = (r) => {
+    const val = r.likelihood_score !== undefined && r.likelihood_score !== null ? r.likelihood_score : r.likelihood;
+    return parseScore(val);
+  };
+
+  const getValidImpact = (r) => {
+    const val = r.impact_score !== undefined && r.impact_score !== null ? r.impact_score : r.impact;
+    return parseScore(val);
+  };
+
+  const plottableRisks = risks.filter((r) => getValidLikelihood(r) !== null && getValidImpact(r) !== null);
+  const excludedCount = risks.length - plottableRisks.length;
+
+  const getCellSeverityClass = (l, i) => {
+    const score = l * i;
+    if (score >= 12) return "heatmap-cell-critical";
+    if (score >= 8) return "heatmap-cell-high";
+    if (score >= 4) return "heatmap-cell-medium";
+    return "heatmap-cell-low";
+  };
+
+  const getCellRisks = (l, i) => {
+    return plottableRisks.filter((r) => getValidLikelihood(r) === l && getValidImpact(r) === i);
+  };
+
+  return (
+    <div className="overview-widget">
+      <div className="overview-widget-header">
+        <div className="overview-widget-title">
+          <span>🗺️</span> Risk Heat Map (4×4 Matrix)
+        </div>
+        <span className="overview-widget-subtitle">
+          {plottableRisks.length} Plotted / {risks.length} Total Risks
+        </span>
+      </div>
+
+      <div className="heatmap-container">
+        <div className="heatmap-layout">
+          <div className="heatmap-y-axis">
+            <span className="heatmap-y-label">LIKELIHOOD</span>
+          </div>
+
+          <div className="heatmap-matrix-wrap">
+            <div className="heatmap-grid">
+              {/* Top-left empty corner */}
+              <div className="heatmap-header-cell" />
+              {impactLevels.map((imp) => (
+                <div key={imp.level} className="heatmap-header-cell">
+                  {imp.label}
+                </div>
+              ))}
+
+              {/* Rows */}
+              {likelihoodLevels.map((lh) => (
+                <Fragment key={lh.level}>
+                  <div className="heatmap-row-header">{lh.label}</div>
+                  {impactLevels.map((imp) => {
+                    const cellRisks = getCellRisks(lh.level, imp.level);
+                    const count = cellRisks.length;
+                    const sevClass = getCellSeverityClass(lh.level, imp.level);
+                    const score = lh.level * imp.level;
+                    const sampleTitles = cellRisks.slice(0, 3).map(r => `• ${r.title}`).join("\n");
+                    const tooltip = `Likelihood: ${lh.level}, Impact: ${imp.level} (Score: ${score})\n${count} Risk(s)${sampleTitles ? `:\n${sampleTitles}` : ""}`;
+
+                    return (
+                      <div
+                        key={`${lh.level}-${imp.level}`}
+                        className={`heatmap-cell ${sevClass} ${count > 0 ? "active" : "empty"}`}
+                        title={tooltip}
+                      >
+                        <span className="heatmap-cell-val">{count > 0 ? count : "·"}</span>
+                        <span className="heatmap-cell-score">Score: {score}</span>
+                      </div>
+                    );
+                  })}
+                </Fragment>
+              ))}
+            </div>
+
+            <div className="heatmap-x-label">IMPACT RATING</div>
+          </div>
+        </div>
+
+        <div className="heatmap-legend">
+          <span className="heatmap-legend-item">
+            <span className="heatmap-legend-chip" style={{ background: "#22c55e" }} />
+            Low (1–3)
+          </span>
+          <span className="heatmap-legend-item">
+            <span className="heatmap-legend-chip" style={{ background: "#eab308" }} />
+            Medium (4–6)
+          </span>
+          <span className="heatmap-legend-item">
+            <span className="heatmap-legend-chip" style={{ background: "#f97316" }} />
+            High (8–9)
+          </span>
+          <span className="heatmap-legend-item">
+            <span className="heatmap-legend-chip" style={{ background: "#ef4444" }} />
+            Critical (12–16)
+          </span>
+        </div>
+
+        {excludedCount > 0 && (
+          <div className="heatmap-excluded-note">
+            * {excludedCount} {excludedCount === 1 ? "risk" : "risks"} excluded from heat map due to missing likelihood/impact scoring.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ComplianceCoverageWidget({ complianceSummary, requirements }) {
+  let displaySummaries = complianceSummary;
+
+  if ((!displaySummaries || displaySummaries.length === 0) && requirements && requirements.length > 0) {
+    const fwNames = Array.from(new Set(requirements.map(r => r.framework_name).filter(Boolean)));
+    displaySummaries = fwNames.map((name, idx) => {
+      const fwReqs = requirements.filter(r => r.framework_name === name);
+      const total = fwReqs.length;
+      const implemented = fwReqs.filter(r => r.status === "Implemented").length;
+      const partially_implemented = fwReqs.filter(r => r.status === "Partially Implemented").length;
+      const not_implemented = fwReqs.filter(r => r.status === "Not Implemented").length;
+      const not_assessed = fwReqs.filter(r => r.status === "Not Assessed" || !r.status).length;
+      const not_applicable = fwReqs.filter(r => r.status === "Not Applicable").length;
+      const applicable = total - not_applicable;
+      const coverage = applicable > 0 ? Number((((implemented + 0.5 * partially_implemented) / applicable) * 100).toFixed(1)) : 0.0;
+      return {
+        framework_id: idx + 1,
+        framework_name: name,
+        total_requirements: total,
+        implemented,
+        partially_implemented,
+        not_implemented,
+        not_assessed,
+        not_applicable,
+        implementation_coverage: coverage,
+      };
+    });
+  }
+
+  if (!displaySummaries || displaySummaries.length === 0) {
+    return (
+      <div className="overview-widget">
+        <div className="overview-widget-header">
+          <div className="overview-widget-title">
+            <span>📜</span> Compliance Implementation Coverage
+          </div>
+          <span className="overview-widget-subtitle">Regulatory Frameworks</span>
+        </div>
+        <div className="overview-empty">
+          <span className="overview-empty-icon">📜</span>
+          No compliance framework data available.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overview-widget">
+      <div className="overview-widget-header">
+        <div className="overview-widget-title">
+          <span>📜</span> Compliance Implementation Coverage
+        </div>
+        <span className="overview-widget-subtitle">Framework Controls Posture</span>
+      </div>
+
+      <div className="compliance-framework-grid">
+        {displaySummaries.map((fw) => {
+          const total = fw.total_requirements || 1;
+          const implPct = ((fw.implemented / total) * 100).toFixed(1);
+          const partPct = ((fw.partially_implemented / total) * 100).toFixed(1);
+          const notImplPct = ((fw.not_implemented / total) * 100).toFixed(1);
+          const notAssessedPct = ((fw.not_assessed / total) * 100).toFixed(1);
+          const naPct = ((fw.not_applicable / total) * 100).toFixed(1);
+
+          return (
+            <div key={fw.framework_id || fw.framework_name} className="compliance-fw-card">
+              <div className="compliance-fw-header">
+                <div>
+                  <span className="compliance-fw-title">{fw.framework_name}</span>
+                  {fw.framework_version && (
+                    <span className="compliance-fw-version">v{fw.framework_version}</span>
+                  )}
+                </div>
+                <span className="compliance-fw-pct">
+                  {fw.implementation_coverage}% <span style={{ fontSize: "11px", fontWeight: "normal", color: "#94a3b8" }}>Coverage</span>
+                </span>
+              </div>
+
+              {/* Multi-segment progress bar */}
+              <div
+                className="compliance-progress-bar"
+                title={`Implemented: ${fw.implemented}, Partially: ${fw.partially_implemented}, Not Implemented: ${fw.not_implemented}, Not Assessed: ${fw.not_assessed}, N/A: ${fw.not_applicable}`}
+              >
+                {fw.implemented > 0 && (
+                  <div className="compliance-seg-implemented" style={{ width: `${implPct}%` }} />
+                )}
+                {fw.partially_implemented > 0 && (
+                  <div className="compliance-seg-partial" style={{ width: `${partPct}%` }} />
+                )}
+                {fw.not_implemented > 0 && (
+                  <div className="compliance-seg-not-impl" style={{ width: `${notImplPct}%` }} />
+                )}
+                {fw.not_assessed > 0 && (
+                  <div className="compliance-seg-not-assessed" style={{ width: `${notAssessedPct}%` }} />
+                )}
+                {fw.not_applicable > 0 && (
+                  <div className="compliance-seg-na" style={{ width: `${naPct}%` }} />
+                )}
+              </div>
+
+              <div className="compliance-counts-row">
+                <span className="compliance-count-pill">
+                  <span className="breakdown-dot low" /> Implemented: <strong>{fw.implemented}</strong>
+                </span>
+                <span className="compliance-count-pill">
+                  <span className="breakdown-dot medium" /> Partially: <strong>{fw.partially_implemented}</strong>
+                </span>
+                <span className="compliance-count-pill">
+                  <span className="breakdown-dot critical" /> Not Implemented: <strong>{fw.not_implemented}</strong>
+                </span>
+                <span className="compliance-count-pill">
+                  <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#64748b" }} /> Not Assessed: <strong>{fw.not_assessed}</strong>
+                </span>
+                {fw.not_applicable > 0 && (
+                  <span className="compliance-count-pill">
+                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#334155" }} /> N/A: <strong>{fw.not_applicable}</strong>
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="compliance-disclaimer-note">
+        * Implementation Coverage is an internal GRC tracking metric for evaluated baseline requirements and does not constitute formal regulatory certification.
+      </div>
+    </div>
+  );
+}
+
+function RecentSecurityActivity({ auditLogs, driftEvents, monitoringJobs, govReviews }) {
+  // Aggregate real events from existing feeds
+  const activities = [];
+
+  (auditLogs || []).forEach((log) => {
+    activities.push({
+      id: `audit-${log.id}`,
+      timestamp: log.timestamp,
+      title: log.action ? log.action.replace(/_/g, " ") : "Audit Action",
+      category: log.resource_type || "System",
+      desc: log.actor ? `Actor: ${log.actor}` : "System event",
+      icon: "📋",
+      badge: log.action,
+    });
+  });
+
+  (driftEvents || []).forEach((ev) => {
+    activities.push({
+      id: `drift-${ev.id}`,
+      timestamp: ev.detected_at,
+      title: `Drift: ${ev.event_type || "Attack Surface Change"}`,
+      category: "Monitoring",
+      desc: ev.details?.message || ev.details?.summary || (ev.asset_ip ? `Asset ${ev.asset_ip}` : "Baseline delta"),
+      icon: "🛰️",
+      badge: ev.severity || "medium",
+    });
+  });
+
+  (monitoringJobs || []).slice(0, 10).forEach((job) => {
+    activities.push({
+      id: `job-${job.id}`,
+      timestamp: job.completed_at || job.created_at,
+      title: `Scan Job #${job.id}: ${job.status}`,
+      category: "Scanner",
+      desc: `Target: ${job.target} • ${job.scan_type === "subnet_discovery" ? "Subnet Sweep" : "Single Host"}`,
+      icon: "⚡",
+      badge: job.status,
+    });
+  });
+
+  (govReviews || []).forEach((rev) => {
+    activities.push({
+      id: `rev-${rev.id || rev.risk_id}-${rev.created_at}`,
+      timestamp: rev.created_at,
+      title: `Risk Review: ${rev.decision || rev.review_status}`,
+      category: "Governance",
+      desc: `Risk #${rev.risk_id} ${rev.risk_title ? `"${rev.risk_title}"` : ""} by ${rev.reviewer_name || "Analyst"}`,
+      icon: "✍️",
+      badge: rev.decision || "Review",
+    });
+  });
+
+  // Sort descending by timestamp, take top 6
+  const sorted = activities
+    .filter((a) => a.timestamp)
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .slice(0, 6);
+
+  if (sorted.length === 0) {
+    return (
+      <div className="overview-widget">
+        <div className="overview-widget-header">
+          <div className="overview-widget-title">
+            <span>⚡</span> Recent Audit & Security Activity
+          </div>
+          <span className="overview-widget-subtitle">Audit Trail, Drift Center, Scan Jobs & Governance</span>
+        </div>
+        <div className="overview-empty">
+          <span className="overview-empty-icon">⏱️</span>
+          No recent security activity recorded yet.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overview-widget">
+      <div className="overview-widget-header">
+        <div className="overview-widget-title">
+          <span>⚡</span> Recent Audit & Security Activity
+        </div>
+        <span className="overview-widget-subtitle">Recent events from Audit Trail, Drift Center, Scan Jobs & Governance</span>
+      </div>
+
+      <div className="activity-feed">
+        {sorted.map((item) => (
+          <div key={item.id} className="activity-item">
+            <div className="activity-icon-wrap">{item.icon}</div>
+            <div className="activity-content">
+              <div className="activity-header">
+                <span className="activity-title">{item.title}</span>
+                <span className="activity-time">{formatDateTime(item.timestamp)}</span>
+              </div>
+              <div className="activity-desc">{item.desc}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="overview-widget-footer">
+        <span>Recent events from Audit Trail, Drift Center, Scan Jobs & Governance</span>
+        <span>Append-only chronological log</span>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null);
@@ -1591,90 +2222,137 @@ function App() {
       {/* -------------------------------- */}
       {activePage === "overview" && (
       <>
-      <section className="cards cards-six">
-        <div className="card">
-          <div className="card-label">Monitored Assets</div>
-          <div className="card-val">{assets.length}</div>
-          <div className="card-sub">Infrastructure inventory</div>
-        </div>
-
-        <div className="card">
-          <div className="card-label">Registered Risks</div>
-          <div className="card-val">{risks.length}</div>
-          <div className="card-sub">
-            {risks.filter(r => r.status === "Open").length} Open • {risks.filter(r => r.status === "Resolved").length} Resolved
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-label">Security Controls</div>
-          <div className="card-val highlight-blue">{controls.length}</div>
-          <div className="card-sub">
-            {controls.filter(c => c.status === "Implemented").length} Implemented Controls
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-label">Implementation Coverage</div>
-          <div className="card-val highlight-green">{activeSummary.implementation_coverage}%</div>
-          <div className="card-sub">{selectedFramework} (Internal metric)</div>
-        </div>
-
-        <div className="card">
-          <div className="card-label">Vulnerability Findings</div>
-          <div className="card-val highlight-orange">{vulnerabilities.length}</div>
-          <div className="card-sub">Identified technical findings</div>
-        </div>
-
-        <div className="card">
-          <div className="card-label">Reviews Pending</div>
-          <div className="card-val highlight-amber">
-            {govReviews.filter((e) => e.review_status === "Pending Review").length}
-          </div>
-          <div className="card-sub">Human sign-off queue</div>
-        </div>
-      </section>
-
-      {/* -------------------------------- */}
-      {/* NETWORK SCANNER */}
-      {/* -------------------------------- */}
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Network Scanner & Discovery</h2>
-            <p className="panel-desc">
-              Scan target assets to detect services, correlate findings, and register GRC risks.
-            </p>
-          </div>
-        </div>
-
-        <div className="scan-controls">
-          <input
-            id="target-ip-input"
-            type="text"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            placeholder="Enter target IP (e.g. 192.168.127.1)"
-          />
-          <button
-            id="run-scan-btn"
-            className="btn-primary"
-            onClick={runScan}
-            disabled={scanning}
-          >
-            {scanning ? "Scanning Target..." : "Run Network Scan"}
-          </button>
-        </div>
-
-        {result && (
-          <div className="scan-result-box">
-            <div className="scan-result-summary">
-              <strong>Scan Completed for: {result.ip_address}</strong> — Risk Score: {result.risk_score} ({result.risk_level})
+        {/* Executive Posture Banner */}
+        <div className="overview-banner">
+          <div className="overview-banner-left">
+            <div className="overview-banner-icon">🛡️</div>
+            <div>
+              <div className="overview-banner-title">Executive Security & Posture Overview</div>
+              <div className="overview-banner-desc">
+                Continuous attack surface intelligence, authoritative GRC risk distribution, and regulatory implementation coverage.
+              </div>
             </div>
-            <div className="scan-result-ports">Open Ports: {result.open_ports}</div>
           </div>
-        )}
-      </section>
+          <div className="overview-banner-badge">
+            <span className="status-indicator-dot dot-green" /> Authoritative GRC Engine Active
+          </div>
+        </div>
+
+        {/* 1. Security Posture KPI Cards */}
+        <section className="cards cards-six">
+          <div className="card">
+            <div className="card-label">Monitored Assets</div>
+            <div className="card-val">{assets.length}</div>
+            <div className="card-sub">
+              {assets.filter(a => (a.environment || "").toLowerCase() === "production").length} Production • {assets.filter(a => (a.exposure || "").toLowerCase() === "external").length} External
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-label">Vulnerabilities</div>
+            <div className="card-val highlight-orange">{vulnerabilities.length}</div>
+            <div className="card-sub">
+              {vulnerabilities.filter(v => ["critical", "high"].includes((v.severity || "").toLowerCase())).length} Critical / High Findings
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-label">Open Risks</div>
+            <div className="card-val highlight-amber">
+              {risks.filter(r => r.status === "Open").length}
+            </div>
+            <div className="card-sub">
+              of {risks.length} registered risks ({risks.filter(r => r.status === "Resolved").length} resolved)
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-label">Critical / High Risks</div>
+            <div className="card-val highlight-critical">
+              {risks.filter(r => ["critical", "high"].includes((r.inherent_risk_level || r.risk_level || "").toLowerCase())).length}
+            </div>
+            <div className="card-sub">
+              {risks.filter(r => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "critical").length} Critical • {risks.filter(r => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "high").length} High
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-label">Implementation Coverage</div>
+            <div className="card-val highlight-green">{activeSummary.implementation_coverage}%</div>
+            <div className="card-sub">{selectedFramework} (Internal metric)</div>
+          </div>
+
+          <div className="card">
+            <div className="card-label">Continuous Monitoring</div>
+            <div className="card-val highlight-blue">
+              {monitoringSchedules.filter(s => s.is_active).length} Active
+            </div>
+            <div className="card-sub">
+              {driftTotal} Drift events • {monitoringJobs.filter(j => j.status === "Running" || j.status === "Queued").length} Active jobs
+            </div>
+          </div>
+        </section>
+
+        {/* 2 & 5. Middle Row: Risk Severity Distribution & Risk Heat Map (4x4) */}
+        <div className="overview-grid-2col">
+          <RiskDistribution risks={risks} />
+          <RiskHeatMap risks={risks} />
+        </div>
+
+        {/* 3 & 4. Third Row: Vulnerability Severity Distribution & Compliance Implementation Coverage */}
+        <div className="overview-grid-2col">
+          <VulnerabilityDistribution vulnerabilities={vulnerabilities} />
+          <ComplianceCoverageWidget complianceSummary={complianceSummary} requirements={requirements} />
+        </div>
+
+        {/* 6. Fourth Row: Recent Security Activity */}
+        <div className="overview-grid-2col" style={{ gridTemplateColumns: "1fr" }}>
+          <RecentSecurityActivity
+            auditLogs={auditLogs}
+            driftEvents={driftEvents}
+            monitoringJobs={monitoringJobs}
+            govReviews={govReviews}
+          />
+        </div>
+
+        {/* Preserved Network Scanner & Discovery */}
+        <section className="panel overview-quick-scan">
+          <div className="panel-header">
+            <div>
+              <h2>Network Scanner & Discovery</h2>
+              <p className="panel-desc">
+                Scan target assets to detect services, correlate findings, and register GRC risks.
+              </p>
+            </div>
+          </div>
+
+          <div className="scan-controls">
+            <input
+              id="target-ip-input"
+              type="text"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="Enter target IP (e.g. 192.168.127.1)"
+            />
+            <button
+              id="run-scan-btn"
+              className="btn-primary"
+              onClick={runScan}
+              disabled={scanning}
+            >
+              {scanning ? "Scanning Target..." : "Run Network Scan"}
+            </button>
+          </div>
+
+          {result && (
+            <div className="scan-result-box">
+              <div className="scan-result-summary">
+                <strong>Scan Completed for: {result.ip_address}</strong> — Risk Score: {result.risk_score} ({result.risk_level})
+              </div>
+              <div className="scan-result-ports">Open Ports: {result.open_ports}</div>
+            </div>
+          )}
+        </section>
       </>)}
 
       {/* ------------------------------------------------ */}
