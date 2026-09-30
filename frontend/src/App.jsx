@@ -517,6 +517,8 @@ function VulnerabilityDistribution({ vulnerabilities }) {
 }
 
 function RiskHeatMap({ risks }) {
+  const [selectedCell, setSelectedCell] = useState(null);
+
   if (!risks || risks.length === 0) {
     return (
       <div className="overview-widget">
@@ -538,17 +540,17 @@ function RiskHeatMap({ risks }) {
   // Y-axis: Likelihood rows from 4 (Frequent) down to 1 (Rare)
   // X-axis: Impact columns from 1 (Low) up to 4 (Critical)
   const likelihoodLevels = [
-    { level: 4, label: "4 - Frequent" },
-    { level: 3, label: "3 - Likely" },
-    { level: 2, label: "2 - Possible" },
-    { level: 1, label: "1 - Rare" },
+    { level: 4, label: "4 — Frequent" },
+    { level: 3, label: "3 — Likely" },
+    { level: 2, label: "2 — Possible" },
+    { level: 1, label: "1 — Rare" },
   ];
 
   const impactLevels = [
-    { level: 1, label: "1 - Low" },
-    { level: 2, label: "2 - Moderate" },
-    { level: 3, label: "3 - Major" },
-    { level: 4, label: "4 - Critical" },
+    { level: 1, label: "1 — Low" },
+    { level: 2, label: "2 — Moderate" },
+    { level: 3, label: "3 — Major" },
+    { level: 4, label: "4 — Critical" },
   ];
 
   const parseScore = (val) => {
@@ -570,10 +572,9 @@ function RiskHeatMap({ risks }) {
   const plottableRisks = risks.filter((r) => getValidLikelihood(r) !== null && getValidImpact(r) !== null);
   const excludedCount = risks.length - plottableRisks.length;
 
-  const getCellSeverityClass = (l, i) => {
-    const score = l * i;
+  const getCellSeverityClass = (score) => {
     if (score >= 12) return "heatmap-cell-critical";
-    if (score >= 8) return "heatmap-cell-high";
+    if (score >= 7) return "heatmap-cell-high";
     if (score >= 4) return "heatmap-cell-medium";
     return "heatmap-cell-low";
   };
@@ -581,6 +582,21 @@ function RiskHeatMap({ risks }) {
   const getCellRisks = (l, i) => {
     return plottableRisks.filter((r) => getValidLikelihood(r) === l && getValidImpact(r) === i);
   };
+
+  const getBadgeClass = (lvl) => {
+    switch (lvl?.toLowerCase()) {
+      case "critical": return "badge-critical";
+      case "high": return "badge-high";
+      case "medium": return "badge-medium";
+      case "low": return "badge-low";
+      default: return "badge-neutral";
+    }
+  };
+
+  const selectedCellRisks = selectedCell ? getCellRisks(selectedCell.l, selectedCell.i) : [];
+  const selectedScore = selectedCell ? selectedCell.l * selectedCell.i : 0;
+  const selectedLhObj = selectedCell ? likelihoodLevels.find((l) => l.level === selectedCell.l) : null;
+  const selectedImpObj = selectedCell ? impactLevels.find((i) => i.level === selectedCell.i) : null;
 
   return (
     <div className="overview-widget">
@@ -616,19 +632,30 @@ function RiskHeatMap({ risks }) {
                   {impactLevels.map((imp) => {
                     const cellRisks = getCellRisks(lh.level, imp.level);
                     const count = cellRisks.length;
-                    const sevClass = getCellSeverityClass(lh.level, imp.level);
                     const score = lh.level * imp.level;
-                    const sampleTitles = cellRisks.slice(0, 3).map(r => `• ${r.title}`).join("\n");
-                    const tooltip = `Likelihood: ${lh.level}, Impact: ${imp.level} (Score: ${score})\n${count} Risk(s)${sampleTitles ? `:\n${sampleTitles}` : ""}`;
+                    const sevClass = getCellSeverityClass(score);
+                    const isSelected = selectedCell?.l === lh.level && selectedCell?.i === imp.level;
 
                     return (
                       <div
                         key={`${lh.level}-${imp.level}`}
-                        className={`heatmap-cell ${sevClass} ${count > 0 ? "active" : "empty"}`}
-                        title={tooltip}
+                        className={`heatmap-cell ${sevClass} ${count > 0 ? "active" : "empty"}${isSelected ? " selected" : ""}`}
+                        onClick={() =>
+                          setSelectedCell(isSelected ? null : { l: lh.level, i: imp.level })
+                        }
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Likelihood ${lh.level}, Impact ${imp.level}, Score ${score}, ${count} risks`}
                       >
-                        <span className="heatmap-cell-val">{count > 0 ? count : "·"}</span>
-                        <span className="heatmap-cell-score">Score: {score}</span>
+                        <span className="heatmap-cell-val">
+                          {count} {count === 1 ? "Risk" : "Risks"}
+                        </span>
+                        <span className="heatmap-cell-coord">
+                          L{lh.level} × I{imp.level}
+                        </span>
+                        <span className="heatmap-cell-score">
+                          Score {score}
+                        </span>
                       </div>
                     );
                   })}
@@ -636,32 +663,68 @@ function RiskHeatMap({ risks }) {
               ))}
             </div>
 
-            <div className="heatmap-x-label">IMPACT RATING</div>
+            <div className="heatmap-x-label">IMPACT</div>
           </div>
         </div>
 
         <div className="heatmap-legend">
           <span className="heatmap-legend-item">
             <span className="heatmap-legend-chip" style={{ background: "#22c55e" }} />
-            Low (1–3)
+            <strong>Low</strong> (1–3)
           </span>
           <span className="heatmap-legend-item">
             <span className="heatmap-legend-chip" style={{ background: "#eab308" }} />
-            Medium (4–6)
+            <strong>Medium</strong> (4–6)
           </span>
           <span className="heatmap-legend-item">
             <span className="heatmap-legend-chip" style={{ background: "#f97316" }} />
-            High (8–9)
+            <strong>High</strong> (7–11)
           </span>
           <span className="heatmap-legend-item">
             <span className="heatmap-legend-chip" style={{ background: "#ef4444" }} />
-            Critical (12–16)
+            <strong>Critical</strong> (12–16)
           </span>
         </div>
 
         {excludedCount > 0 && (
           <div className="heatmap-excluded-note">
             * {excludedCount} {excludedCount === 1 ? "risk" : "risks"} excluded from heat map due to missing likelihood/impact scoring.
+          </div>
+        )}
+
+        {/* Selected Cell Inspector */}
+        {selectedCell && (
+          <div className="heatmap-inspector" style={{ marginTop: "12px" }}>
+            <div className="heatmap-inspector-header">
+              <div className="heatmap-inspector-title">
+                Likelihood: {selectedCell.l} ({selectedLhObj ? selectedLhObj.label.split(" — ")[1] : selectedCell.l}) • Impact: {selectedCell.i} ({selectedImpObj ? selectedImpObj.label.split(" — ")[1] : selectedCell.i}) • Score: {selectedScore} • Risks in this cell: {selectedCellRisks.length}
+              </div>
+              <button
+                type="button"
+                className="btn-secondary btn-sm"
+                onClick={() => setSelectedCell(null)}
+              >
+                Clear Selection
+              </button>
+            </div>
+
+            {selectedCellRisks.length === 0 ? (
+              <div className="empty-cell" style={{ textAlign: "center", padding: "12px", fontSize: "12px" }}>
+                No plotted risks located at these coordinates.
+              </div>
+            ) : (
+              <div className="heatmap-cell-risk-list">
+                {selectedCellRisks.map((r) => (
+                  <div key={r.id} className="heatmap-cell-risk-row">
+                    <span className="font-mono text-xs text-slate">#{r.id}</span>
+                    <span className="heatmap-cell-risk-title">{r.title}</span>
+                    <span className={`badge ${getBadgeClass(r.inherent_risk_level || r.risk_level)}`}>
+                      {r.inherent_risk_level || r.risk_level || "Medium"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -917,13 +980,20 @@ function App() {
   const [controls, setControls] = useState([]);
   const [vulnerabilities, setVulnerabilities] = useState([]);
 
-  // Phase 3: Compliance State
+  // Phase 3 & 6: Compliance State
   const [frameworks, setFrameworks] = useState([]);
-  const [selectedFramework, setSelectedFramework] = useState("NIST CSF");
+  const [selectedFramework] = useState("NIST CSF");
   const [complianceSummary, setComplianceSummary] = useState([]);
   const [requirements, setRequirements] = useState([]);
-  const [statusFilter, setStatusFilter] = useState("All");
-  const [functionFilter, setFunctionFilter] = useState("All");
+
+  // Phase 6: Compliance Sub-tabs, Filters, Search & Details Modal State
+  const [complianceSubTab, setComplianceSubTab] = useState("overview"); // "overview" | "nist" | "iso"
+  const [complianceSearchQuery, setComplianceSearchQuery] = useState("");
+  const [complianceFrameworkFilter, setComplianceFrameworkFilter] = useState("All");
+  const [complianceStatusFilter, setComplianceStatusFilter] = useState("All");
+  const [complianceFunctionFilter, setComplianceFunctionFilter] = useState("All");
+  const [complianceStrengthFilter, setComplianceStrengthFilter] = useState("All");
+  const [viewingRequirement, setViewingRequirement] = useState(null);
 
   // Phase 4B: AI Analysis State — per-risk keyed maps, isolated from authoritative GRC data
   const [aiAnalysis, setAiAnalysis] = useState({});          // { [riskId]: analysisObject }
@@ -1942,16 +2012,8 @@ function App() {
     }
   };
 
-  // Filter active requirements for the Compliance table
+  // Compliance summary metrics for the Overview page
   const currentFwRequirements = requirements.filter(r => r.framework_name === selectedFramework);
-
-  const availableFunctions = ["All", ...Array.from(new Set(currentFwRequirements.map(r => r.function).filter(Boolean)))];
-
-  const filteredRequirements = currentFwRequirements.filter(r => {
-    const matchesStatus = statusFilter === "All" || r.status === statusFilter;
-    const matchesFunction = functionFilter === "All" || r.function === functionFilter;
-    return matchesStatus && matchesFunction;
-  });
 
   const activeSummary = complianceSummary.find(s => s.framework_name === selectedFramework) || {
     total_requirements: currentFwRequirements.length,
@@ -3470,17 +3532,17 @@ function App() {
         const heatmapExcludedCount = risks.length - activePlottableRisks.length;
 
         const likelihoodLevels = [
-          { level: 4, label: "4 - Frequent" },
-          { level: 3, label: "3 - Likely" },
-          { level: 2, label: "2 - Possible" },
-          { level: 1, label: "1 - Rare" },
+          { level: 4, label: "4 — Frequent" },
+          { level: 3, label: "3 — Likely" },
+          { level: 2, label: "2 — Possible" },
+          { level: 1, label: "1 — Rare" },
         ];
 
         const impactLevels = [
-          { level: 1, label: "1 - Low" },
-          { level: 2, label: "2 - Moderate" },
-          { level: 3, label: "3 - Major" },
-          { level: 4, label: "4 - Critical" },
+          { level: 1, label: "1 — Low" },
+          { level: 2, label: "2 — Moderate" },
+          { level: 3, label: "3 — Major" },
+          { level: 4, label: "4 — Critical" },
         ];
 
         const getCellSeverityClass = (score) => {
@@ -3536,43 +3598,43 @@ function App() {
             </div>
 
             {/* KPI Summary Cards */}
-            <div className="overview-kpi-grid">
-              <div className="kpi-card">
-                <div className="kpi-label">Total Open Risks</div>
-                <div className="kpi-val text-accent">{openRisksCount}</div>
-                <div className="kpi-subtext">
+            <div className="risk-kpi-grid">
+              <div className="risk-kpi-card">
+                <div className="risk-kpi-label">Total Open Risks</div>
+                <div className="risk-kpi-val text-accent">{openRisksCount}</div>
+                <div className="risk-kpi-sub">
                   {openRisksCount} open of {totalRisksCount} registered risks
                 </div>
               </div>
 
-              <div className="kpi-card">
-                <div className="kpi-label">Critical Inherent</div>
-                <div className="kpi-val text-red">{criticalRisksCount}</div>
-                <div className="kpi-subtext">Score 12–16 • Urgent escalation</div>
+              <div className="risk-kpi-card">
+                <div className="risk-kpi-label">Critical Inherent</div>
+                <div className="risk-kpi-val text-red">{criticalRisksCount}</div>
+                <div className="risk-kpi-sub">Score 12–16 • Urgent escalation</div>
               </div>
 
-              <div className="kpi-card">
-                <div className="kpi-label">High Inherent</div>
-                <div className="kpi-val text-orange">{highRisksCount}</div>
-                <div className="kpi-subtext">Score 7–11 • Target remediation</div>
+              <div className="risk-kpi-card">
+                <div className="risk-kpi-label">High Inherent</div>
+                <div className="risk-kpi-val text-orange">{highRisksCount}</div>
+                <div className="risk-kpi-sub">Score 7–11 • Target remediation</div>
               </div>
 
-              <div className="kpi-card">
-                <div className="kpi-label">Medium Inherent</div>
-                <div className="kpi-val text-yellow">{mediumRisksCount}</div>
-                <div className="kpi-subtext">Score 4–6 • Planned controls</div>
+              <div className="risk-kpi-card">
+                <div className="risk-kpi-label">Medium Inherent</div>
+                <div className="risk-kpi-val text-yellow">{mediumRisksCount}</div>
+                <div className="risk-kpi-sub">Score 4–6 • Planned controls</div>
               </div>
 
-              <div className="kpi-card">
-                <div className="kpi-label">Low Inherent</div>
-                <div className="kpi-val text-green">{lowRisksCount}</div>
-                <div className="kpi-subtext">Score 1–3 • Baseline monitoring</div>
+              <div className="risk-kpi-card">
+                <div className="risk-kpi-label">Low Inherent</div>
+                <div className="risk-kpi-val text-green">{lowRisksCount}</div>
+                <div className="risk-kpi-sub">Score 1–3 • Baseline monitoring</div>
               </div>
 
-              <div className="kpi-card">
-                <div className="kpi-label">Requires Review / Action</div>
-                <div className="kpi-val text-purple">{reviewActionCount}</div>
-                <div className="kpi-subtext">Awaiting human governance sign-off</div>
+              <div className="risk-kpi-card">
+                <div className="risk-kpi-label">Requires Review / Action</div>
+                <div className="risk-kpi-val text-purple">{reviewActionCount}</div>
+                <div className="risk-kpi-sub">Awaiting governance sign-off</div>
               </div>
             </div>
 
@@ -4083,22 +4145,29 @@ function App() {
                               const score = lh.level * imp.level;
                               const sevClass = getCellSeverityClass(score);
                               const isSelected = selectedHeatmapCell?.l === lh.level && selectedHeatmapCell?.i === imp.level;
-                              const tooltip = `Likelihood: ${lh.level}, Impact: ${imp.level} (Score: ${score})\n${count} Risk(s) plotted at this coordinate`;
 
                               return (
                                 <div
                                   key={`${lh.level}-${imp.level}`}
                                   className={`heatmap-cell ${sevClass} ${count > 0 ? "active" : "empty"}${isSelected ? " selected" : ""}`}
-                                  title={tooltip}
                                   onClick={() =>
                                     setSelectedHeatmapCell(
                                       isSelected ? null : { l: lh.level, i: imp.level }
                                     )
                                   }
-                                  style={{ cursor: count > 0 ? "pointer" : "default" }}
+                                  role="button"
+                                  tabIndex={0}
+                                  aria-label={`Likelihood ${lh.level}, Impact ${imp.level}, Score ${score}, ${count} risks`}
                                 >
-                                  <span className="heatmap-cell-val">{count > 0 ? count : "·"}</span>
-                                  <span className="heatmap-cell-score">Score: {score}</span>
+                                  <span className="heatmap-cell-val">
+                                    {count} {count === 1 ? "Risk" : "Risks"}
+                                  </span>
+                                  <span className="heatmap-cell-coord">
+                                    L{lh.level} × I{imp.level}
+                                  </span>
+                                  <span className="heatmap-cell-score">
+                                    Score {score}
+                                  </span>
                                 </div>
                               );
                             })}
@@ -4106,26 +4175,26 @@ function App() {
                         ))}
                       </div>
 
-                      <div className="heatmap-x-label">IMPACT RATING</div>
+                      <div className="heatmap-x-label">IMPACT</div>
                     </div>
                   </div>
 
                   <div className="heatmap-legend">
                     <span className="heatmap-legend-item">
                       <span className="heatmap-legend-chip" style={{ background: "#22c55e" }} />
-                      Low (1–3)
+                      <strong>Low</strong> (1–3)
                     </span>
                     <span className="heatmap-legend-item">
                       <span className="heatmap-legend-chip" style={{ background: "#eab308" }} />
-                      Medium (4–6)
+                      <strong>Medium</strong> (4–6)
                     </span>
                     <span className="heatmap-legend-item">
                       <span className="heatmap-legend-chip" style={{ background: "#f97316" }} />
-                      High (7–11)
+                      <strong>High</strong> (7–11)
                     </span>
                     <span className="heatmap-legend-item">
                       <span className="heatmap-legend-chip" style={{ background: "#ef4444" }} />
-                      Critical (12–16)
+                      <strong>Critical</strong> (12–16)
                     </span>
                   </div>
 
@@ -4141,7 +4210,7 @@ function App() {
                   <div className="heatmap-inspector">
                     <div className="heatmap-inspector-header">
                       <div className="heatmap-inspector-title">
-                        📍 Findings at Likelihood {selectedHeatmapCell.l} × Impact {selectedHeatmapCell.i} (Score: {selectedHeatmapCell.l * selectedHeatmapCell.i}) — {selectedCellRisks.length} Risk{selectedCellRisks.length !== 1 ? "s" : ""}
+                        Likelihood: {selectedHeatmapCell.l} ({likelihoodLevels.find(l => l.level === selectedHeatmapCell.l)?.label.split(" — ")[1] || selectedHeatmapCell.l}) • Impact: {selectedHeatmapCell.i} ({impactLevels.find(i => i.level === selectedHeatmapCell.i)?.label.split(" — ")[1] || selectedHeatmapCell.i}) • Score: {selectedHeatmapCell.l * selectedHeatmapCell.i} • Risks in this cell: {selectedCellRisks.length}
                       </div>
                       <button
                         type="button"
@@ -4424,183 +4493,1165 @@ function App() {
       })()}
 
       {/* -------------------------------- */}
-      {/* COMPLIANCE                      */}
+      {/* COMPLIANCE (PHASE 6)             */}
       {/* -------------------------------- */}
-      {activePage === "compliance" && (
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <div className="section-tag">GOVERNANCE & COMPLIANCE (PHASE 3)</div>
-            <h2>Compliance Framework Mapping</h2>
-            <p className="panel-desc">
-              Official control mappings for NIST CSF 2.0 and ISO/IEC 27001:2022 (reviewed supported subset).
-            </p>
-          </div>
+      {activePage === "compliance" && (() => {
+        // 1. Metric aggregation helper — strictly tallies existing status counts from requirement data.
+        // Does NOT calculate implementation coverage in React.
+        const aggregateCounts = (reqList) => {
+          const total = reqList.length;
+          const implemented = reqList.filter(r => r.status === "Implemented").length;
+          const partiallyImplemented = reqList.filter(r => r.status === "Partially Implemented").length;
+          const notImplemented = reqList.filter(r => r.status === "Not Implemented").length;
+          const notAssessed = reqList.filter(r => r.status === "Not Assessed" || !r.status).length;
+          const notApplicable = reqList.filter(r => r.status === "Not Applicable").length;
 
-          <div className="framework-tabs">
-            {frameworks.map(fw => (
-              <button
-                key={fw.id}
-                className={`tab-btn ${selectedFramework === fw.name ? "active" : ""}`}
-                onClick={() => {
-                  setSelectedFramework(fw.name);
-                  setFunctionFilter("All");
-                  setStatusFilter("All");
-                }}
-              >
-                {fw.name} v{fw.version}
-              </button>
-            ))}
-          </div>
-        </div>
+          return {
+            total,
+            implemented,
+            partiallyImplemented,
+            notImplemented,
+            notAssessed,
+            notApplicable,
+          };
+        };
 
-        {/* Coverage & Status Bar */}
-        <div className="compliance-summary-grid">
-          <div className="comp-stat-card">
-            <div className="comp-stat-label">Implementation Coverage</div>
-            <div className="comp-stat-val text-accent">{activeSummary.implementation_coverage}%</div>
-            <div className="progress-bar-bg">
-              <div className="progress-bar-fill" style={{ width: `${Math.min(100, activeSummary.implementation_coverage)}%` }}></div>
+        // 2. Framework datasets & Authoritative Backend Summaries
+        const nistFw = frameworks.find(f => f.name === "NIST CSF") || {
+          name: "NIST CSF",
+          version: "2.0",
+          description: "NIST Cybersecurity Framework 2.0 (February 2024). Organized across 6 Core Functions: Govern (GV), Identify (ID), Protect (PR), Detect (DE), Respond (RS), and Recover (RC). Evaluated as a reviewed prototype subset of supported requirements."
+        };
+        const isoFw = frameworks.find(f => f.name === "ISO/IEC 27001") || {
+          name: "ISO/IEC 27001",
+          version: "2022",
+          description: "ISO/IEC 27001:2022 Information Security Management Systems - Annex A Controls. Structured across 4 themes: Organizational (A.5), People (A.6), Physical (A.7), and Technological (A.8). Evaluated as a reviewed prototype subset of supported requirements."
+        };
+
+        const nistReqs = requirements.filter(r => r.framework_name === "NIST CSF");
+        const isoReqs = requirements.filter(r => r.framework_name === "ISO/IEC 27001");
+
+        const nistSummary = complianceSummary.find(s => s.framework_name === "NIST CSF");
+        const isoSummary = complianceSummary.find(s => s.framework_name === "ISO/IEC 27001");
+
+        // Authoritative implementation_coverage values reported directly by backend API (/compliance/summary)
+        const nistCoverage = nistSummary != null && typeof nistSummary.implementation_coverage === "number"
+          ? nistSummary.implementation_coverage
+          : null;
+        const isoCoverage = isoSummary != null && typeof isoSummary.implementation_coverage === "number"
+          ? isoSummary.implementation_coverage
+          : null;
+
+        const overallMetrics = aggregateCounts(requirements);
+        const nistMetrics = aggregateCounts(nistReqs);
+        const isoMetrics = aggregateCounts(isoReqs);
+
+        // 3. NIST Functions definitions
+        const NIST_FUNCTIONS = [
+          { name: "Govern", code: "GV", desc: "Cybersecurity risk management strategy, expectations, and policy" },
+          { name: "Identify", code: "ID", desc: "Current cybersecurity risk, enterprise assets, and supply chain" },
+          { name: "Protect", code: "PR", desc: "Safeguards to prevent or contain the impact of cybersecurity events" },
+          { name: "Detect", code: "DE", desc: "Find and analyze possible cybersecurity attacks and compromises" },
+          { name: "Respond", code: "RS", desc: "Take action regarding a detected cybersecurity incident" },
+          { name: "Recover", code: "RC", desc: "Restore assets and operations impacted by a cybersecurity incident" },
+        ];
+
+        // 4. ISO Domains definitions
+        const ISO_DOMAINS = [
+          { name: "Organizational", code: "A.5", desc: "Policies, roles, asset management, and organizational security" },
+          { name: "People", code: "A.6", desc: "Screening, terms of employment, and security awareness education" },
+          { name: "Physical", code: "A.7", desc: "Physical security perimeters, entry controls, and equipment protection" },
+          { name: "Technological", code: "A.8", desc: "Endpoint security, network protection, authentication, and vulnerability management" },
+        ];
+
+        // 5. Active base requirements depending on sub-tab
+        let baseReqs = requirements;
+        if (complianceSubTab === "nist") {
+          baseReqs = nistReqs;
+        } else if (complianceSubTab === "iso") {
+          baseReqs = isoReqs;
+        }
+
+        // Available functions/domains for filter dropdown in current view
+        const availableDropdownFunctions = ["All", ...Array.from(new Set(baseReqs.map(r => r.function).filter(Boolean)))];
+
+        // 6. Filtering logic
+        const filteredReqs = baseReqs.filter(r => {
+          // Framework filter (only active on overview)
+          if (complianceSubTab === "overview" && complianceFrameworkFilter !== "All") {
+            if (r.framework_name !== complianceFrameworkFilter) return false;
+          }
+
+          // Search query (case-insensitive over existing fields)
+          if (complianceSearchQuery.trim()) {
+            const q = complianceSearchQuery.trim().toLowerCase();
+            const idMatch = (r.requirement_id || "").toLowerCase().includes(q);
+            const titleMatch = (r.title || "").toLowerCase().includes(q);
+            const descMatch = (r.description || "").toLowerCase().includes(q);
+            const fwMatch = (r.framework_name || "").toLowerCase().includes(q);
+            const fnMatch = (r.function || "").toLowerCase().includes(q);
+            const catMatch = (r.category || "").toLowerCase().includes(q);
+            const subcatMatch = (r.subcategory || "").toLowerCase().includes(q);
+            const controlMatch = r.mapped_controls && r.mapped_controls.some(
+              mc => (mc.name || "").toLowerCase().includes(q)
+            );
+            if (!idMatch && !titleMatch && !descMatch && !fwMatch && !fnMatch && !catMatch && !subcatMatch && !controlMatch) {
+              return false;
+            }
+          }
+
+          // Status filter
+          if (complianceStatusFilter !== "All") {
+            if (complianceStatusFilter === "Not Assessed") {
+              if (r.status !== "Not Assessed" && r.status) return false;
+            } else {
+              if (r.status !== complianceStatusFilter) return false;
+            }
+          }
+
+          // Function/Domain filter
+          if (complianceFunctionFilter !== "All") {
+            if ((r.function || "").toLowerCase() !== complianceFunctionFilter.toLowerCase()) return false;
+          }
+
+          // Mapping strength filter
+          if (complianceStrengthFilter !== "All") {
+            const controls = r.mapped_controls || [];
+            if (complianceStrengthFilter === "Unmapped") {
+              if (controls.length > 0) return false;
+            } else if (complianceStrengthFilter === "Direct") {
+              if (!controls.some(c => c.mapping_strength === "Direct")) return false;
+            } else if (complianceStrengthFilter === "Supporting") {
+              if (!controls.some(c => c.mapping_strength === "Supporting")) return false;
+            }
+          }
+
+          return true;
+        });
+
+        // Check if any filters active
+        const hasActiveFilters = Boolean(
+          complianceSearchQuery.trim() ||
+          complianceStatusFilter !== "All" ||
+          complianceFunctionFilter !== "All" ||
+          complianceStrengthFilter !== "All" ||
+          (complianceSubTab === "overview" && complianceFrameworkFilter !== "All")
+        );
+
+        const resetFilters = () => {
+          setComplianceSearchQuery("");
+          setComplianceFrameworkFilter("All");
+          setComplianceStatusFilter("All");
+          setComplianceFunctionFilter("All");
+          setComplianceStrengthFilter("All");
+        };
+
+        // Render helper for Proportional Segmented Status Distribution Bar
+        const renderStatusDistribution = (metrics) => {
+          const { total, implemented, partiallyImplemented, notImplemented, notAssessed, notApplicable } = metrics;
+          if (!total || total === 0) {
+            return (
+              <div className="compliance-dist-empty">
+                No requirement evaluation data available.
+              </div>
+            );
+          }
+
+          const implPct = ((implemented / total) * 100).toFixed(1);
+          const partPct = ((partiallyImplemented / total) * 100).toFixed(1);
+          const notImplPct = ((notImplemented / total) * 100).toFixed(1);
+          const notAssPct = ((notAssessed / total) * 100).toFixed(1);
+          const naPct = ((notApplicable / total) * 100).toFixed(1);
+
+          return (
+            <div className="compliance-dist-container">
+              <div className="compliance-dist-bar">
+                {implemented > 0 && (
+                  <div
+                    className="compliance-dist-seg comp-seg-implemented"
+                    style={{ width: `${implPct}%` }}
+                    title={`Implemented: ${implemented} (${implPct}%)`}
+                  />
+                )}
+                {partiallyImplemented > 0 && (
+                  <div
+                    className="compliance-dist-seg comp-seg-partial"
+                    style={{ width: `${partPct}%` }}
+                    title={`Partially Implemented: ${partiallyImplemented} (${partPct}%)`}
+                  />
+                )}
+                {notImplemented > 0 && (
+                  <div
+                    className="compliance-dist-seg comp-seg-not-impl"
+                    style={{ width: `${notImplPct}%` }}
+                    title={`Not Implemented: ${notImplemented} (${notImplPct}%)`}
+                  />
+                )}
+                {notAssessed > 0 && (
+                  <div
+                    className="compliance-dist-seg comp-seg-not-assessed"
+                    style={{ width: `${notAssPct}%` }}
+                    title={`Not Assessed: ${notAssessed} (${notAssPct}%)`}
+                  />
+                )}
+                {notApplicable > 0 && (
+                  <div
+                    className="compliance-dist-seg comp-seg-na"
+                    style={{ width: `${naPct}%` }}
+                    title={`Not Applicable: ${notApplicable} (${naPct}%)`}
+                  />
+                )}
+              </div>
+              <div className="compliance-dist-legend">
+                <span className="compliance-legend-item">
+                  <span className="compliance-legend-dot dot-impl" />
+                  Implemented: <strong>{implemented}</strong> <span className="text-muted">({implPct}%)</span>
+                </span>
+                <span className="compliance-legend-item">
+                  <span className="compliance-legend-dot dot-partial" />
+                  Partially Implemented: <strong>{partiallyImplemented}</strong> <span className="text-muted">({partPct}%)</span>
+                </span>
+                <span className="compliance-legend-item">
+                  <span className="compliance-legend-dot dot-not-impl" />
+                  Not Implemented: <strong>{notImplemented}</strong> <span className="text-muted">({notImplPct}%)</span>
+                </span>
+                <span className="compliance-legend-item">
+                  <span className="compliance-legend-dot dot-not-assessed" />
+                  Not Assessed: <strong>{notAssessed}</strong> <span className="text-muted">({notAssPct}%)</span>
+                </span>
+                <span className="compliance-legend-item">
+                  <span className="compliance-legend-dot dot-na" />
+                  Not Applicable: <strong>{notApplicable}</strong> <span className="text-muted">({naPct}%)</span>
+                </span>
+              </div>
             </div>
-            <div className="comp-stat-sub">Internal GRC tracking metric</div>
-          </div>
+          );
+        };
 
-          <div className="comp-stat-mini">
-            <div className="mini-num text-green">{activeSummary.implemented}</div>
-            <div className="mini-lbl">Implemented</div>
-          </div>
-
-          <div className="comp-stat-mini">
-            <div className="mini-num text-yellow">{activeSummary.partially_implemented}</div>
-            <div className="mini-lbl">Partially Impl.</div>
-          </div>
-
-          <div className="comp-stat-mini">
-            <div className="mini-num text-red">{activeSummary.not_implemented}</div>
-            <div className="mini-lbl">Not Impl.</div>
-          </div>
-
-          <div className="comp-stat-mini">
-            <div className="mini-num text-slate">{activeSummary.not_assessed}</div>
-            <div className="mini-lbl">Not Assessed</div>
-          </div>
-
-          <div className="comp-stat-mini">
-            <div className="mini-num text-muted">{activeSummary.not_applicable}</div>
-            <div className="mini-lbl">Not Applicable</div>
-          </div>
-        </div>
-
-        <div className="disclaimer-banner">
-          <span className="info-icon">ℹ️</span>
-          <span>
-            <strong>Note:</strong> Implementation Coverage is an internal GRC tracking metric for the reviewed supported subset of requirements and does not constitute formal certification or compliance.
-          </span>
-        </div>
-
-        {/* Filter Controls */}
-        <div className="table-filter-bar">
-          <div className="filter-group">
-            <label>Filter by Status:</label>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="select-filter"
-            >
-              <option value="All">All Statuses ({currentFwRequirements.length})</option>
-              <option value="Not Assessed">Not Assessed</option>
-              <option value="Partially Implemented">Partially Implemented</option>
-              <option value="Implemented">Implemented</option>
-              <option value="Not Implemented">Not Implemented</option>
-              <option value="Not Applicable">Not Applicable</option>
-            </select>
-          </div>
-
-          <div className="filter-group">
-            <label>Filter by Function / Theme:</label>
-            <select
-              value={functionFilter}
-              onChange={(e) => setFunctionFilter(e.target.value)}
-              className="select-filter"
-            >
-              {availableFunctions.map(fn => (
-                <option key={fn} value={fn}>{fn}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Compliance Table */}
-        <div className="table-responsive">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Requirement Code</th>
-                <th>Title & Function</th>
-                <th>Mapped Security Controls</th>
-                <th>Status</th>
-                <th>Auditor Notes</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRequirements.length === 0 ? (
-                <tr>
-                  <td colSpan="6" className="empty-cell">No requirements match the selected filters.</td>
-                </tr>
-              ) : (
-                filteredRequirements.map(req => (
-                  <tr key={req.id}>
-                    <td>
-                      <span className="req-code-badge">{req.requirement_id}</span>
-                      <div className="sub-text">{req.category}</div>
-                    </td>
-                    <td style={{ minWidth: "260px" }}>
-                      <strong>{req.title}</strong>
-                      <div className="sub-text desc-cell">{req.description}</div>
-                      <span className="function-pill">{req.function}</span>
-                    </td>
-                    <td style={{ minWidth: "220px" }}>
-                      {req.mapped_controls && req.mapped_controls.length > 0 ? (
-                        <div className="controls-list">
-                          {req.mapped_controls.map(mc => (
-                            <span key={mc.id} className="control-chip">
-                              {mc.name}
-                              <span className={`strength-tag ${mc.mapping_strength === "Direct" ? "strength-direct" : "strength-sup"}`}>
-                                {mc.mapping_strength}
-                              </span>
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-muted text-xs">No controls mapped</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`badge ${getComplianceStatusClass(req.status)}`}>
-                        {req.status || "Not Assessed"}
-                      </span>
-                    </td>
-                    <td className="desc-cell">
-                      {req.notes ? req.notes : <span className="text-muted">No notes recorded</span>}
-                    </td>
-                    <td>
-                      <button
-                        className="btn-action"
-                        onClick={() => openRequirementModal(req)}
-                        title="Update Assessment Status"
-                      >
-                        Assess
-                      </button>
-                    </td>
+        // Render helper for requirements table
+        const renderRequirementsTable = (reqList, showFrameworkCol = false) => {
+          return (
+            <div className="table-responsive">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Requirement Code</th>
+                    <th>Title & Description</th>
+                    {showFrameworkCol && <th>Framework</th>}
+                    <th>Function / Domain</th>
+                    <th>Status</th>
+                    <th>Mapped Controls</th>
+                    <th>Auditor Notes</th>
+                    <th>Actions</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      )}
+                </thead>
+                <tbody>
+                  {reqList.length === 0 ? (
+                    <tr>
+                      <td colSpan={showFrameworkCol ? 8 : 7} className="empty-cell">
+                        No compliance requirements match the current filters.
+                      </td>
+                    </tr>
+                  ) : (
+                    reqList.map((req) => (
+                      <tr key={req.id}>
+                        <td>
+                          <span className="req-code-badge">{req.requirement_id || "—"}</span>
+                          {req.category && <div className="sub-text">{req.category}</div>}
+                        </td>
+                        <td style={{ minWidth: "240px", maxWidth: "340px" }}>
+                          <strong className="compliance-table-title">{req.title}</strong>
+                          <div className="sub-text desc-cell">{req.description}</div>
+                        </td>
+                        {showFrameworkCol && (
+                          <td>
+                            <span className="compliance-fw-tag">
+                              {req.framework_name} v{req.framework_version}
+                            </span>
+                          </td>
+                        )}
+                        <td>
+                          <span className="function-pill">{req.function}</span>
+                        </td>
+                        <td>
+                          <span className={`badge ${getComplianceStatusClass(req.status)}`}>
+                            {req.status || "Not Assessed"}
+                          </span>
+                        </td>
+                        <td style={{ minWidth: "200px" }}>
+                          {req.mapped_controls && req.mapped_controls.length > 0 ? (
+                            <div className="controls-list">
+                              {req.mapped_controls.map((mc) => (
+                                <span key={mc.id || mc.name} className="control-chip">
+                                  {mc.name}
+                                  <span className={`strength-tag ${mc.mapping_strength === "Direct" ? "strength-direct" : "strength-sup"}`}>
+                                    {mc.mapping_strength || "Supporting"}
+                                  </span>
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-muted text-xs">Not Mapped</span>
+                          )}
+                        </td>
+                        <td className="desc-cell" style={{ maxWidth: "200px" }}>
+                          {req.notes ? (
+                            <span title={req.notes}>{req.notes}</span>
+                          ) : (
+                            <span className="text-muted text-xs">No notes recorded</span>
+                          )}
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                            <button
+                              className="btn-action"
+                              onClick={() => setViewingRequirement(req)}
+                              title="View Requirement Details"
+                            >
+                              Details
+                            </button>
+                            <button
+                              className="btn-action"
+                              onClick={() => openRequirementModal(req)}
+                              title="Update Assessment Status"
+                            >
+                              Assess
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          );
+        };
+
+        return (
+          <section className="panel compliance-panel">
+            {/* Header with Title & Factual Disclaimer */}
+            <div className="panel-header compliance-page-header">
+              <div>
+                <div className="section-tag">GOVERNANCE & REGULATORY POSTURE (PHASE 6)</div>
+                <h2>Compliance Framework Management</h2>
+                <p className="panel-desc">
+                  Mapped technical safeguards, implementation tracking, and readiness evaluation across authoritative cybersecurity standards (reviewed prototype subset).
+                </p>
+              </div>
+
+              {/* Segmented Sub-navigation Tabs */}
+              <div className="compliance-sub-nav">
+                <button
+                  className={`compliance-sub-nav-btn ${complianceSubTab === "overview" ? "active" : ""}`}
+                  onClick={() => {
+                    setComplianceSubTab("overview");
+                    setComplianceFunctionFilter("All");
+                  }}
+                >
+                  <span>Overview</span>
+                  <span className="compliance-sub-nav-badge">{requirements.length}</span>
+                </button>
+                <button
+                  className={`compliance-sub-nav-btn ${complianceSubTab === "nist" ? "active" : ""}`}
+                  onClick={() => {
+                    setComplianceSubTab("nist");
+                    setComplianceFunctionFilter("All");
+                  }}
+                >
+                  <span>NIST CSF 2.0</span>
+                  <span className="compliance-sub-nav-badge">{nistReqs.length}</span>
+                </button>
+                <button
+                  className={`compliance-sub-nav-btn ${complianceSubTab === "iso" ? "active" : ""}`}
+                  onClick={() => {
+                    setComplianceSubTab("iso");
+                    setComplianceFunctionFilter("All");
+                  }}
+                >
+                  <span>ISO/IEC 27001:2022</span>
+                  <span className="compliance-sub-nav-badge">{isoReqs.length}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Factual Disclaimer Banner */}
+            <div className="disclaimer-banner">
+              <span className="info-icon">ℹ️</span>
+              <span>
+                <strong>Factual Note:</strong> Implementation Coverage reflects mapped requirement implementation status in this platform. It is not a certification or independent compliance assessment.
+              </span>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* SUB-VIEW 1: COMPLIANCE OVERVIEW                                           */}
+            {/* ========================================================================= */}
+            {complianceSubTab === "overview" && (
+              <>
+                {/* Executive KPI Summary Cards (6 Cards) */}
+                <div className="compliance-kpi-grid">
+                  <div className="compliance-kpi-card">
+                    <div className="compliance-kpi-header">
+                      <span className="compliance-kpi-label">Frameworks</span>
+                      <span className="compliance-kpi-icon">📜</span>
+                    </div>
+                    <div className="compliance-kpi-val text-accent">
+                      {frameworks.length || 2}
+                    </div>
+                    <div className="compliance-kpi-sub">
+                      NIST CSF 2.0 & ISO/IEC 27001:2022
+                    </div>
+                  </div>
+
+                  <div className="compliance-kpi-card">
+                    <div className="compliance-kpi-header">
+                      <span className="compliance-kpi-label">Requirements</span>
+                      <span className="compliance-kpi-icon">📋</span>
+                    </div>
+                    <div className="compliance-kpi-val text-light">
+                      {overallMetrics.total}
+                    </div>
+                    <div className="compliance-kpi-sub">
+                      Reviewed prototype subset
+                    </div>
+                  </div>
+
+                  <div className="compliance-kpi-card">
+                    <div className="compliance-kpi-header">
+                      <span className="compliance-kpi-label">Implemented</span>
+                      <span className="compliance-kpi-icon">✅</span>
+                    </div>
+                    <div className="compliance-kpi-val text-green">
+                      {overallMetrics.implemented}
+                    </div>
+                    <div className="compliance-kpi-sub">
+                      {overallMetrics.total > 0 ? `${((overallMetrics.implemented / overallMetrics.total) * 100).toFixed(0)}% of total requirements` : "—"}
+                    </div>
+                  </div>
+
+                  <div className="compliance-kpi-card">
+                    <div className="compliance-kpi-header">
+                      <span className="compliance-kpi-label">Partially Implemented</span>
+                      <span className="compliance-kpi-icon">⚠️</span>
+                    </div>
+                    <div className="compliance-kpi-val text-yellow">
+                      {overallMetrics.partiallyImplemented}
+                    </div>
+                    <div className="compliance-kpi-sub">
+                      In-progress safeguard deployment
+                    </div>
+                  </div>
+
+                  <div className="compliance-kpi-card">
+                    <div className="compliance-kpi-header">
+                      <span className="compliance-kpi-label">Not Implemented</span>
+                      <span className="compliance-kpi-icon">❌</span>
+                    </div>
+                    <div className="compliance-kpi-val text-red">
+                      {overallMetrics.notImplemented}
+                    </div>
+                    <div className="compliance-kpi-sub">
+                      Identified compliance gaps
+                    </div>
+                  </div>
+
+                  <div className="compliance-kpi-card">
+                    <div className="compliance-kpi-header">
+                      <span className="compliance-kpi-label">Not Assessed / N/A</span>
+                      <span className="compliance-kpi-icon">⚖️</span>
+                    </div>
+                    <div className="compliance-kpi-val text-slate">
+                      {overallMetrics.notAssessed + overallMetrics.notApplicable}
+                    </div>
+                    <div className="compliance-kpi-sub">
+                      {overallMetrics.notAssessed} Not Assessed • {overallMetrics.notApplicable} N/A
+                    </div>
+                  </div>
+                </div>
+
+                {/* Framework Implementation Coverage Banner (Authoritative Backend Summaries) */}
+                <div className="compliance-coverage-banner">
+                  <div className="compliance-coverage-main">
+                    <div className="compliance-coverage-meta">
+                      <div className="compliance-coverage-tag">PROGRAM POSTURE</div>
+                      <h3 className="compliance-coverage-title">Framework Implementation Coverage</h3>
+                      <p className="compliance-coverage-desc">
+                        Authoritative framework implementation coverage reported directly by the backend API (<code>/compliance/summary</code>).
+                      </p>
+                    </div>
+                    <div className="compliance-coverage-score-box">
+                      <div className="compliance-fw-coverage-pair">
+                        <div className="compliance-fw-coverage-item">
+                          <span className="compliance-fw-coverage-label">NIST CSF 2.0:</span>
+                          <span className="compliance-fw-coverage-value text-accent">
+                            {nistCoverage != null ? `${nistCoverage}%` : "Not Available"}
+                          </span>
+                        </div>
+                        <div className="compliance-fw-coverage-item">
+                          <span className="compliance-fw-coverage-label">ISO/IEC 27001:2022:</span>
+                          <span className="compliance-fw-coverage-value text-accent">
+                            {isoCoverage != null ? `${isoCoverage}%` : "Not Available"}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="compliance-coverage-denom">
+                        Direct API summary values from authoritative GRC engine
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Proportional Segmented Status Distribution Bar */}
+                  {renderStatusDistribution(overallMetrics)}
+                </div>
+
+                {/* Framework Coverage Cards (2 Cards) */}
+                <div className="compliance-framework-grid-two">
+                  {/* NIST CSF Card */}
+                  <div className="compliance-fw-card-full">
+                    <div className="compliance-fw-top">
+                      <div className="compliance-fw-badge-row">
+                        <span className="compliance-fw-tag-primary">NIST CSF 2.0</span>
+                        <span className="compliance-fw-version-pill">v{nistFw.version}</span>
+                        <span className="compliance-subset-badge">Prototype Subset</span>
+                      </div>
+                      <div className="compliance-fw-score">
+                        <span className="compliance-fw-score-val text-accent">
+                          {nistCoverage != null ? `${nistCoverage}%` : "Not Available"}
+                        </span>
+                        <span className="compliance-fw-score-lbl">Implementation Coverage</span>
+                      </div>
+                    </div>
+                    <h3 className="compliance-fw-heading">NIST Cybersecurity Framework</h3>
+                    <p className="compliance-fw-desc">{nistFw.description}</p>
+
+                    <div className="compliance-fw-mini-progress">
+                      <div
+                        className="compliance-fw-mini-fill"
+                        style={{ width: `${Math.min(100, nistCoverage || 0)}%` }}
+                      />
+                    </div>
+
+                    <div className="compliance-fw-stats-row">
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-light">{nistMetrics.total}</span>
+                        <span className="compliance-fw-stat-lbl">Total</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-green">{nistMetrics.implemented}</span>
+                        <span className="compliance-fw-stat-lbl">Implemented</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-yellow">{nistMetrics.partiallyImplemented}</span>
+                        <span className="compliance-fw-stat-lbl">Partial</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-red">{nistMetrics.notImplemented}</span>
+                        <span className="compliance-fw-stat-lbl">Not Impl.</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-slate">{nistMetrics.notAssessed}</span>
+                        <span className="compliance-fw-stat-lbl">Not Assessed</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-muted">{nistMetrics.notApplicable}</span>
+                        <span className="compliance-fw-stat-lbl">N/A</span>
+                      </div>
+                    </div>
+
+                    <div className="compliance-fw-actions">
+                      <button
+                        className="btn-secondary compliance-fw-btn"
+                        onClick={() => {
+                          setComplianceSubTab("nist");
+                          setComplianceFunctionFilter("All");
+                        }}
+                      >
+                        Open NIST CSF View →
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* ISO/IEC 27001 Card */}
+                  <div className="compliance-fw-card-full">
+                    <div className="compliance-fw-top">
+                      <div className="compliance-fw-badge-row">
+                        <span className="compliance-fw-tag-primary">ISO/IEC 27001:2022</span>
+                        <span className="compliance-fw-version-pill">v{isoFw.version}</span>
+                        <span className="compliance-subset-badge">Prototype Subset</span>
+                      </div>
+                      <div className="compliance-fw-score">
+                        <span className="compliance-fw-score-val text-accent">
+                          {isoCoverage != null ? `${isoCoverage}%` : "Not Available"}
+                        </span>
+                        <span className="compliance-fw-score-lbl">Implementation Coverage</span>
+                      </div>
+                    </div>
+                    <h3 className="compliance-fw-heading">Information Security Management</h3>
+                    <p className="compliance-fw-desc">{isoFw.description}</p>
+
+                    <div className="compliance-fw-mini-progress">
+                      <div
+                        className="compliance-fw-mini-fill"
+                        style={{ width: `${Math.min(100, isoCoverage || 0)}%` }}
+                      />
+                    </div>
+
+                    <div className="compliance-fw-stats-row">
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-light">{isoMetrics.total}</span>
+                        <span className="compliance-fw-stat-lbl">Total</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-green">{isoMetrics.implemented}</span>
+                        <span className="compliance-fw-stat-lbl">Implemented</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-yellow">{isoMetrics.partiallyImplemented}</span>
+                        <span className="compliance-fw-stat-lbl">Partial</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-red">{isoMetrics.notImplemented}</span>
+                        <span className="compliance-fw-stat-lbl">Not Impl.</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-slate">{isoMetrics.notAssessed}</span>
+                        <span className="compliance-fw-stat-lbl">Not Assessed</span>
+                      </div>
+                      <div className="compliance-fw-stat-col">
+                        <span className="compliance-fw-stat-num text-muted">{isoMetrics.notApplicable}</span>
+                        <span className="compliance-fw-stat-lbl">N/A</span>
+                      </div>
+                    </div>
+
+                    <div className="compliance-fw-actions">
+                      <button
+                        className="btn-secondary compliance-fw-btn"
+                        onClick={() => {
+                          setComplianceSubTab("iso");
+                          setComplianceFunctionFilter("All");
+                        }}
+                      >
+                        Open ISO/IEC 27001 View →
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Comprehensive Evaluated Requirement Inventory */}
+                <div className="compliance-inventory-section">
+                  <div className="compliance-inventory-header">
+                    <div>
+                      <h3 className="compliance-inventory-title">Evaluated Requirement Inventory</h3>
+                      <p className="compliance-inventory-sub">
+                        All mapped safeguard controls across evaluated standards. Filter by framework, status, function, or mapping strength.
+                      </p>
+                    </div>
+                    <span className="compliance-inventory-count">
+                      Showing <strong>{filteredReqs.length}</strong> of <strong>{requirements.length}</strong> requirements
+                    </span>
+                  </div>
+
+                  {/* Filter and Search Bar */}
+                  <div className="compliance-filter-bar">
+                    <div className="compliance-search-box">
+                      <span className="compliance-search-icon">🔍</span>
+                      <input
+                        type="text"
+                        placeholder="Search by ID, title, description, function, or mapped control..."
+                        value={complianceSearchQuery}
+                        onChange={(e) => setComplianceSearchQuery(e.target.value)}
+                        className="compliance-search-input"
+                      />
+                      {complianceSearchQuery && (
+                        <button
+                          className="compliance-search-clear"
+                          onClick={() => setComplianceSearchQuery("")}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="compliance-filters-row">
+                      <div className="compliance-filter-item">
+                        <label>Framework:</label>
+                        <select
+                          value={complianceFrameworkFilter}
+                          onChange={(e) => setComplianceFrameworkFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Frameworks ({requirements.length})</option>
+                          <option value="NIST CSF">NIST CSF ({nistReqs.length})</option>
+                          <option value="ISO/IEC 27001">ISO/IEC 27001 ({isoReqs.length})</option>
+                        </select>
+                      </div>
+
+                      <div className="compliance-filter-item">
+                        <label>Status:</label>
+                        <select
+                          value={complianceStatusFilter}
+                          onChange={(e) => setComplianceStatusFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Statuses</option>
+                          <option value="Implemented">Implemented</option>
+                          <option value="Partially Implemented">Partially Implemented</option>
+                          <option value="Not Implemented">Not Implemented</option>
+                          <option value="Not Assessed">Not Assessed</option>
+                          <option value="Not Applicable">Not Applicable</option>
+                        </select>
+                      </div>
+
+                      <div className="compliance-filter-item">
+                        <label>Function / Domain:</label>
+                        <select
+                          value={complianceFunctionFilter}
+                          onChange={(e) => setComplianceFunctionFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          {availableDropdownFunctions.map((fn) => (
+                            <option key={fn} value={fn}>{fn}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="compliance-filter-item">
+                        <label>Mapping Strength:</label>
+                        <select
+                          value={complianceStrengthFilter}
+                          onChange={(e) => setComplianceStrengthFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Mappings</option>
+                          <option value="Direct">Direct Mappings</option>
+                          <option value="Supporting">Supporting Mappings</option>
+                          <option value="Unmapped">Unmapped Controls</option>
+                        </select>
+                      </div>
+
+                      {hasActiveFilters && (
+                        <button
+                          className="btn-link compliance-reset-btn"
+                          onClick={resetFilters}
+                        >
+                          Reset Filters
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Requirements Table */}
+                  {renderRequirementsTable(filteredReqs, true)}
+                </div>
+              </>
+            )}
+
+            {/* ========================================================================= */}
+            {/* SUB-VIEW 2: NIST CSF 2.0 VIEW                                             */}
+            {/* ========================================================================= */}
+            {complianceSubTab === "nist" && (
+              <>
+                {/* NIST CSF Banner */}
+                <div className="compliance-framework-banner">
+                  <div className="compliance-fw-banner-left">
+                    <div className="compliance-fw-badge-row">
+                      <span className="compliance-fw-tag-primary">NIST CSF 2.0</span>
+                      <span className="compliance-fw-version-pill">v{nistFw.version}</span>
+                      <span className="compliance-subset-badge">Reviewed Prototype Subset</span>
+                    </div>
+                    <h3 className="compliance-fw-banner-title">NIST Cybersecurity Framework 2.0</h3>
+                    <p className="compliance-fw-banner-desc">{nistFw.description}</p>
+                  </div>
+                  <div className="compliance-fw-banner-right">
+                    <div className="compliance-fw-banner-stat">
+                      <span className="compliance-fw-banner-num text-accent">
+                        {nistCoverage != null ? `${nistCoverage}%` : "Not Available"}
+                      </span>
+                      <span className="compliance-fw-banner-lbl">Implementation Coverage</span>
+                    </div>
+                    <div className="compliance-fw-banner-stat">
+                      <span className="compliance-fw-banner-num text-light">
+                        {nistMetrics.implemented} / {nistMetrics.total}
+                      </span>
+                      <span className="compliance-fw-banner-lbl">Requirements Implemented</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* NIST Status Distribution */}
+                {renderStatusDistribution(nistMetrics)}
+
+                {/* 6 Core Functions Breakdown Cards Grid */}
+                <div className="compliance-section-subhead">
+                  <h4>NIST CSF 2.0 Core Functions ({NIST_FUNCTIONS.length})</h4>
+                  <span className="text-muted text-xs">
+                    Click any function to filter the requirement register below
+                  </span>
+                </div>
+
+                <div className="compliance-functions-grid">
+                  {NIST_FUNCTIONS.map((fn) => {
+                    const fnReqs = nistReqs.filter(r => (r.function || "").toLowerCase() === fn.name.toLowerCase());
+                    const fnMetrics = aggregateCounts(fnReqs);
+                    const fnControlsCount = fnReqs.reduce((acc, r) => acc + (r.mapped_controls ? r.mapped_controls.length : 0), 0);
+                    const isSelected = complianceFunctionFilter.toLowerCase() === fn.name.toLowerCase();
+
+                    return (
+                      <div
+                        key={fn.name}
+                        className={`compliance-function-card ${isSelected ? "active" : ""}`}
+                        onClick={() => {
+                          if (isSelected) {
+                            setComplianceFunctionFilter("All");
+                          } else {
+                            setComplianceFunctionFilter(fn.name);
+                          }
+                        }}
+                      >
+                        <div className="compliance-fn-header">
+                          <div>
+                            <span className="compliance-fn-code">{fn.code}</span>
+                            <span className="compliance-fn-name">{fn.name}</span>
+                          </div>
+                          <span className="compliance-fn-badge">
+                            {fnReqs.length} {fnReqs.length === 1 ? "Req" : "Reqs"}
+                          </span>
+                        </div>
+                        <p className="compliance-fn-desc">{fn.desc}</p>
+
+                        <div className="compliance-fn-status-counts-row">
+                          <span className="compliance-fn-count-pill text-green">
+                            <strong>{fnMetrics.implemented}</strong> Impl
+                          </span>
+                          <span className="compliance-fn-count-pill text-yellow">
+                            <strong>{fnMetrics.partiallyImplemented}</strong> Part
+                          </span>
+                          <span className="compliance-fn-count-pill text-red">
+                            <strong>{fnMetrics.notImplemented}</strong> Not Impl
+                          </span>
+                          <span className="compliance-fn-count-pill text-slate">
+                            <strong>{fnMetrics.notAssessed}</strong> Not Assessed
+                          </span>
+                        </div>
+
+                        <div className="compliance-fn-footer">
+                          <span className="text-muted text-xs">
+                            {fnReqs.length} {fnReqs.length === 1 ? "evaluated requirement" : "evaluated requirements"}
+                          </span>
+                          <span className="compliance-fn-controls-count">
+                            {fnControlsCount} mapped {fnControlsCount === 1 ? "control" : "controls"}
+                          </span>
+                        </div>
+
+                        <div className="compliance-fn-filter-indicator">
+                          {isSelected ? "✓ Active Filter (Click to clear)" : "Click to filter table"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* NIST Filter and Table */}
+                <div className="compliance-inventory-section">
+                  <div className="compliance-inventory-header">
+                    <div>
+                      <h3 className="compliance-inventory-title">NIST CSF 2.0 Requirement Register</h3>
+                      <p className="compliance-inventory-sub">
+                        Showing evaluated requirements across the 6 Core Functions with mapped security controls.
+                      </p>
+                    </div>
+                    <span className="compliance-inventory-count">
+                      Showing <strong>{filteredReqs.length}</strong> of <strong>{nistReqs.length}</strong> requirements
+                    </span>
+                  </div>
+
+                  {/* Filter and Search Bar */}
+                  <div className="compliance-filter-bar">
+                    <div className="compliance-search-box">
+                      <span className="compliance-search-icon">🔍</span>
+                      <input
+                        type="text"
+                        placeholder="Search NIST requirements, code, description, or mapped control..."
+                        value={complianceSearchQuery}
+                        onChange={(e) => setComplianceSearchQuery(e.target.value)}
+                        className="compliance-search-input"
+                      />
+                      {complianceSearchQuery && (
+                        <button
+                          className="compliance-search-clear"
+                          onClick={() => setComplianceSearchQuery("")}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="compliance-filters-row">
+                      <div className="compliance-filter-item">
+                        <label>Function:</label>
+                        <select
+                          value={complianceFunctionFilter}
+                          onChange={(e) => setComplianceFunctionFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Functions ({nistReqs.length})</option>
+                          {NIST_FUNCTIONS.map((fn) => (
+                            <option key={fn.name} value={fn.name}>{fn.name} ({fn.code})</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="compliance-filter-item">
+                        <label>Status:</label>
+                        <select
+                          value={complianceStatusFilter}
+                          onChange={(e) => setComplianceStatusFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Statuses</option>
+                          <option value="Implemented">Implemented</option>
+                          <option value="Partially Implemented">Partially Implemented</option>
+                          <option value="Not Implemented">Not Implemented</option>
+                          <option value="Not Assessed">Not Assessed</option>
+                          <option value="Not Applicable">Not Applicable</option>
+                        </select>
+                      </div>
+
+                      <div className="compliance-filter-item">
+                        <label>Mapping Strength:</label>
+                        <select
+                          value={complianceStrengthFilter}
+                          onChange={(e) => setComplianceStrengthFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Mappings</option>
+                          <option value="Direct">Direct Mappings</option>
+                          <option value="Supporting">Supporting Mappings</option>
+                          <option value="Unmapped">Unmapped Controls</option>
+                        </select>
+                      </div>
+
+                      {hasActiveFilters && (
+                        <button
+                          className="btn-link compliance-reset-btn"
+                          onClick={resetFilters}
+                        >
+                          Reset Filters
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Requirements Table */}
+                  {renderRequirementsTable(filteredReqs, false)}
+                </div>
+              </>
+            )}
+
+            {/* ========================================================================= */}
+            {/* SUB-VIEW 3: ISO/IEC 27001:2022 VIEW                                       */}
+            {/* ========================================================================= */}
+            {complianceSubTab === "iso" && (
+              <>
+                {/* ISO/IEC 27001 Banner */}
+                <div className="compliance-framework-banner">
+                  <div className="compliance-fw-banner-left">
+                    <div className="compliance-fw-badge-row">
+                      <span className="compliance-fw-tag-primary">ISO/IEC 27001:2022</span>
+                      <span className="compliance-fw-version-pill">v{isoFw.version}</span>
+                      <span className="compliance-subset-badge">Reviewed Prototype Subset</span>
+                    </div>
+                    <h3 className="compliance-fw-banner-title">ISO/IEC 27001:2022 Annex A Controls</h3>
+                    <p className="compliance-fw-banner-desc">{isoFw.description}</p>
+                  </div>
+                  <div className="compliance-fw-banner-right">
+                    <div className="compliance-fw-banner-stat">
+                      <span className="compliance-fw-banner-num text-accent">
+                        {isoCoverage != null ? `${isoCoverage}%` : "Not Available"}
+                      </span>
+                      <span className="compliance-fw-banner-lbl">Implementation Coverage</span>
+                    </div>
+                    <div className="compliance-fw-banner-stat">
+                      <span className="compliance-fw-banner-num text-light">
+                        {isoMetrics.implemented} / {isoMetrics.total}
+                      </span>
+                      <span className="compliance-fw-banner-lbl">Requirements Implemented</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ISO Status Distribution */}
+                {renderStatusDistribution(isoMetrics)}
+
+                {/* 4 Themes / Domains Breakdown Cards Grid */}
+                <div className="compliance-section-subhead">
+                  <h4>ISO/IEC 27001:2022 Annex A Themes ({ISO_DOMAINS.length})</h4>
+                  <span className="text-muted text-xs">
+                    Click any theme to filter the requirement register below
+                  </span>
+                </div>
+
+                <div className="compliance-functions-grid iso-grid-four">
+                  {ISO_DOMAINS.map((dom) => {
+                    const domReqs = isoReqs.filter(r => (r.function || "").toLowerCase() === dom.name.toLowerCase());
+                    const domMetrics = aggregateCounts(domReqs);
+                    const domControlsCount = domReqs.reduce((acc, r) => acc + (r.mapped_controls ? r.mapped_controls.length : 0), 0);
+                    const isSelected = complianceFunctionFilter.toLowerCase() === dom.name.toLowerCase();
+
+                    return (
+                      <div
+                        key={dom.name}
+                        className={`compliance-function-card ${isSelected ? "active" : ""}`}
+                        onClick={() => {
+                          if (isSelected) {
+                            setComplianceFunctionFilter("All");
+                          } else {
+                            setComplianceFunctionFilter(dom.name);
+                          }
+                        }}
+                      >
+                        <div className="compliance-fn-header">
+                          <div>
+                            <span className="compliance-fn-code">{dom.code}</span>
+                            <span className="compliance-fn-name">{dom.name}</span>
+                          </div>
+                          <span className="compliance-fn-badge">
+                            {domReqs.length} {domReqs.length === 1 ? "Req" : "Reqs"}
+                          </span>
+                        </div>
+                        <p className="compliance-fn-desc">{dom.desc}</p>
+
+                        <div className="compliance-fn-status-counts-row">
+                          <span className="compliance-fn-count-pill text-green">
+                            <strong>{domMetrics.implemented}</strong> Impl
+                          </span>
+                          <span className="compliance-fn-count-pill text-yellow">
+                            <strong>{domMetrics.partiallyImplemented}</strong> Part
+                          </span>
+                          <span className="compliance-fn-count-pill text-red">
+                            <strong>{domMetrics.notImplemented}</strong> Not Impl
+                          </span>
+                          <span className="compliance-fn-count-pill text-slate">
+                            <strong>{domMetrics.notAssessed}</strong> Not Assessed
+                          </span>
+                        </div>
+
+                        <div className="compliance-fn-footer">
+                          <span className="text-muted text-xs">
+                            {domReqs.length} {domReqs.length === 1 ? "evaluated requirement" : "evaluated requirements"}
+                          </span>
+                          <span className="compliance-fn-controls-count">
+                            {domControlsCount} mapped {domControlsCount === 1 ? "control" : "controls"}
+                          </span>
+                        </div>
+
+                        <div className="compliance-fn-filter-indicator">
+                          {isSelected ? "✓ Active Filter (Click to clear)" : "Click to filter table"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* ISO Filter and Table */}
+                <div className="compliance-inventory-section">
+                  <div className="compliance-inventory-header">
+                    <div>
+                      <h3 className="compliance-inventory-title">ISO/IEC 27001:2022 Requirement Register</h3>
+                      <p className="compliance-inventory-sub">
+                        Showing evaluated Annex A requirements across the 4 thematic domains with mapped security controls.
+                      </p>
+                    </div>
+                    <span className="compliance-inventory-count">
+                      Showing <strong>{filteredReqs.length}</strong> of <strong>{isoReqs.length}</strong> requirements
+                    </span>
+                  </div>
+
+                  {/* Filter and Search Bar */}
+                  <div className="compliance-filter-bar">
+                    <div className="compliance-search-box">
+                      <span className="compliance-search-icon">🔍</span>
+                      <input
+                        type="text"
+                        placeholder="Search ISO requirements, code, description, or mapped control..."
+                        value={complianceSearchQuery}
+                        onChange={(e) => setComplianceSearchQuery(e.target.value)}
+                        className="compliance-search-input"
+                      />
+                      {complianceSearchQuery && (
+                        <button
+                          className="compliance-search-clear"
+                          onClick={() => setComplianceSearchQuery("")}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="compliance-filters-row">
+                      <div className="compliance-filter-item">
+                        <label>Domain / Theme:</label>
+                        <select
+                          value={complianceFunctionFilter}
+                          onChange={(e) => setComplianceFunctionFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Domains ({isoReqs.length})</option>
+                          {ISO_DOMAINS.map((dom) => (
+                            <option key={dom.name} value={dom.name}>{dom.name} ({dom.code})</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="compliance-filter-item">
+                        <label>Status:</label>
+                        <select
+                          value={complianceStatusFilter}
+                          onChange={(e) => setComplianceStatusFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Statuses</option>
+                          <option value="Implemented">Implemented</option>
+                          <option value="Partially Implemented">Partially Implemented</option>
+                          <option value="Not Implemented">Not Implemented</option>
+                          <option value="Not Assessed">Not Assessed</option>
+                          <option value="Not Applicable">Not Applicable</option>
+                        </select>
+                      </div>
+
+                      <div className="compliance-filter-item">
+                        <label>Mapping Strength:</label>
+                        <select
+                          value={complianceStrengthFilter}
+                          onChange={(e) => setComplianceStrengthFilter(e.target.value)}
+                          className="select-filter"
+                        >
+                          <option value="All">All Mappings</option>
+                          <option value="Direct">Direct Mappings</option>
+                          <option value="Supporting">Supporting Mappings</option>
+                          <option value="Unmapped">Unmapped Controls</option>
+                        </select>
+                      </div>
+
+                      {hasActiveFilters && (
+                        <button
+                          className="btn-link compliance-reset-btn"
+                          onClick={resetFilters}
+                        >
+                          Reset Filters
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Requirements Table */}
+                  {renderRequirementsTable(filteredReqs, false)}
+                </div>
+              </>
+            )}
+          </section>
+        );
+      })()}
 
       {/* -------------------------------- */}
       {/* VULNERABILITY FINDINGS (Phase 4) */}
@@ -6715,6 +7766,189 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* -------------------------------- */}
+      {/* MODAL: VIEW COMPLIANCE REQUIREMENT DETAILS (PHASE 6) */}
+      {/* -------------------------------- */}
+      {viewingRequirement && (() => {
+        const req = requirements.find(r => r.id === viewingRequirement.id) || viewingRequirement;
+        const mappedControls = req.mapped_controls || [];
+        const correlatedRisks = risks.filter(
+          risk => risk.controls && risk.controls.some(rc => mappedControls.some(mc => mc.id === rc.id))
+        );
+
+        return (
+          <div className="modal-backdrop" onClick={() => setViewingRequirement(null)}>
+            <div className="modal-content compliance-detail-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <div className="compliance-modal-header-info">
+                  <div className="compliance-modal-badges">
+                    <span className="req-code-badge">{req.requirement_id || "ID Not Available"}</span>
+                    <span className="compliance-fw-tag">{req.framework_name} v{req.framework_version}</span>
+                    <span className="function-pill">{req.function}</span>
+                  </div>
+                  <h3>{req.title}</h3>
+                </div>
+                <button className="modal-close" onClick={() => setViewingRequirement(null)}>×</button>
+              </div>
+
+              <div className="modal-body compliance-modal-body">
+                {/* Section 1: Requirement Specification */}
+                <div className="compliance-modal-section">
+                  <h4 className="compliance-section-heading">Requirement Specification</h4>
+                  <div className="compliance-meta-grid">
+                    <div className="compliance-meta-item">
+                      <span className="compliance-meta-label">Framework</span>
+                      <span className="compliance-meta-val">{req.framework_name} v{req.framework_version}</span>
+                    </div>
+                    <div className="compliance-meta-item">
+                      <span className="compliance-meta-label">Function / Domain</span>
+                      <span className="compliance-meta-val">{req.function}</span>
+                    </div>
+                    <div className="compliance-meta-item">
+                      <span className="compliance-meta-label">Category</span>
+                      <span className="compliance-meta-val">{req.category || "Not Available"}</span>
+                    </div>
+                    <div className="compliance-meta-item">
+                      <span className="compliance-meta-label">Subcategory</span>
+                      <span className="compliance-meta-val">{req.subcategory || "Not Available"}</span>
+                    </div>
+                    <div className="compliance-meta-item">
+                      <span className="compliance-meta-label">Last Evaluated</span>
+                      <span className="compliance-meta-val">{formatDateTime(req.updated_at, "Not Available")}</span>
+                    </div>
+                    <div className="compliance-meta-item">
+                      <span className="compliance-meta-label">Created</span>
+                      <span className="compliance-meta-val">{formatDateTime(req.created_at, "Not Available")}</span>
+                    </div>
+                  </div>
+                  <div className="compliance-desc-box">
+                    <span className="compliance-desc-label">Requirement Statement:</span>
+                    <p className="compliance-desc-text">{req.description}</p>
+                  </div>
+                </div>
+
+                {/* Section 2: Implementation Posture */}
+                <div className="compliance-modal-section">
+                  <div className="compliance-section-header-row">
+                    <h4 className="compliance-section-heading">Implementation Posture</h4>
+                    <button
+                      className="btn-action"
+                      onClick={() => openRequirementModal(req)}
+                    >
+                      Update Assessment
+                    </button>
+                  </div>
+                  <div className="compliance-posture-card">
+                    <div className="compliance-posture-row">
+                      <span className="compliance-meta-label">Current Status:</span>
+                      <span className={`badge ${getComplianceStatusClass(req.status)}`}>
+                        {req.status || "Not Assessed"}
+                      </span>
+                    </div>
+                    <div className="compliance-posture-notes">
+                      <span className="compliance-meta-label">Auditor Observations & Evidence Notes:</span>
+                      <p className="compliance-notes-text">
+                        {req.notes || "No notes recorded for this requirement."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 3: Mapped Security Controls */}
+                <div className="compliance-modal-section">
+                  <h4 className="compliance-section-heading">
+                    Mapped Security Controls ({mappedControls.length})
+                  </h4>
+                  {mappedControls.length === 0 ? (
+                    <div className="compliance-empty-sub">
+                      No security controls currently mapped to this requirement.
+                    </div>
+                  ) : (
+                    <div className="compliance-controls-grid">
+                      {mappedControls.map((mc) => (
+                        <div key={mc.id || mc.name} className="compliance-control-item">
+                          <div className="compliance-control-item-header">
+                            <span className="compliance-control-name">{mc.name}</span>
+                            <span className={`strength-tag ${mc.mapping_strength === "Direct" ? "strength-direct" : "strength-sup"}`}>
+                              {mc.mapping_strength || "Supporting"}
+                            </span>
+                          </div>
+                          <div className="compliance-control-meta">
+                            <span>Category: <strong>{mc.category || "General"}</strong></span>
+                            <span>Effectiveness: <strong>{mc.effectiveness || "Not Assessed"}</strong></span>
+                            <span>Status: <strong>{mc.status || "Active"}</strong></span>
+                          </div>
+                          {mc.notes && (
+                            <div className="compliance-control-notes">
+                              {mc.notes}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Section 4: Associated Enterprise Risks via Mapped Security Controls */}
+                <div className="compliance-modal-section">
+                  <h4 className="compliance-section-heading">
+                    Associated Enterprise Risks via Mapped Security Controls ({correlatedRisks.length})
+                  </h4>
+                  <div className="compliance-disclaimer-sub">
+                    <strong>Control Reuse Notice:</strong> The enterprise risks listed below are associated with this compliance requirement strictly through shared mitigating security controls. This reflects security control reuse across the risk register and does not prove that this requirement directly causes, mitigates, or owns any specific risk finding.
+                  </div>
+                  {correlatedRisks.length === 0 ? (
+                    <div className="compliance-empty-sub">
+                      No enterprise risks currently associated with these mapped controls.
+                    </div>
+                  ) : (
+                    <div className="table-responsive" style={{ maxHeight: "200px" }}>
+                      <table className="data-table" style={{ fontSize: "12px" }}>
+                        <thead>
+                          <tr>
+                            <th>Risk ID</th>
+                            <th>Risk Title</th>
+                            <th>Inherent Level</th>
+                            <th>Residual Level</th>
+                            <th>Treatment</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {correlatedRisks.map((cr) => (
+                            <tr key={cr.id}>
+                              <td><span className="code-pill">RISK-{cr.id}</span></td>
+                              <td><strong>{cr.title}</strong></td>
+                              <td><span className={`badge ${getRiskClass(cr.inherent_risk_level || cr.risk_level)}`}>{cr.inherent_risk_level || cr.risk_level}</span></td>
+                              <td><span className={`badge ${cr.residual_risk_level ? getRiskClass(cr.residual_risk_level) : "badge-neutral"}`}>{cr.residual_risk_level || "Not Available"}</span></td>
+                              <td>{cr.treatment || "Mitigate"}</td>
+                              <td><span className={`status-pill ${cr.status === "Open" ? "status-open" : "status-resolved"}`}>{cr.status}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Factual Disclaimer Footer */}
+                <div className="compliance-modal-disclaimer">
+                  <span className="info-icon">ℹ️</span>
+                  <span>
+                    Implementation Coverage reflects mapped requirement implementation status in this platform. It is not a certification or independent compliance assessment.
+                  </span>
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button className="btn-secondary" onClick={() => setViewingRequirement(null)}>Close</button>
+                <button className="btn-primary" onClick={() => openRequirementModal(req)}>Assess Requirement</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* -------------------------------- */}
       {/* MODAL: ASSESS COMPLIANCE REQUIREMENT (PHASE 3) */}
