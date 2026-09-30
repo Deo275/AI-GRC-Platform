@@ -945,6 +945,12 @@ function App() {
   const [assetCritFilter, setAssetCritFilter] = useState("All");
   const [assetExpFilter, setAssetExpFilter] = useState("All");
 
+  // Phase 4: Vulnerabilities Page Filters, Search & Details Modal
+  const [vulnSearchQuery, setVulnSearchQuery] = useState("");
+  const [vulnSeverityFilter, setVulnSeverityFilter] = useState("All");
+  const [vulnStatusFilter, setVulnStatusFilter] = useState("All");
+  const [viewingVuln, setViewingVuln] = useState(null);
+
   // Form states
   const [assetForm, setAssetForm] = useState({
     criticality: "Medium",
@@ -3783,75 +3789,466 @@ function App() {
       )}
 
       {/* -------------------------------- */}
-      {/* VULNERABILITY FINDINGS          */}
+      {/* VULNERABILITY FINDINGS (Phase 4) */}
       {/* -------------------------------- */}
-      {activePage === "vulnerabilities" && (
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Vulnerability Findings</h2>
-            <p className="panel-desc">
-              Technical security findings with CVE/NVD correlation and CVSS scores.
-            </p>
-          </div>
-        </div>
+      {activePage === "vulnerabilities" && (() => {
+        const totalVulns = vulnerabilities.length;
+        const criticalVulns = vulnerabilities.filter(
+          (v) => (v.severity || "").toLowerCase() === "critical"
+        ).length;
+        const highVulns = vulnerabilities.filter(
+          (v) => (v.severity || "").toLowerCase() === "high"
+        ).length;
+        const mediumVulns = vulnerabilities.filter(
+          (v) => (v.severity || "").toLowerCase() === "medium"
+        ).length;
+        const lowVulns = vulnerabilities.filter(
+          (v) => (v.severity || "").toLowerCase() === "low"
+        ).length;
+        const unknownSeverityVulns = vulnerabilities.filter(
+          (v) => !["critical", "high", "medium", "low"].includes((v.severity || "").toLowerCase())
+        ).length;
 
-        <div className="table-responsive">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Port / Service</th>
-                <th>Finding Title</th>
-                <th>Severity</th>
-                <th>CVE Reference</th>
-                <th>CVSS Score</th>
-                <th>CVE Confidence</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {vulnerabilities.length === 0 ? (
-                <tr>
-                  <td colSpan="7" className="empty-cell">No vulnerability findings yet.</td>
-                </tr>
+        const uniqueAssetIds = new Set(
+          vulnerabilities.map((v) => v.asset_id).filter((id) => id != null)
+        );
+        const affectedAssetsCount = uniqueAssetIds.size;
+
+        const pct = (cnt) => (totalVulns > 0 ? ((cnt / totalVulns) * 100).toFixed(1) : "0.0");
+
+        const filteredVulns = vulnerabilities.filter((v) => {
+          // Search matching
+          if (vulnSearchQuery.trim()) {
+            const q = vulnSearchQuery.toLowerCase().trim();
+            const title = (v.title || "").toLowerCase();
+            const cve = (v.cve || "").toLowerCase();
+            const desc = (v.description || "").toLowerCase();
+            const service = (v.service || "").toLowerCase();
+            const product = (v.product || "").toLowerCase();
+
+            const asset = assets.find((a) => a.id === v.asset_id);
+            const assetIp = (asset?.ip_address || "").toLowerCase();
+            const assetHost = (asset?.hostname || "").toLowerCase();
+
+            if (
+              !title.includes(q) &&
+              !cve.includes(q) &&
+              !desc.includes(q) &&
+              !service.includes(q) &&
+              !product.includes(q) &&
+              !assetIp.includes(q) &&
+              !assetHost.includes(q)
+            ) {
+              return false;
+            }
+          }
+
+          // Severity filter
+          if (vulnSeverityFilter !== "All") {
+            const sev = (v.severity || "").toLowerCase();
+            if (vulnSeverityFilter.toLowerCase() === "unknown") {
+              if (["critical", "high", "medium", "low"].includes(sev)) return false;
+            } else {
+              if (sev !== vulnSeverityFilter.toLowerCase()) return false;
+            }
+          }
+
+          // Status filter
+          if (vulnStatusFilter !== "All") {
+            const st = (v.status || "Open").toLowerCase();
+            if (st !== vulnStatusFilter.toLowerCase()) return false;
+          }
+
+          return true;
+        });
+
+        const hasActiveVulnFilters =
+          vulnSearchQuery.trim() !== "" ||
+          vulnSeverityFilter !== "All" ||
+          vulnStatusFilter !== "All";
+
+        const resetVulnFilters = () => {
+          setVulnSearchQuery("");
+          setVulnSeverityFilter("All");
+          setVulnStatusFilter("All");
+        };
+
+        return (
+          <>
+            {/* 1. VULNERABILITY SUMMARY: Compact KPI Cards */}
+            <section className="cards cards-six">
+              <div className="card">
+                <div className="card-label">Total Findings</div>
+                <div className="card-val">{totalVulns}</div>
+                <div className="card-sub">
+                  {affectedAssetsCount} affected {affectedAssetsCount === 1 ? "host" : "hosts"}
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">Critical</div>
+                <div className="card-val highlight-critical">{criticalVulns}</div>
+                <div className="card-sub">{pct(criticalVulns)}% of findings</div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">High</div>
+                <div className="card-val highlight-orange">{highVulns}</div>
+                <div className="card-sub">{pct(highVulns)}% of findings</div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">Medium</div>
+                <div className="card-val highlight-amber">{mediumVulns}</div>
+                <div className="card-sub">{pct(mediumVulns)}% of findings</div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">Low</div>
+                <div className="card-val highlight-blue">{lowVulns}</div>
+                <div className="card-sub">{pct(lowVulns)}% of findings</div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">Affected Assets</div>
+                <div className="card-val highlight-green">{affectedAssetsCount}</div>
+                <div className="card-sub">of {assets.length} monitored assets</div>
+              </div>
+            </section>
+
+            {/* Unknown severity callout if any exist */}
+            {unknownSeverityVulns > 0 && (
+              <div className="asset-unclassified-banner">
+                <div className="asset-unclassified-icon">⚠️</div>
+                <div className="asset-unclassified-content">
+                  <div className="asset-unclassified-title">
+                    {unknownSeverityVulns} {unknownSeverityVulns === 1 ? "finding has" : "findings have"} unclassified severity
+                  </div>
+                  <div className="asset-unclassified-desc">
+                    These vulnerability detections do not have an authoritative severity level assigned by scanner enrichment. Review the findings below to inspect raw detection details.
+                  </div>
+                </div>
+                <div className="asset-unclassified-actions">
+                  <button
+                    type="button"
+                    className="btn-action-view"
+                    onClick={() => {
+                      setVulnSeverityFilter("Unknown");
+                      setVulnSearchQuery("");
+                    }}
+                  >
+                    View Unclassified ({unknownSeverityVulns})
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 2. SEVERITY EXPOSURE VISUALIZATION */}
+            <div className="vuln-distribution-box">
+              <div className="vuln-distribution-header">
+                <div>
+                  <span className="vuln-dist-title">🎯 Severity Exposure Distribution</span>
+                  <span className="vuln-dist-sub">
+                    {totalVulns > 0
+                      ? `${criticalVulns + highVulns} critical & high exposure findings (${pct(criticalVulns + highVulns)}%)`
+                      : "No findings recorded"}
+                  </span>
+                </div>
+                <span className="vuln-dist-meta">{totalVulns} Total Correlated Findings</span>
+              </div>
+
+              {totalVulns === 0 ? (
+                <div className="overview-empty">
+                  <span className="overview-empty-icon">🔍</span>
+                  No vulnerability findings recorded yet. Run a network scan to detect technical vulnerabilities.
+                </div>
               ) : (
-                vulnerabilities.map((v) => (
-                  <tr key={v.id}>
-                    <td>
-                      <strong>{v.port}</strong> / {v.service || "unknown"}
-                    </td>
-                    <td>{v.title}</td>
-                    <td>
-                      <span className={`badge ${getRiskClass(v.severity)}`}>
-                        {v.severity}
-                      </span>
-                    </td>
-                    <td>{v.cve || <span className="text-muted">Not identified</span>}</td>
-                    <td>
-                      {v.cvss_score != null ? (
-                        <span className="cvss-tag">{v.cvss_score} ({v.cvss_version || "v3.1"})</span>
-                      ) : (
-                        <span className="text-muted">N/A</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`conf-badge conf-${v.cve_confidence || "none"}`}>
-                        {v.cve_confidence || "None"}
-                      </span>
-                    </td>
-                    <td>
-                      <span className={`status-pill ${getStatusClass(v.status)}`}>
-                        {v.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))
+                <>
+                  {/* Segmented proportional bar */}
+                  <div
+                    className="segmented-bar"
+                    title={`Critical: ${criticalVulns}, High: ${highVulns}, Medium: ${mediumVulns}, Low: ${lowVulns}${unknownSeverityVulns > 0 ? `, Unknown: ${unknownSeverityVulns}` : ""}`}
+                  >
+                    {criticalVulns > 0 && (
+                      <div className="segmented-segment critical" style={{ width: `${pct(criticalVulns)}%` }} />
+                    )}
+                    {highVulns > 0 && (
+                      <div className="segmented-segment high" style={{ width: `${pct(highVulns)}%` }} />
+                    )}
+                    {mediumVulns > 0 && (
+                      <div className="segmented-segment medium" style={{ width: `${pct(mediumVulns)}%` }} />
+                    )}
+                    {lowVulns > 0 && (
+                      <div className="segmented-segment low" style={{ width: `${pct(lowVulns)}%` }} />
+                    )}
+                    {unknownSeverityVulns > 0 && (
+                      <div className="segmented-segment unknown" style={{ width: `${pct(unknownSeverityVulns)}%` }} />
+                    )}
+                  </div>
+
+                  {/* Legend row */}
+                  <div className="vuln-legend-row">
+                    <div className="vuln-legend-item">
+                      <span className="breakdown-dot critical" />
+                      <span className="vuln-legend-label">Critical:</span>
+                      <strong>{criticalVulns}</strong>
+                      <span className="text-muted">({pct(criticalVulns)}%)</span>
+                    </div>
+                    <div className="vuln-legend-item">
+                      <span className="breakdown-dot high" />
+                      <span className="vuln-legend-label">High:</span>
+                      <strong>{highVulns}</strong>
+                      <span className="text-muted">({pct(highVulns)}%)</span>
+                    </div>
+                    <div className="vuln-legend-item">
+                      <span className="breakdown-dot medium" />
+                      <span className="vuln-legend-label">Medium:</span>
+                      <strong>{mediumVulns}</strong>
+                      <span className="text-muted">({pct(mediumVulns)}%)</span>
+                    </div>
+                    <div className="vuln-legend-item">
+                      <span className="breakdown-dot low" />
+                      <span className="vuln-legend-label">Low:</span>
+                      <strong>{lowVulns}</strong>
+                      <span className="text-muted">({pct(lowVulns)}%)</span>
+                    </div>
+                    {unknownSeverityVulns > 0 && (
+                      <div className="vuln-legend-item">
+                        <span className="breakdown-dot unknown" />
+                        <span className="vuln-legend-label">Unknown:</span>
+                        <strong>{unknownSeverityVulns}</strong>
+                        <span className="text-muted">({pct(unknownSeverityVulns)}%)</span>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      )}
+            </div>
+
+            {/* 3. VULNERABILITY INVENTORY TABLE */}
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Vulnerability Inventory & CVE Intelligence</h2>
+                  <p className="panel-desc">
+                    Technical security findings correlated with CVE/NVD intelligence, CVSS scoring, and affected infrastructure assets.
+                  </p>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={() => fetchVulnerabilities()}
+                    title="Refresh vulnerability findings from backend"
+                  >
+                    ↻ Refresh Findings
+                  </button>
+                </div>
+              </div>
+
+              {/* SEARCH & FILTERS TOOLBAR */}
+              <div className="asset-toolbar">
+                <div className="asset-search-box">
+                  <span className="search-icon">🔍</span>
+                  <input
+                    type="text"
+                    className="asset-search-input"
+                    placeholder="Search by title, CVE, description, asset, service, product..."
+                    value={vulnSearchQuery}
+                    onChange={(e) => setVulnSearchQuery(e.target.value)}
+                  />
+                  {vulnSearchQuery && (
+                    <button
+                      type="button"
+                      className="asset-search-clear"
+                      onClick={() => setVulnSearchQuery("")}
+                      title="Clear search"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
+                <div className="asset-filter-group">
+                  <div className="asset-filter-item">
+                    <label htmlFor="vuln-sev-filter">Severity:</label>
+                    <select
+                      id="vuln-sev-filter"
+                      className="asset-select"
+                      value={vulnSeverityFilter}
+                      onChange={(e) => setVulnSeverityFilter(e.target.value)}
+                    >
+                      <option value="All">All Severities</option>
+                      <option value="Critical">Critical</option>
+                      <option value="High">High</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Low">Low</option>
+                      {unknownSeverityVulns > 0 && <option value="Unknown">Unknown / Unclassified</option>}
+                    </select>
+                  </div>
+
+                  <div className="asset-filter-item">
+                    <label htmlFor="vuln-status-filter">Status:</label>
+                    <select
+                      id="vuln-status-filter"
+                      className="asset-select"
+                      value={vulnStatusFilter}
+                      onChange={(e) => setVulnStatusFilter(e.target.value)}
+                    >
+                      <option value="All">All Statuses</option>
+                      <option value="Open">Open</option>
+                      <option value="Resolved">Resolved</option>
+                    </select>
+                  </div>
+
+                  {hasActiveVulnFilters && (
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm asset-reset-btn"
+                      onClick={resetVulnFilters}
+                      title="Clear all filters and search"
+                    >
+                      Reset Filters
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Status bar */}
+              <div className="asset-table-meta">
+                <span className="asset-count-info">
+                  Showing <strong>{filteredVulns.length}</strong> of <strong>{vulnerabilities.length}</strong> findings
+                  {hasActiveVulnFilters && " (filtered)"}
+                </span>
+              </div>
+
+              {/* Table */}
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Finding Title / ID</th>
+                      <th>CVE Reference</th>
+                      <th>Severity</th>
+                      <th>CVSS Score</th>
+                      <th>Affected Asset</th>
+                      <th>Port / Service</th>
+                      <th>Status</th>
+                      <th>Discovered</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {vulnerabilities.length === 0 ? (
+                      <tr>
+                        <td colSpan="9" className="empty-cell">
+                          No vulnerability findings recorded yet. Run a network scan to detect technical vulnerabilities.
+                        </td>
+                      </tr>
+                    ) : filteredVulns.length === 0 ? (
+                      <tr>
+                        <td colSpan="9" className="empty-cell">
+                          No vulnerabilities match the active search and filter criteria.{" "}
+                          <button
+                            type="button"
+                            className="btn-link"
+                            onClick={resetVulnFilters}
+                          >
+                            Reset filters
+                          </button>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredVulns.map((v) => {
+                        const asset = assets.find((a) => a.id === v.asset_id);
+                        return (
+                          <tr key={v.id}>
+                            <td>
+                              <div className="font-semibold text-white">{v.title}</div>
+                              <div className="sub-text">
+                                ID #{v.id}
+                                {v.product && ` • ${v.product}${v.version ? ` (${v.version})` : ""}`}
+                              </div>
+                            </td>
+                            <td>
+                              {v.cve ? (
+                                <div className="cve-cell">
+                                  <span className="cve-tag">{v.cve}</span>
+                                  {v.cve_confidence && v.cve_confidence !== "None" && (
+                                    <span className={`conf-badge conf-${(v.cve_confidence || "none").toLowerCase()}`}>
+                                      {v.cve_confidence}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-muted">Not Identified</span>
+                              )}
+                            </td>
+                            <td>
+                              <span className={`badge ${getRiskClass(v.severity)}`}>
+                                {v.severity || "Unknown"}
+                              </span>
+                            </td>
+                            <td>
+                              {v.cvss_score != null ? (
+                                <span className="cvss-tag font-mono">
+                                  {v.cvss_score} ({v.cvss_version || "v3.1"})
+                                </span>
+                              ) : (
+                                <span className="text-muted">N/A</span>
+                              )}
+                            </td>
+                            <td>
+                              {asset ? (
+                                <div>
+                                  <strong className="ip-text">{asset.ip_address}</strong>
+                                  <div className="sub-text">
+                                    {asset.hostname || asset.environment || `ID #${asset.id}`}
+                                  </div>
+                                </div>
+                              ) : v.asset_id ? (
+                                <span className="ip-pill">Asset #{v.asset_id}</span>
+                              ) : (
+                                <span className="text-muted">Not Assigned</span>
+                              )}
+                            </td>
+                            <td>
+                              <span className="font-mono text-xs">
+                                {v.port != null ? v.port : "—"}
+                              </span>
+                              <span className="text-slate text-xs"> / {v.service || "unknown"}</span>
+                            </td>
+                            <td>
+                              <span className={`status-pill ${getStatusClass(v.status)}`}>
+                                {v.status || "Open"}
+                              </span>
+                            </td>
+                            <td>
+                              <span className="text-xs text-slate">
+                                {formatDateTime(v.discovered_at)}
+                              </span>
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn-action-view"
+                                onClick={() => setViewingVuln(v)}
+                                title="View Finding Details"
+                              >
+                                Details
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
+        );
+      })()}
 
       {/* ------------------------------------------------ */}
       {/* GOVERNANCE: REVIEWS, AUDIT & REPORTS            */}
@@ -4607,6 +5004,262 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* -------------------------------- */}
+      {/* MODAL: VULNERABILITY DETAILS (Phase 4) */}
+      {/* -------------------------------- */}
+      {viewingVuln && (() => {
+        const asset = assets.find((a) => a.id === viewingVuln.asset_id);
+        const relatedRisks = risks.filter((r) => r.asset_id === viewingVuln.asset_id);
+
+        return (
+          <div className="modal-backdrop" onClick={() => setViewingVuln(null)}>
+            <div className="modal-content modal-vuln-detail" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <div>
+                  <h3>Vulnerability Details — {viewingVuln.title}</h3>
+                  <div className="modal-subtitle">
+                    Finding ID #{viewingVuln.id} • {viewingVuln.cve || "No CVE identifier"} • Discovered: {formatDateTime(viewingVuln.discovered_at)}
+                  </div>
+                </div>
+                <button type="button" className="modal-close" onClick={() => setViewingVuln(null)}>×</button>
+              </div>
+
+              <div className="modal-body asset-detail-body">
+                {/* 2-Column Overview Cards */}
+                <div className="asset-detail-grid">
+                  {/* Identification & CVE Metadata */}
+                  <div className="asset-detail-card">
+                    <div className="asset-detail-card-title">🔍 Finding Identification & CVE</div>
+                    <div className="kv-row">
+                      <span className="kv-label">Finding ID</span>
+                      <span className="kv-val font-mono">#{viewingVuln.id}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">CVE Identifier</span>
+                      <span className="kv-val">
+                        {viewingVuln.cve ? <span className="cve-tag">{viewingVuln.cve}</span> : <span className="text-muted">Not Identified</span>}
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">CVE Confidence</span>
+                      <span className="kv-val">
+                        <span className={`conf-badge conf-${(viewingVuln.cve_confidence || "none").toLowerCase()}`}>
+                          {viewingVuln.cve_confidence || "None"}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Candidates Evaluated</span>
+                      <span className="kv-val font-mono">{viewingVuln.cve_candidate_count != null ? viewingVuln.cve_candidate_count : 0}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Status</span>
+                      <span className="kv-val">
+                        <span className={`status-pill ${getStatusClass(viewingVuln.status)}`}>
+                          {viewingVuln.status || "Open"}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Discovered At</span>
+                      <span className="kv-val text-xs">{formatDateTime(viewingVuln.discovered_at)}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Last Updated</span>
+                      <span className="kv-val text-xs">{formatDateTime(viewingVuln.updated_at)}</span>
+                    </div>
+                  </div>
+
+                  {/* Severity & Technical Context */}
+                  <div className="asset-detail-card">
+                    <div className="asset-detail-card-title">⚡ Severity & Technical Context</div>
+                    <div className="kv-row">
+                      <span className="kv-label">Severity</span>
+                      <span className="kv-val">
+                        <span className={`badge ${getRiskClass(viewingVuln.severity)}`}>
+                          {viewingVuln.severity || "Unknown"}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">CVSS Base Score</span>
+                      <span className="kv-val font-mono">
+                        {viewingVuln.cvss_score != null ? viewingVuln.cvss_score : <span className="text-muted">Not Available</span>}
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">CVSS Version</span>
+                      <span className="kv-val">{viewingVuln.cvss_version || <span className="text-muted">Not Specified</span>}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Port</span>
+                      <span className="kv-val font-mono">{viewingVuln.port != null ? viewingVuln.port : <span className="text-muted">Not Specified</span>}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Service</span>
+                      <span className="kv-val">{viewingVuln.service || <span className="text-muted">Unknown</span>}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Product</span>
+                      <span className="kv-val">{viewingVuln.product || <span className="text-muted">Unknown</span>}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Version</span>
+                      <span className="kv-val font-mono">{viewingVuln.version || <span className="text-muted">Not Specified</span>}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Description */}
+                <div className="asset-detail-section">
+                  <div className="asset-detail-section-header">
+                    <h4>Description & Finding Details</h4>
+                  </div>
+                  <p className="vuln-desc-text">
+                    {viewingVuln.description || "No description provided for this vulnerability finding."}
+                  </p>
+                </div>
+
+                {/* Affected Asset */}
+                <div className="asset-detail-section">
+                  <div className="asset-detail-section-header">
+                    <h4>Affected Infrastructure Asset</h4>
+                    {asset && <span className="section-count">ID #{asset.id}</span>}
+                  </div>
+                  {asset ? (
+                    <div className="asset-detail-grid">
+                      <div className="kv-row">
+                        <span className="kv-label">IP Address</span>
+                        <span className="kv-val font-mono font-bold text-white">{asset.ip_address}</span>
+                      </div>
+                      <div className="kv-row">
+                        <span className="kv-label">Hostname</span>
+                        <span className="kv-val">{asset.hostname || <span className="text-muted">Not Available</span>}</span>
+                      </div>
+                      <div className="kv-row">
+                        <span className="kv-label">Environment</span>
+                        <span className="kv-val">
+                          <span className="badge badge-neutral">{asset.environment || "Not Specified"}</span>
+                        </span>
+                      </div>
+                      <div className="kv-row">
+                        <span className="kv-label">Exposure</span>
+                        <span className="kv-val">
+                          <span className="badge badge-exposure">{asset.exposure || "Not Specified"}</span>
+                        </span>
+                      </div>
+                      <div className="kv-row">
+                        <span className="kv-label">Criticality</span>
+                        <span className="kv-val">
+                          {isAssetUnclassified(asset) ? (
+                            <span className="badge badge-unclassified">Unclassified</span>
+                          ) : (
+                            <span className={`badge ${getRiskClass(asset.criticality)}`}>{asset.criticality}</span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="kv-row">
+                        <span className="kv-label">Owner</span>
+                        <span className="kv-val">{asset.owner || <span className="text-muted">Not Assigned</span>}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="detail-empty-text">
+                      {viewingVuln.asset_id
+                        ? `Associated with Asset #${viewingVuln.asset_id} (host metadata not available).`
+                        : "No asset association recorded for this finding."}
+                    </div>
+                  )}
+                </div>
+
+                {/* Risks Registered for This Asset */}
+                <div className="asset-detail-section">
+                  <div className="asset-detail-section-header">
+                    <h4>Risks Registered for This Asset</h4>
+                    <span className="section-count">{relatedRisks.length} Risks</span>
+                  </div>
+                  <p className="vuln-section-desc">
+                    Existing GRC risks identified on this host. These are asset-level risks and not necessarily direct mappings to this specific vulnerability finding.
+                  </p>
+                  {relatedRisks.length === 0 ? (
+                    <div className="detail-empty-text">
+                      No GRC risks currently registered for this asset.
+                    </div>
+                  ) : (
+                    <div className="asset-detail-table-wrap">
+                      <table className="asset-subtable">
+                        <thead>
+                          <tr>
+                            <th>Risk Title</th>
+                            <th>Inherent</th>
+                            <th>Residual</th>
+                            <th>Treatment</th>
+                            <th>Status</th>
+                            <th>Governance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {relatedRisks.map((r) => (
+                            <tr key={r.id}>
+                              <td>{r.title}</td>
+                              <td><span className={`badge ${getRiskClass(r.inherent_risk_level)}`}>{r.inherent_risk_level} ({r.inherent_risk_score})</span></td>
+                              <td><span className={`badge ${getRiskClass(r.residual_risk_level)}`}>{r.residual_risk_level} ({r.residual_risk_score})</span></td>
+                              <td><span className="badge badge-treatment">{r.treatment}</span></td>
+                              <td><span className={`status-pill ${getStatusClass(r.status)}`}>{r.status}</span></td>
+                              <td><span className="badge badge-neutral">{r.review_status || "Pending"}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Remediation & Mitigation Information */}
+                <div className="asset-detail-section">
+                  <div className="asset-detail-section-header">
+                    <h4>Remediation & Action Guidance</h4>
+                  </div>
+                  <div className="vuln-remediation-box">
+                    <div className="remediation-notice">
+                      ℹ️ Remediation guidance not available in current finding data.
+                    </div>
+                    <p className="remediation-hint">
+                      {relatedRisks.length > 0
+                        ? "To manage asset-level risk, review the registered risks and assigned controls for this host in the Risk Management register."
+                        : "To manage asset-level risk, consider assessing risk impact in the Risk Management module or verifying port exposure in the Asset Inventory."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setViewingVuln(null)}
+                >
+                  Close
+                </button>
+                {asset && (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => {
+                      setViewingVuln(null);
+                      setActivePage("assets");
+                      setViewingAsset(asset);
+                    }}
+                  >
+                    View Asset in Inventory
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {editingAsset && (
         <div className="modal-backdrop" onClick={() => setEditingAsset(null)}>
