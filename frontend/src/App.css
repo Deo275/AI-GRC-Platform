@@ -4006,3 +4006,224 @@ header p {
   line-height: 1.45;
   margin: 0;
 }
+
+/* ==========================================================================
+   Phase 5: Risk Management Redesign Styles
+   ========================================================================== */
+
+/* Sub-Navigation Tabs */
+.risk-subnav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #1e293b;
+  padding-bottom: 12px;
+  overflow-x: auto;
+}
+
+.risk-subnav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #1e293b;
+  background: #0f172a;
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.risk-subnav-btn:hover {
+  background: #1e293b;
+  color: #f1f5f9;
+  border-color: #334155;
+}
+
+.risk-subnav-btn.active {
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.risk-subnav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
+.risk-subnav-btn.active .risk-subnav-badge {
+  background: rgba(56, 189, 248, 0.25);
+  color: #38bdf8;
+}
+
+/* Inherent vs. Residual Trajectory Indicator */
+.risk-trajectory {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.trajectory-arrow {
+  color: #38bdf8;
+  font-weight: 800;
+}
+
+/* Heat Map Enhancements */
+.heatmap-toggle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.heatmap-toggle-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #1e293b;
+  background: #090d16;
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.heatmap-toggle-btn.active {
+  background: #1e293b;
+  color: #f1f5f9;
+  border-color: #38bdf8;
+}
+
+.heatmap-cell.selected {
+  outline: 2px solid #38bdf8;
+  outline-offset: 1px;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.45);
+  z-index: 3;
+}
+
+.heatmap-inspector {
+  margin-top: 20px;
+  background: #090d16;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.heatmap-inspector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #1e293b;
+}
+
+.heatmap-inspector-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+/* Treatment Strategy Breakdown Grid */
+.treatment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.treatment-card {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.treatment-card:hover {
+  border-color: #334155;
+  transform: translateY(-1px);
+}
+
+.treatment-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.treatment-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.treatment-card-count {
+  font-size: 22px;
+  font-weight: 800;
+  color: #38bdf8;
+}
+
+.treatment-card-desc {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.45;
+  flex: 1;
+}
+
+.treatment-card-action {
+  margin-top: 6px;
+}
+
+/* Risk Details Modal */
+.modal-risk-detail {
+  max-width: 900px;
+  width: 95%;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.risk-detail-trajectory-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  background: #020617;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.risk-detail-trajectory-item {
+  text-align: center;
+}
+
+.risk-detail-trajectory-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.risk-detail-trajectory-val {
+  font-size: 16px;
+  font-weight: 800;
+}

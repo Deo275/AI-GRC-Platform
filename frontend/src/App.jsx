@@ -951,6 +951,17 @@ function App() {
   const [vulnStatusFilter, setVulnStatusFilter] = useState("All");
   const [viewingVuln, setViewingVuln] = useState(null);
 
+  // Phase 5: Risk Management Sub-tabs, Filters, Search, Heatmap & Details Modal
+  const [riskSubTab, setRiskSubTab] = useState("register"); // "register" | "heatmap" | "controls"
+  const [riskSearchQuery, setRiskSearchQuery] = useState("");
+  const [riskLevelFilter, setRiskLevelFilter] = useState("All");
+  const [riskStatusFilter, setRiskStatusFilter] = useState("All");
+  const [riskTreatmentFilter, setRiskTreatmentFilter] = useState("All");
+  const [riskReviewFilter, setRiskReviewFilter] = useState("All");
+  const [viewingRisk, setViewingRisk] = useState(null);
+  const [selectedHeatmapCell, setSelectedHeatmapCell] = useState(null); // { l: number, i: number } | null
+  const [heatmapMatrixType, setHeatmapMatrixType] = useState("inherent"); // "inherent" | "residual"
+
   // Form states
   const [assetForm, setAssetForm] = useState({
     criticality: "Medium",
@@ -2235,8 +2246,17 @@ function App() {
               className={`ai-copilot-btn${activePage === "risk-management" ? " ai-copilot-available" : ""}`}
               disabled={activePage !== "risk-management"}
               title={activePage === "risk-management"
-                ? "AI Risk Analysis available \u2014 use \u2726 AI Analysis on individual risk entries below"
+                ? "AI Risk Analysis available \u2014 select an individual risk finding below or open Details to run \u2726 AI Analysis"
                 : "AI analysis is available on the Risk Management page"}
+              onClick={() => {
+                if (activePage === "risk-management") {
+                  if (viewingRisk) {
+                    handleAnalyzeRisk(viewingRisk.id);
+                  } else {
+                    setRiskSubTab("register");
+                  }
+                }
+              }}
             >
               <span className="ai-copilot-icon">✦</span>
               <span className="ai-copilot-label">AI Copilot</span>
@@ -3330,284 +3350,1078 @@ function App() {
       {/* -------------------------------- */}
       {/* RISK MANAGEMENT                */}
       {/* -------------------------------- */}
-      {activePage === "risk-management" && (
-      <>
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>GRC Risk Register</h2>
-            <p className="panel-desc">
-              Comprehensive risk tracking from Inherent Risk (Likelihood × Impact) to Residual Risk mitigated by Security Controls.
-            </p>
-          </div>
-        </div>
+      {activePage === "risk-management" && (() => {
+        // Coordinate validator: strictly enforces integers 1-4
+        const parseScore = (val) => {
+          if (val === null || val === undefined || val === "") return null;
+          const num = Number(val);
+          return Number.isInteger(num) && num >= 1 && num <= 4 ? num : null;
+        };
 
-        <div className="table-responsive">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Risk Finding</th>
-                <th>Asset</th>
-                <th>Inherent Risk</th>
-                <th>Mitigating Controls</th>
-                <th>Residual Risk</th>
-                <th>Treatment</th>
-                <th>Owner & Due Date</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {risks.length === 0 ? (
-                <tr>
-                  <td colSpan="9" className="empty-cell">No risks registered yet.</td>
-                </tr>
+        const getValidLikelihood = (r) => {
+          const val = r.likelihood_score !== undefined && r.likelihood_score !== null ? r.likelihood_score : r.likelihood;
+          return parseScore(val);
+        };
+
+        const getValidImpact = (r) => {
+          const val = r.impact_score !== undefined && r.impact_score !== null ? r.impact_score : r.impact;
+          return parseScore(val);
+        };
+
+        // KPI metrics from real risk data
+        const totalRisksCount = risks.length;
+        const openRisksCount = risks.filter((r) => (r.status || "").toLowerCase() === "open").length;
+        const criticalRisksCount = risks.filter((r) => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "critical").length;
+        const highRisksCount = risks.filter((r) => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "high").length;
+        const mediumRisksCount = risks.filter((r) => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "medium").length;
+        const lowRisksCount = risks.filter((r) => (r.inherent_risk_level || r.risk_level || "").toLowerCase() === "low").length;
+        const unknownRiskLevelCount = risks.filter((r) => {
+          const lvl = (r.inherent_risk_level || r.risk_level || "").toLowerCase();
+          return !["critical", "high", "medium", "low"].includes(lvl);
+        }).length;
+        const reviewActionCount = risks.filter((r) => {
+          const rs = (r.review_status || "").toLowerCase();
+          return rs === "pending review" || rs === "changes requested" || rs === "stale" || rs === "under review";
+        }).length;
+
+        // Proportional distribution
+        const critPct = totalRisksCount > 0 ? (criticalRisksCount / totalRisksCount) * 100 : 0;
+        const highPct = totalRisksCount > 0 ? (highRisksCount / totalRisksCount) * 100 : 0;
+        const medPct = totalRisksCount > 0 ? (mediumRisksCount / totalRisksCount) * 100 : 0;
+        const lowPct = totalRisksCount > 0 ? (lowRisksCount / totalRisksCount) * 100 : 0;
+        const unkPct = totalRisksCount > 0 ? (unknownRiskLevelCount / totalRisksCount) * 100 : 0;
+
+        // Filtering for the Risk Register
+        const filteredRisks = risks.filter((risk) => {
+          if (riskSearchQuery.trim()) {
+            const q = riskSearchQuery.toLowerCase();
+            const asset = assets.find((a) => a.id === risk.asset_id);
+            const matchesId = String(risk.id).toLowerCase().includes(q);
+            const matchesTitle = (risk.title || "").toLowerCase().includes(q);
+            const matchesDesc = (risk.description || "").toLowerCase().includes(q);
+            const matchesRec = (risk.recommendation || "").toLowerCase().includes(q);
+            const matchesOwner = (risk.risk_owner || "").toLowerCase().includes(q);
+            const matchesFw = (risk.compliance_framework || "").toLowerCase().includes(q);
+            const matchesCtrl = (risk.compliance_control || "").toLowerCase().includes(q);
+            const matchesTreatment = (risk.treatment || "").toLowerCase().includes(q);
+            const matchesStatus = (risk.status || "").toLowerCase().includes(q);
+            const matchesIp = (asset?.ip_address || "").toLowerCase().includes(q);
+            const matchesHost = (asset?.hostname || "").toLowerCase().includes(q);
+            const matchesFunc = (asset?.business_function || "").toLowerCase().includes(q);
+
+            if (
+              !matchesId &&
+              !matchesTitle &&
+              !matchesDesc &&
+              !matchesRec &&
+              !matchesOwner &&
+              !matchesFw &&
+              !matchesCtrl &&
+              !matchesTreatment &&
+              !matchesStatus &&
+              !matchesIp &&
+              !matchesHost &&
+              !matchesFunc
+            ) {
+              return false;
+            }
+          }
+
+          if (riskLevelFilter !== "All") {
+            const lvl = (risk.inherent_risk_level || risk.risk_level || "").toLowerCase();
+            if (lvl !== riskLevelFilter.toLowerCase()) return false;
+          }
+
+          if (riskStatusFilter !== "All") {
+            if ((risk.status || "").toLowerCase() !== riskStatusFilter.toLowerCase()) return false;
+          }
+
+          if (riskTreatmentFilter !== "All") {
+            if ((risk.treatment || "").toLowerCase() !== riskTreatmentFilter.toLowerCase()) return false;
+          }
+
+          if (riskReviewFilter !== "All") {
+            if ((risk.review_status || "").toLowerCase() !== riskReviewFilter.toLowerCase()) return false;
+          }
+
+          return true;
+        });
+
+        const activeRiskFiltersCount =
+          (riskSearchQuery ? 1 : 0) +
+          (riskLevelFilter !== "All" ? 1 : 0) +
+          (riskStatusFilter !== "All" ? 1 : 0) +
+          (riskTreatmentFilter !== "All" ? 1 : 0) +
+          (riskReviewFilter !== "All" ? 1 : 0);
+
+        const handleResetRiskFilters = () => {
+          setRiskSearchQuery("");
+          setRiskLevelFilter("All");
+          setRiskStatusFilter("All");
+          setRiskTreatmentFilter("All");
+          setRiskReviewFilter("All");
+        };
+
+        // Heat Map coordinate plotting
+        const plottableInherentRisks = risks.filter((r) => getValidLikelihood(r) !== null && getValidImpact(r) !== null);
+        const plottableResidualRisks = risks.filter((r) => parseScore(r.residual_likelihood) !== null && parseScore(r.residual_impact) !== null);
+
+        const activePlottableRisks = heatmapMatrixType === "inherent" ? plottableInherentRisks : plottableResidualRisks;
+        const heatmapExcludedCount = risks.length - activePlottableRisks.length;
+
+        const likelihoodLevels = [
+          { level: 4, label: "4 - Frequent" },
+          { level: 3, label: "3 - Likely" },
+          { level: 2, label: "2 - Possible" },
+          { level: 1, label: "1 - Rare" },
+        ];
+
+        const impactLevels = [
+          { level: 1, label: "1 - Low" },
+          { level: 2, label: "2 - Moderate" },
+          { level: 3, label: "3 - Major" },
+          { level: 4, label: "4 - Critical" },
+        ];
+
+        const getCellSeverityClass = (score) => {
+          if (score >= 12) return "heatmap-cell-critical";
+          if (score >= 7) return "heatmap-cell-high";
+          if (score >= 4) return "heatmap-cell-medium";
+          return "heatmap-cell-low";
+        };
+
+        const getCellRisks = (l, i) => {
+          if (heatmapMatrixType === "inherent") {
+            return plottableInherentRisks.filter((r) => getValidLikelihood(r) === l && getValidImpact(r) === i);
+          }
+          return plottableResidualRisks.filter((r) => parseScore(r.residual_likelihood) === l && parseScore(r.residual_impact) === i);
+        };
+
+        const selectedCellRisks = selectedHeatmapCell ? getCellRisks(selectedHeatmapCell.l, selectedHeatmapCell.i) : [];
+
+        // Treatment summary counts
+        const mitigateCount = risks.filter((r) => (r.treatment || "mitigate").toLowerCase() === "mitigate").length;
+        const acceptCount = risks.filter((r) => (r.treatment || "").toLowerCase() === "accept").length;
+        const transferCount = risks.filter((r) => (r.treatment || "").toLowerCase() === "transfer").length;
+        const avoidCount = risks.filter((r) => (r.treatment || "").toLowerCase() === "avoid").length;
+
+        return (
+          <>
+            {/* Sub-Navigation: Internal Sections */}
+            <div className="risk-subnav">
+              <button
+                type="button"
+                className={`risk-subnav-btn${riskSubTab === "register" ? " active" : ""}`}
+                onClick={() => setRiskSubTab("register")}
+              >
+                <span>📋</span> Risk Register
+                <span className="risk-subnav-badge">{risks.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`risk-subnav-btn${riskSubTab === "heatmap" ? " active" : ""}`}
+                onClick={() => setRiskSubTab("heatmap")}
+              >
+                <span>🗺️</span> Heat Map (4×4 Matrix)
+                <span className="risk-subnav-badge">{activePlottableRisks.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`risk-subnav-btn${riskSubTab === "controls" ? " active" : ""}`}
+                onClick={() => setRiskSubTab("controls")}
+              >
+                <span>🛡️</span> Controls & Treatment
+                <span className="risk-subnav-badge">{controls.length}</span>
+              </button>
+            </div>
+
+            {/* KPI Summary Cards */}
+            <div className="overview-kpi-grid">
+              <div className="kpi-card">
+                <div className="kpi-label">Total Open Risks</div>
+                <div className="kpi-val text-accent">{openRisksCount}</div>
+                <div className="kpi-subtext">
+                  {openRisksCount} open of {totalRisksCount} registered risks
+                </div>
+              </div>
+
+              <div className="kpi-card">
+                <div className="kpi-label">Critical Inherent</div>
+                <div className="kpi-val text-red">{criticalRisksCount}</div>
+                <div className="kpi-subtext">Score 12–16 • Urgent escalation</div>
+              </div>
+
+              <div className="kpi-card">
+                <div className="kpi-label">High Inherent</div>
+                <div className="kpi-val text-orange">{highRisksCount}</div>
+                <div className="kpi-subtext">Score 7–11 • Target remediation</div>
+              </div>
+
+              <div className="kpi-card">
+                <div className="kpi-label">Medium Inherent</div>
+                <div className="kpi-val text-yellow">{mediumRisksCount}</div>
+                <div className="kpi-subtext">Score 4–6 • Planned controls</div>
+              </div>
+
+              <div className="kpi-card">
+                <div className="kpi-label">Low Inherent</div>
+                <div className="kpi-val text-green">{lowRisksCount}</div>
+                <div className="kpi-subtext">Score 1–3 • Baseline monitoring</div>
+              </div>
+
+              <div className="kpi-card">
+                <div className="kpi-label">Requires Review / Action</div>
+                <div className="kpi-val text-purple">{reviewActionCount}</div>
+                <div className="kpi-subtext">Awaiting human governance sign-off</div>
+              </div>
+            </div>
+
+            {/* Inherent Risk Severity Distribution Bar */}
+            <div className="vuln-dist-panel">
+              <div className="vuln-dist-header">
+                <div>
+                  <div className="vuln-dist-title">Inherent Risk Severity Distribution</div>
+                  <div className="vuln-dist-desc">
+                    Proportional breakdown of enterprise risks by authoritative inherent risk level.
+                  </div>
+                </div>
+                <span className="text-xs text-slate font-mono">
+                  {totalRisksCount} Total Registered Finding{totalRisksCount !== 1 ? "s" : ""}
+                </span>
+              </div>
+
+              {totalRisksCount === 0 ? (
+                <div className="empty-cell" style={{ padding: "16px", textAlign: "center" }}>
+                  No enterprise risk findings registered in the system.
+                </div>
               ) : (
-                risks.map((risk) => {
-                  const asset = assets.find(a => a.id === risk.asset_id);
-                  return (
-                    <Fragment key={risk.id}>
-                      <tr>
-                      <td style={{ minWidth: "200px" }}>
-                        <strong>{risk.title}</strong>
-                        <div className="sub-text">{risk.recommendation || risk.description}</div>
-                        <div className="framework-tag">{risk.compliance_framework} ({risk.compliance_control})</div>
-                      </td>
-                      <td>
-                        <span className="ip-pill">{asset ? asset.ip_address : `Asset #${risk.asset_id}`}</span>
-                      </td>
-                      <td>
-                        <span className={`badge ${getRiskClass(risk.inherent_risk_level)}`}>
-                          {risk.inherent_risk_level || "Medium"} ({risk.inherent_risk_score || risk.risk_score})
-                        </span>
-                        <div className="sub-calc">
-                          L: {risk.likelihood_score || 2} × I: {risk.impact_score || 2}
-                        </div>
-                      </td>
-                      <td style={{ minWidth: "220px" }}>
-                        <div className="controls-list">
-                          {risk.controls && risk.controls.length > 0 ? (
-                            risk.controls.map((c) => (
-                              <span key={c.id} className="control-chip">
-                                {c.name}
-                                <button
-                                  type="button"
-                                  className="chip-remove"
-                                  onClick={() => handleDetachControl(risk.id, c.id)}
-                                  title="Detach Control"
-                                >
-                                  ×
-                                </button>
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-muted text-xs">No controls assigned</span>
-                          )}
-                        </div>
+                <>
+                  <div className="vuln-dist-bar-track">
+                    {critPct > 0 && (
+                      <div
+                        className="vuln-dist-seg seg-critical"
+                        style={{ width: `${critPct}%` }}
+                        title={`Critical: ${criticalRisksCount} (${critPct.toFixed(1)}%)`}
+                      />
+                    )}
+                    {highPct > 0 && (
+                      <div
+                        className="vuln-dist-seg seg-high"
+                        style={{ width: `${highPct}%` }}
+                        title={`High: ${highRisksCount} (${highPct.toFixed(1)}%)`}
+                      />
+                    )}
+                    {medPct > 0 && (
+                      <div
+                        className="vuln-dist-seg seg-medium"
+                        style={{ width: `${medPct}%` }}
+                        title={`Medium: ${mediumRisksCount} (${medPct.toFixed(1)}%)`}
+                      />
+                    )}
+                    {lowPct > 0 && (
+                      <div
+                        className="vuln-dist-seg seg-low"
+                        style={{ width: `${lowPct}%` }}
+                        title={`Low: ${lowRisksCount} (${lowPct.toFixed(1)}%)`}
+                      />
+                    )}
+                    {unkPct > 0 && (
+                      <div
+                        className="vuln-dist-seg seg-unknown"
+                        style={{ width: `${unkPct}%` }}
+                        title={`Unknown: ${unknownRiskLevelCount} (${unkPct.toFixed(1)}%)`}
+                      />
+                    )}
+                  </div>
 
-                        {assigningRiskId === risk.id ? (
-                          <div className="assign-box">
-                            <select
-                              value={selectedControlId}
-                              onChange={(e) => setSelectedControlId(e.target.value)}
-                              className="select-mini"
-                            >
-                              <option value="">Select Control...</option>
-                              {controls
-                                .filter(c => !risk.controls?.some(rc => rc.id === c.id))
-                                .map((c) => (
-                                  <option key={c.id} value={c.id}>
-                                    {c.name} ({c.effectiveness} Eff)
-                                  </option>
-                                ))}
-                            </select>
-                            <div className="assign-actions">
-                              <button
-                                className="btn-mini btn-save"
-                                onClick={() => handleAssignControl(risk.id)}
-                                disabled={!selectedControlId}
-                              >
-                                Save
-                              </button>
-                              <button
-                                className="btn-mini btn-cancel"
-                                onClick={() => {
-                                  setAssigningRiskId(null);
-                                  setSelectedControlId("");
-                                }}
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <button
-                            className="btn-link"
-                            onClick={() => {
-                              setAssigningRiskId(risk.id);
-                              setSelectedControlId("");
-                            }}
-                          >
-                            + Assign Control
-                          </button>
-                        )}
-                      </td>
-                      <td>
-                        <span className={`badge ${getRiskClass(risk.residual_risk_level)}`}>
-                          {risk.residual_risk_level || "Medium"} ({risk.residual_risk_score || risk.risk_score})
-                        </span>
-                        <div className="sub-calc">
-                          Res L: {risk.residual_likelihood || 2} × I: {risk.residual_impact || 2}
-                        </div>
-                      </td>
-                      <td>
-                        <span className="badge badge-treatment">
-                          {risk.treatment || "Mitigate"}
-                        </span>
-                      </td>
-                      <td>
-                        <div>{risk.risk_owner || <span className="text-muted">Unassigned</span>}</div>
-                        <div className="sub-text">
-                          {risk.due_date ? new Date(risk.due_date).toLocaleDateString() : "No due date"}
-                        </div>
-                      </td>
-                      <td>
-                        <span className={`status-pill ${getStatusClass(risk.status)}`}>
-                          {risk.status || "Open"}
-                        </span>
-                        <div style={{ marginTop: "6px" }}>
-                          {getReviewStatusBadge(risk.review_status || "Pending Review")}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="action-stack">
-                          <button
-                            className="btn-action"
-                            onClick={() => openRiskModal(risk)}
-                            title="Manage Risk Treatment & Ownership"
-                          >
-                            Manage
-                          </button>
-                          <button
-                            className="btn-action"
-                            onClick={() => openSubmitReviewModal(risk)}
-                            title="Submit Human Governance Sign-Off"
-                          >
-                            Sign-Off
-                          </button>
-                          <button
-                            className="btn-action"
-                            onClick={() => openReviewHistoryModal(risk)}
-                            title="View Governance Review History"
-                          >
-                            History
-                          </button>
-                          <button
-                            className={`btn-ai-analyze${expandedAiPanel === risk.id ? " btn-ai-active" : ""}`}
-                            onClick={() => handleAnalyzeRisk(risk.id)}
-                            disabled={!!aiLoading[risk.id]}
-                            title="Generate AI-assisted security intelligence"
-                            id={`ai-analyze-btn-${risk.id}`}
-                          >
-                            {aiLoading[risk.id]
-                              ? "Analyzing..."
-                              : expandedAiPanel === risk.id
-                                ? "▲ Hide AI"
-                                : "✦ AI Analysis"}
-                          </button>
-                        </div>
-                      </td>
+                  <div className="vuln-dist-legend">
+                    <span className="vuln-legend-item">
+                      <span className="vuln-legend-dot dot-critical" />
+                      Critical: <strong>{criticalRisksCount}</strong> ({critPct.toFixed(1)}%)
+                    </span>
+                    <span className="vuln-legend-item">
+                      <span className="vuln-legend-dot dot-high" />
+                      High: <strong>{highRisksCount}</strong> ({highPct.toFixed(1)}%)
+                    </span>
+                    <span className="vuln-legend-item">
+                      <span className="vuln-legend-dot dot-medium" />
+                      Medium: <strong>{mediumRisksCount}</strong> ({medPct.toFixed(1)}%)
+                    </span>
+                    <span className="vuln-legend-item">
+                      <span className="vuln-legend-dot dot-low" />
+                      Low: <strong>{lowRisksCount}</strong> ({lowPct.toFixed(1)}%)
+                    </span>
+                    {unknownRiskLevelCount > 0 && (
+                      <span className="vuln-legend-item">
+                        <span className="vuln-legend-dot dot-unknown" />
+                        Unknown: <strong>{unknownRiskLevelCount}</strong> ({unkPct.toFixed(1)}%)
+                      </span>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* TAB 1: RISK REGISTER */}
+            {riskSubTab === "register" && (
+              <section className="panel">
+                <div className="panel-header">
+                  <div>
+                    <h2>GRC Enterprise Risk Register</h2>
+                    <p className="panel-desc">
+                      Authoritative risk catalog tracking Inherent Risk (Likelihood × Impact) to Residual Risk mitigated by defensive controls.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Search & Filter Toolbar */}
+                <div className="asset-filter-bar">
+                  <div className="asset-search-wrap">
+                    <span className="search-icon">🔍</span>
+                    <input
+                      type="text"
+                      className="asset-search-input"
+                      placeholder="Search risk ID, title, owner, framework, control, asset IP, hostname..."
+                      value={riskSearchQuery}
+                      onChange={(e) => setRiskSearchQuery(e.target.value)}
+                    />
+                    {riskSearchQuery && (
+                      <button
+                        type="button"
+                        className="search-clear-btn"
+                        onClick={() => setRiskSearchQuery("")}
+                        title="Clear search"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="asset-selects-row">
+                    <div className="filter-group">
+                      <label>Risk Level:</label>
+                      <select
+                        className="select-filter"
+                        value={riskLevelFilter}
+                        onChange={(e) => setRiskLevelFilter(e.target.value)}
+                      >
+                        <option value="All">All Levels</option>
+                        <option value="Critical">Critical</option>
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                      </select>
+                    </div>
+
+                    <div className="filter-group">
+                      <label>Lifecycle Status:</label>
+                      <select
+                        className="select-filter"
+                        value={riskStatusFilter}
+                        onChange={(e) => setRiskStatusFilter(e.target.value)}
+                      >
+                        <option value="All">All Statuses</option>
+                        <option value="Open">Open</option>
+                        <option value="Under Review">Under Review</option>
+                        <option value="Accepted">Accepted</option>
+                        <option value="Resolved">Resolved</option>
+                      </select>
+                    </div>
+
+                    <div className="filter-group">
+                      <label>Treatment:</label>
+                      <select
+                        className="select-filter"
+                        value={riskTreatmentFilter}
+                        onChange={(e) => setRiskTreatmentFilter(e.target.value)}
+                      >
+                        <option value="All">All Treatments</option>
+                        <option value="Mitigate">Mitigate</option>
+                        <option value="Accept">Accept</option>
+                        <option value="Transfer">Transfer</option>
+                        <option value="Avoid">Avoid</option>
+                      </select>
+                    </div>
+
+                    <div className="filter-group">
+                      <label>Governance Review:</label>
+                      <select
+                        className="select-filter"
+                        value={riskReviewFilter}
+                        onChange={(e) => setRiskReviewFilter(e.target.value)}
+                      >
+                        <option value="All">All Reviews</option>
+                        <option value="Pending Review">Pending Review</option>
+                        <option value="Under Review">Under Review</option>
+                        <option value="Approved">Approved</option>
+                        <option value="Changes Requested">Changes Requested</option>
+                        <option value="Rejected">Rejected</option>
+                        <option value="Stale">Stale</option>
+                      </select>
+                    </div>
+
+                    {activeRiskFiltersCount > 0 && (
+                      <button
+                        type="button"
+                        className="btn-secondary btn-reset-filters"
+                        onClick={handleResetRiskFilters}
+                        title="Reset all filters and search query"
+                      >
+                        Reset ({activeRiskFiltersCount})
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Filter Results Counter */}
+                <div className="asset-results-bar">
+                  <span className="results-count">
+                    Showing <strong>{filteredRisks.length}</strong> of <strong>{risks.length}</strong> enterprise risks
+                  </span>
+                  {activeRiskFiltersCount > 0 && (
+                    <span className="filtered-indicator-tag">
+                      Filters Active ({activeRiskFiltersCount})
+                    </span>
+                  )}
+                </div>
+
+                {/* Risk Table */}
+                <div className="table-responsive">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Risk Finding</th>
+                        <th>Asset</th>
+                        <th>Inherent Risk</th>
+                        <th>Residual Risk</th>
+                        <th>Mitigating Controls</th>
+                        <th>Treatment</th>
+                        <th>Owner & Due Date</th>
+                        <th>Status & Governance</th>
+                        <th>Actions</th>
                       </tr>
-                      {expandedAiPanel === risk.id && (
-                        <tr className="ai-panel-row">
-                          <td colSpan="9" className="ai-panel-cell">
-                            <AIAnalysisPanel
-                              loading={!!aiLoading[risk.id]}
-                              error={aiError[risk.id] || null}
-                              analysis={aiAnalysis[risk.id] || null}
-                              onReanalyze={() => handleReanalyzeRisk(risk.id)}
-                            />
+                    </thead>
+                    <tbody>
+                      {filteredRisks.length === 0 ? (
+                        <tr>
+                          <td colSpan="9" className="empty-cell" style={{ textAlign: "center", padding: "32px" }}>
+                            {risks.length === 0 ? (
+                              "No risks registered in the catalog yet."
+                            ) : (
+                              <div>
+                                <div style={{ marginBottom: "8px" }}>No risks match the active search and filter criteria.</div>
+                                <button type="button" className="btn-secondary btn-sm" onClick={handleResetRiskFilters}>
+                                  Reset Filters
+                                </button>
+                              </div>
+                            )}
                           </td>
                         </tr>
+                      ) : (
+                        filteredRisks.map((risk) => {
+                          const asset = assets.find((a) => a.id === risk.asset_id);
+                          return (
+                            <Fragment key={risk.id}>
+                              <tr>
+                                <td style={{ minWidth: "220px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <span className="text-slate font-mono text-xs">#{risk.id}</span>
+                                    <strong>{risk.title}</strong>
+                                  </div>
+                                  <div className="sub-text">{risk.recommendation || risk.description}</div>
+                                  {risk.compliance_framework && (
+                                    <div className="framework-tag">
+                                      {risk.compliance_framework} ({risk.compliance_control || "Control"})
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  <span className="ip-pill">{asset ? asset.ip_address : `Asset #${risk.asset_id}`}</span>
+                                  {asset?.hostname && <div className="sub-text font-mono">{asset.hostname}</div>}
+                                </td>
+                                <td>
+                                  <span className={`badge ${getRiskClass(risk.inherent_risk_level || risk.risk_level)}`}>
+                                    {risk.inherent_risk_level || risk.risk_level || "Medium"} ({risk.inherent_risk_score || risk.risk_score})
+                                  </span>
+                                  <div className="sub-calc">
+                                    L: {risk.likelihood_score || risk.likelihood || 2} × I: {risk.impact_score || risk.impact || 2}
+                                  </div>
+                                </td>
+                                <td>
+                                  <span className={`badge ${getRiskClass(risk.residual_risk_level)}`}>
+                                    {risk.residual_risk_level ? `${risk.residual_risk_level}${risk.residual_risk_score != null ? ` (${risk.residual_risk_score})` : ""}` : "Not Available"}
+                                  </span>
+                                  <div className="sub-calc">
+                                    Res L: {risk.residual_likelihood != null ? risk.residual_likelihood : "—"} × I: {risk.residual_impact != null ? risk.residual_impact : "—"}
+                                  </div>
+                                  {risk.inherent_risk_score != null && risk.residual_risk_score != null && (
+                                    <div className="risk-trajectory" title="Inherent to Residual score trajectory">
+                                      <span className="trajectory-arrow">→</span> Score: {risk.inherent_risk_score} to {risk.residual_risk_score}
+                                    </div>
+                                  )}
+                                </td>
+                                <td style={{ minWidth: "220px" }}>
+                                  <div className="controls-list">
+                                    {risk.controls && risk.controls.length > 0 ? (
+                                      risk.controls.map((c) => (
+                                        <span key={c.id} className="control-chip">
+                                          {c.name}
+                                          <button
+                                            type="button"
+                                            className="chip-remove"
+                                            onClick={() => handleDetachControl(risk.id, c.id)}
+                                            title="Detach Control"
+                                          >
+                                            ×
+                                          </button>
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="text-muted text-xs">No controls assigned</span>
+                                    )}
+                                  </div>
+
+                                  {assigningRiskId === risk.id ? (
+                                    <div className="assign-box">
+                                      <select
+                                        value={selectedControlId}
+                                        onChange={(e) => setSelectedControlId(e.target.value)}
+                                        className="select-mini"
+                                      >
+                                        <option value="">Select Control...</option>
+                                        {controls
+                                          .filter((c) => !risk.controls?.some((rc) => rc.id === c.id))
+                                          .map((c) => (
+                                            <option key={c.id} value={c.id}>
+                                              {c.name} ({c.effectiveness} Eff)
+                                            </option>
+                                          ))}
+                                      </select>
+                                      <div className="assign-actions">
+                                        <button
+                                          type="button"
+                                          className="btn-mini btn-save"
+                                          onClick={() => handleAssignControl(risk.id)}
+                                          disabled={!selectedControlId}
+                                        >
+                                          Save
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="btn-mini btn-cancel"
+                                          onClick={() => {
+                                            setAssigningRiskId(null);
+                                            setSelectedControlId("");
+                                          }}
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="btn-link"
+                                      onClick={() => {
+                                        setAssigningRiskId(risk.id);
+                                        setSelectedControlId("");
+                                      }}
+                                    >
+                                      + Assign Control
+                                    </button>
+                                  )}
+                                </td>
+                                <td>
+                                  <span className="badge badge-treatment">
+                                    {risk.treatment || "Mitigate"}
+                                  </span>
+                                </td>
+                                <td>
+                                  <div>{risk.risk_owner || <span className="text-muted">Unassigned</span>}</div>
+                                  <div className="sub-text">
+                                    {risk.due_date ? formatDateTime(risk.due_date) : "No due date"}
+                                  </div>
+                                </td>
+                                <td>
+                                  <span className={`status-pill ${getStatusClass(risk.status)}`}>
+                                    {risk.status || "Open"}
+                                  </span>
+                                  <div style={{ marginTop: "6px" }}>
+                                    {getReviewStatusBadge(risk.review_status || "Pending Review")}
+                                  </div>
+                                </td>
+                                <td>
+                                  <div className="action-stack">
+                                    <button
+                                      type="button"
+                                      className="btn-action"
+                                      onClick={() => setViewingRisk(risk)}
+                                      title="Inspect Complete Risk Record"
+                                    >
+                                      Details
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-action"
+                                      onClick={() => openRiskModal(risk)}
+                                      title="Manage Risk Treatment & Ownership"
+                                    >
+                                      Manage
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-action"
+                                      onClick={() => openSubmitReviewModal(risk)}
+                                      title="Submit Human Governance Sign-Off"
+                                    >
+                                      Sign-Off
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-action"
+                                      onClick={() => openReviewHistoryModal(risk)}
+                                      title="View Governance Review History"
+                                    >
+                                      History
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`btn-ai-analyze${expandedAiPanel === risk.id ? " btn-ai-active" : ""}`}
+                                      onClick={() => handleAnalyzeRisk(risk.id)}
+                                      disabled={!!aiLoading[risk.id]}
+                                      title="Generate AI-assisted security intelligence"
+                                      id={`ai-analyze-btn-${risk.id}`}
+                                    >
+                                      {aiLoading[risk.id]
+                                        ? "Analyzing..."
+                                        : expandedAiPanel === risk.id
+                                          ? "▲ Hide AI"
+                                          : "✦ AI Analysis"}
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                              {expandedAiPanel === risk.id && (
+                                <tr className="ai-panel-row">
+                                  <td colSpan="9" className="ai-panel-cell">
+                                    <AIAnalysisPanel
+                                      loading={!!aiLoading[risk.id]}
+                                      error={aiError[risk.id] || null}
+                                      analysis={aiAnalysis[risk.id] || null}
+                                      onReanalyze={() => handleReanalyzeRisk(risk.id)}
+                                    />
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })
                       )}
-                    </Fragment>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
 
-      {/* -------------------------------- */}
-      {/* SECURITY CONTROLS CATALOG */}
-      {/* -------------------------------- */}
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Security Controls Catalog</h2>
-            <p className="panel-desc">
-              Available defensive safeguards. Implemented controls reduce risk likelihood based on their effectiveness rating.
-            </p>
-          </div>
-          <button
-            className="btn-primary"
-            onClick={() => setShowAddControlModal(true)}
-          >
-            + Add Control
-          </button>
-        </div>
+            {/* TAB 2: HEAT MAP */}
+            {riskSubTab === "heatmap" && (
+              <section className="panel">
+                <div className="panel-header">
+                  <div>
+                    <h2>Enterprise Risk Heat Map (4×4 Matrix)</h2>
+                    <p className="panel-desc">
+                      {heatmapMatrixType === "inherent"
+                        ? "Authoritative GRC matrix plotting Inherent Likelihood (1–4) against Impact (1–4). Inherent Risk Score = Likelihood × Impact."
+                        : "Residual Risk matrix reflecting reduced likelihood achieved through deployed security controls."}
+                    </p>
+                  </div>
+                  <div className="heatmap-toggle-wrap">
+                    <button
+                      type="button"
+                      className={`heatmap-toggle-btn${heatmapMatrixType === "inherent" ? " active" : ""}`}
+                      onClick={() => {
+                        setHeatmapMatrixType("inherent");
+                        setSelectedHeatmapCell(null);
+                      }}
+                    >
+                      Inherent Matrix ({plottableInherentRisks.length})
+                    </button>
+                    <button
+                      type="button"
+                      className={`heatmap-toggle-btn${heatmapMatrixType === "residual" ? " active" : ""}`}
+                      onClick={() => {
+                        setHeatmapMatrixType("residual");
+                        setSelectedHeatmapCell(null);
+                      }}
+                    >
+                      Residual Matrix ({plottableResidualRisks.length})
+                    </button>
+                  </div>
+                </div>
 
-        <div className="table-responsive">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Control Name</th>
-                <th>Framework</th>
-                <th>Category</th>
-                <th>Effectiveness</th>
-                <th>Status</th>
-                <th>Assigned Risks</th>
-                <th>Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              {controls.length === 0 ? (
-                <tr>
-                  <td colSpan="7" className="empty-cell">No controls in catalog.</td>
-                </tr>
-              ) : (
-                controls.map((control) => (
-                  <tr key={control.id}>
-                    <td>
-                      <strong>{control.name}</strong>
-                    </td>
-                    <td>
-                      <span className="badge badge-neutral">{control.framework || "NIST CSF"}</span>
-                    </td>
-                    <td>{control.category || "Preventive"}</td>
-                    <td>
-                      <span className={`badge ${control.effectiveness === "High" ? "badge-eff-high" : "badge-eff-med"}`}>
-                        {control.effectiveness} ({control.effectiveness === "High" ? "-2 Likelihood" : control.effectiveness === "Medium" ? "-1 Likelihood" : "0 Likelihood"})
-                      </span>
-                    </td>
-                    <td>
-                      <span className={`status-pill ${control.status === "Implemented" ? "status-resolved" : "status-review"}`}>
-                        {control.status}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="count-bubble">{control.risk_count}</span>
-                    </td>
-                    <td className="desc-cell">{control.description || "No description provided."}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      </>)}
+                <div className="heatmap-container" style={{ margin: "16px 0" }}>
+                  <div className="heatmap-layout">
+                    <div className="heatmap-y-axis">
+                      <span className="heatmap-y-label">LIKELIHOOD</span>
+                    </div>
+
+                    <div className="heatmap-matrix-wrap">
+                      <div className="heatmap-grid">
+                        <div className="heatmap-header-cell" />
+                        {impactLevels.map((imp) => (
+                          <div key={imp.level} className="heatmap-header-cell">
+                            {imp.label}
+                          </div>
+                        ))}
+
+                        {likelihoodLevels.map((lh) => (
+                          <Fragment key={lh.level}>
+                            <div className="heatmap-row-header">{lh.label}</div>
+                            {impactLevels.map((imp) => {
+                              const cellRisks = getCellRisks(lh.level, imp.level);
+                              const count = cellRisks.length;
+                              const score = lh.level * imp.level;
+                              const sevClass = getCellSeverityClass(score);
+                              const isSelected = selectedHeatmapCell?.l === lh.level && selectedHeatmapCell?.i === imp.level;
+                              const tooltip = `Likelihood: ${lh.level}, Impact: ${imp.level} (Score: ${score})\n${count} Risk(s) plotted at this coordinate`;
+
+                              return (
+                                <div
+                                  key={`${lh.level}-${imp.level}`}
+                                  className={`heatmap-cell ${sevClass} ${count > 0 ? "active" : "empty"}${isSelected ? " selected" : ""}`}
+                                  title={tooltip}
+                                  onClick={() =>
+                                    setSelectedHeatmapCell(
+                                      isSelected ? null : { l: lh.level, i: imp.level }
+                                    )
+                                  }
+                                  style={{ cursor: count > 0 ? "pointer" : "default" }}
+                                >
+                                  <span className="heatmap-cell-val">{count > 0 ? count : "·"}</span>
+                                  <span className="heatmap-cell-score">Score: {score}</span>
+                                </div>
+                              );
+                            })}
+                          </Fragment>
+                        ))}
+                      </div>
+
+                      <div className="heatmap-x-label">IMPACT RATING</div>
+                    </div>
+                  </div>
+
+                  <div className="heatmap-legend">
+                    <span className="heatmap-legend-item">
+                      <span className="heatmap-legend-chip" style={{ background: "#22c55e" }} />
+                      Low (1–3)
+                    </span>
+                    <span className="heatmap-legend-item">
+                      <span className="heatmap-legend-chip" style={{ background: "#eab308" }} />
+                      Medium (4–6)
+                    </span>
+                    <span className="heatmap-legend-item">
+                      <span className="heatmap-legend-chip" style={{ background: "#f97316" }} />
+                      High (7–11)
+                    </span>
+                    <span className="heatmap-legend-item">
+                      <span className="heatmap-legend-chip" style={{ background: "#ef4444" }} />
+                      Critical (12–16)
+                    </span>
+                  </div>
+
+                  {heatmapExcludedCount > 0 && (
+                    <div className="heatmap-excluded-note">
+                      ℹ️ {heatmapExcludedCount} risk(s) could not be plotted on the {heatmapMatrixType} heat map because their coordinates are missing or outside the valid integer 1–4 range.
+                    </div>
+                  )}
+                </div>
+
+                {/* Selected Cell Inspector */}
+                {selectedHeatmapCell ? (
+                  <div className="heatmap-inspector">
+                    <div className="heatmap-inspector-header">
+                      <div className="heatmap-inspector-title">
+                        📍 Findings at Likelihood {selectedHeatmapCell.l} × Impact {selectedHeatmapCell.i} (Score: {selectedHeatmapCell.l * selectedHeatmapCell.i}) — {selectedCellRisks.length} Risk{selectedCellRisks.length !== 1 ? "s" : ""}
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-secondary btn-sm"
+                        onClick={() => setSelectedHeatmapCell(null)}
+                      >
+                        Clear Selection
+                      </button>
+                    </div>
+
+                    {selectedCellRisks.length === 0 ? (
+                      <div className="empty-cell" style={{ textAlign: "center", padding: "16px" }}>
+                        No risks currently located at these coordinates.
+                      </div>
+                    ) : (
+                      <div className="table-responsive">
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Finding</th>
+                              <th>Asset</th>
+                              <th>Inherent</th>
+                              <th>Residual</th>
+                              <th>Treatment</th>
+                              <th>Status & Review</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedCellRisks.map((risk) => {
+                              const asset = assets.find((a) => a.id === risk.asset_id);
+                              return (
+                                <tr key={risk.id}>
+                                  <td>
+                                    <strong>#{risk.id}: {risk.title}</strong>
+                                    <div className="sub-text">{risk.recommendation || risk.description}</div>
+                                  </td>
+                                  <td>
+                                    <span className="ip-pill">{asset ? asset.ip_address : `Asset #${risk.asset_id}`}</span>
+                                  </td>
+                                  <td>
+                                    <span className={`badge ${getRiskClass(risk.inherent_risk_level || risk.risk_level)}`}>
+                                      {risk.inherent_risk_level || risk.risk_level || "Medium"} ({risk.inherent_risk_score || risk.risk_score})
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <span className={`badge ${getRiskClass(risk.residual_risk_level)}`}>
+                                      {risk.residual_risk_level ? `${risk.residual_risk_level}${risk.residual_risk_score != null ? ` (${risk.residual_risk_score})` : ""}` : "Not Available"}
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <span className="badge badge-treatment">{risk.treatment || "Mitigate"}</span>
+                                  </td>
+                                  <td>
+                                    <span className={`status-pill ${getStatusClass(risk.status)}`}>{risk.status || "Open"}</span>
+                                    <div style={{ marginTop: "4px" }}>
+                                      {getReviewStatusBadge(risk.review_status || "Pending Review")}
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <div className="action-stack">
+                                      <button
+                                        type="button"
+                                        className="btn-action"
+                                        onClick={() => setViewingRisk(risk)}
+                                      >
+                                        Details
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn-action"
+                                        onClick={() => openRiskModal(risk)}
+                                      >
+                                        Manage
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn-action"
+                                        onClick={() => openSubmitReviewModal(risk)}
+                                      >
+                                        Sign-Off
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="disclaimer-banner" style={{ marginTop: "16px" }}>
+                    <span className="info-icon">ℹ️</span>
+                    <span>
+                      <strong>Interactive Matrix:</strong> Click on any populated cell in the 4×4 heat map above to inspect the specific enterprise risks plotted at those Likelihood × Impact coordinates.
+                    </span>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* TAB 3: CONTROLS & TREATMENT */}
+            {riskSubTab === "controls" && (
+              <>
+                {/* Treatment Strategy Breakdown */}
+                <section className="panel" style={{ marginBottom: "20px" }}>
+                  <div className="panel-header">
+                    <div>
+                      <h2>Enterprise Risk Treatment Strategies</h2>
+                      <p className="panel-desc">
+                        Formal response decisions assigned to enterprise risks under governance oversight.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="treatment-grid">
+                    <div className="treatment-card">
+                      <div className="treatment-card-header">
+                        <span className="treatment-card-title">Mitigate</span>
+                        <span className="treatment-card-count">{mitigateCount}</span>
+                      </div>
+                      <div className="treatment-card-desc">
+                        Deploy defensive controls to lower vulnerability exploitability and reduce likelihood score.
+                      </div>
+                      <div className="treatment-card-action">
+                        <button
+                          type="button"
+                          className="btn-secondary btn-sm"
+                          onClick={() => {
+                            setRiskTreatmentFilter("Mitigate");
+                            setRiskSubTab("register");
+                          }}
+                        >
+                          View in Register ➔
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="treatment-card">
+                      <div className="treatment-card-header">
+                        <span className="treatment-card-title">Accept</span>
+                        <span className="treatment-card-count">{acceptCount}</span>
+                      </div>
+                      <div className="treatment-card-desc">
+                        Formally acknowledge risk within business risk appetite with documented executive sign-off.
+                      </div>
+                      <div className="treatment-card-action">
+                        <button
+                          type="button"
+                          className="btn-secondary btn-sm"
+                          onClick={() => {
+                            setRiskTreatmentFilter("Accept");
+                            setRiskSubTab("register");
+                          }}
+                        >
+                          View in Register ➔
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="treatment-card">
+                      <div className="treatment-card-header">
+                        <span className="treatment-card-title">Transfer</span>
+                        <span className="treatment-card-count">{transferCount}</span>
+                      </div>
+                      <div className="treatment-card-desc">
+                        Shift financial and operational consequences via third-party contracts or cyber insurance.
+                      </div>
+                      <div className="treatment-card-action">
+                        <button
+                          type="button"
+                          className="btn-secondary btn-sm"
+                          onClick={() => {
+                            setRiskTreatmentFilter("Transfer");
+                            setRiskSubTab("register");
+                          }}
+                        >
+                          View in Register ➔
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="treatment-card">
+                      <div className="treatment-card-header">
+                        <span className="treatment-card-title">Avoid</span>
+                        <span className="treatment-card-count">{avoidCount}</span>
+                      </div>
+                      <div className="treatment-card-desc">
+                        Eliminate exposure by decommissioning the asset, terminating the service, or disabling the feature.
+                      </div>
+                      <div className="treatment-card-action">
+                        <button
+                          type="button"
+                          className="btn-secondary btn-sm"
+                          onClick={() => {
+                            setRiskTreatmentFilter("Avoid");
+                            setRiskSubTab("register");
+                          }}
+                        >
+                          View in Register ➔
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Security Controls Catalog */}
+                <section className="panel">
+                  <div className="panel-header">
+                    <div>
+                      <h2>Security Controls Catalog</h2>
+                      <p className="panel-desc">
+                        Available defensive safeguards. Implemented controls reduce risk likelihood based on their effectiveness rating.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => setShowAddControlModal(true)}
+                    >
+                      + Add Control
+                    </button>
+                  </div>
+
+                  <div className="table-responsive">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Control Name</th>
+                          <th>Framework</th>
+                          <th>Category</th>
+                          <th>Effectiveness</th>
+                          <th>Status</th>
+                          <th>Assigned Risks</th>
+                          <th>Description</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {controls.length === 0 ? (
+                          <tr>
+                            <td colSpan="7" className="empty-cell">No controls in catalog.</td>
+                          </tr>
+                        ) : (
+                          controls.map((control) => (
+                            <tr key={control.id}>
+                              <td>
+                                <strong>{control.name}</strong>
+                              </td>
+                              <td>
+                                <span className="badge badge-neutral">{control.framework || "NIST CSF"}</span>
+                              </td>
+                              <td>{control.category || "Preventive"}</td>
+                              <td>
+                                <span className={`badge ${control.effectiveness === "High" ? "badge-eff-high" : "badge-eff-med"}`}>
+                                  {control.effectiveness} ({control.effectiveness === "High" ? "-2 Likelihood" : control.effectiveness === "Medium" ? "-1 Likelihood" : "0 Likelihood"})
+                                </span>
+                              </td>
+                              <td>
+                                <span className={`status-pill ${control.status === "Implemented" ? "status-resolved" : "status-review"}`}>
+                                  {control.status}
+                                </span>
+                              </td>
+                              <td>
+                                <span className="count-bubble">{control.risk_count}</span>
+                              </td>
+                              <td className="desc-cell">{control.description || "No description provided."}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </>
+            )}
+          </>
+        );
+      })()}
 
       {/* -------------------------------- */}
       {/* COMPLIANCE                      */}
@@ -5261,6 +6075,418 @@ function App() {
         );
       })()}
 
+      {/* -------------------------------- */}
+      {/* MODAL: VIEW RISK DETAILS         */}
+      {/* -------------------------------- */}
+      {viewingRisk && (() => {
+        const liveRisk = risks.find((r) => r.id === viewingRisk.id) || viewingRisk;
+        const asset = assets.find((a) => a.id === liveRisk.asset_id);
+        const relatedVulns = vulnerabilities.filter((v) => v.asset_id === liveRisk.asset_id);
+
+        return (
+          <div className="modal-backdrop" onClick={() => setViewingRisk(null)}>
+            <div className="modal-content modal-risk-detail" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <div>
+                  <h3>Risk Details — #{liveRisk.id}: {liveRisk.title}</h3>
+                  <div className="modal-subtitle">
+                    Asset: {asset ? `${asset.ip_address} (${asset.hostname || "Host"})` : `Asset #${liveRisk.asset_id}`} • Lifecycle: {liveRisk.status || "Open"} • Governance: {liveRisk.review_status || "Pending Review"}
+                  </div>
+                </div>
+                <button type="button" className="modal-close" onClick={() => setViewingRisk(null)}>×</button>
+              </div>
+
+              <div className="modal-body asset-detail-body">
+                {/* Top 2-Column Grid: Identification & Assessment */}
+                <div className="asset-detail-grid">
+                  {/* Risk Identification */}
+                  <div className="asset-detail-card">
+                    <div className="asset-detail-card-title">🔍 Risk Identification</div>
+                    <div className="kv-row">
+                      <span className="kv-label">Risk ID</span>
+                      <span className="kv-val font-mono">#{liveRisk.id}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Title</span>
+                      <span className="kv-val font-medium">{liveRisk.title}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Framework Mapping</span>
+                      <span className="kv-val">
+                        {liveRisk.compliance_framework ? (
+                          <span className="framework-tag">
+                            {liveRisk.compliance_framework} ({liveRisk.compliance_control || "Control"})
+                          </span>
+                        ) : (
+                          <span className="text-muted">Not Specified</span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Affected Asset</span>
+                      <span className="kv-val">
+                        {asset ? (
+                          <span className="ip-pill">{asset.ip_address} {asset.hostname ? `(${asset.hostname})` : ""}</span>
+                        ) : (
+                          <span className="text-muted">Asset #{liveRisk.asset_id}</span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Asset Criticality</span>
+                      <span className="kv-val">
+                        {asset ? (
+                          <span className={`badge ${getRiskClass(asset.criticality)}`}>{asset.criticality || "Unclassified"}</span>
+                        ) : (
+                          <span className="text-muted">Not Available</span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Asset Environment</span>
+                      <span className="kv-val">{asset?.environment || "Not Available"}</span>
+                    </div>
+                  </div>
+
+                  {/* Risk Assessment: Inherent vs. Residual */}
+                  <div className="asset-detail-card">
+                    <div className="asset-detail-card-title">⚖️ Risk Assessment (Inherent vs. Residual)</div>
+                    <div className="kv-row">
+                      <span className="kv-label">Inherent Risk Level</span>
+                      <span className="kv-val">
+                        <span className={`badge ${getRiskClass(liveRisk.inherent_risk_level || liveRisk.risk_level)}`}>
+                          {liveRisk.inherent_risk_level || liveRisk.risk_level || "Medium"}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Inherent Score</span>
+                      <span className="kv-val font-mono">
+                        {liveRisk.inherent_risk_score != null ? liveRisk.inherent_risk_score : liveRisk.risk_score} (Likelihood: {liveRisk.likelihood_score || 2} × Impact: {liveRisk.impact_score || 2})
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Residual Risk Level</span>
+                      <span className="kv-val">
+                        <span className={`badge ${getRiskClass(liveRisk.residual_risk_level)}`}>
+                          {liveRisk.residual_risk_level || "Not Available"}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Residual Score</span>
+                      <span className="kv-val font-mono">
+                        {liveRisk.residual_risk_score != null ? liveRisk.residual_risk_score : "Not Available"}
+                        {liveRisk.residual_likelihood != null || liveRisk.residual_impact != null ? (
+                          ` (Res Likelihood: ${liveRisk.residual_likelihood != null ? liveRisk.residual_likelihood : "Not Available"} × Res Impact: ${liveRisk.residual_impact != null ? liveRisk.residual_impact : "Not Available"})`
+                        ) : ""}
+                      </span>
+                    </div>
+
+                    {/* Inherent to Residual Trajectory Box */}
+                    {liveRisk.inherent_risk_score != null && liveRisk.residual_risk_score != null ? (
+                      <div className="risk-detail-trajectory-box">
+                        <div className="risk-detail-trajectory-item">
+                          <div className="risk-detail-trajectory-label">Inherent Posture</div>
+                          <div className="risk-detail-trajectory-val" style={{ color: "#f87171" }}>
+                            Score {liveRisk.inherent_risk_score}
+                          </div>
+                          <div className="text-xs text-slate">{liveRisk.inherent_risk_level || "Not Available"}</div>
+                        </div>
+                        <div style={{ fontSize: "20px", color: "#38bdf8", fontWeight: "bold" }}>➔</div>
+                        <div className="risk-detail-trajectory-item">
+                          <div className="risk-detail-trajectory-label">Residual Posture</div>
+                          <div className="risk-detail-trajectory-val" style={{ color: "#4ade80" }}>
+                            Score {liveRisk.residual_risk_score}
+                          </div>
+                          <div className="text-xs text-slate">{liveRisk.residual_risk_level || "Not Available"}</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate" style={{ marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>
+                        Residual risk trajectory not available (residual metrics not assessed).
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Governance & Ownership */}
+                <div className="asset-detail-card" style={{ marginTop: "16px" }}>
+                  <div className="asset-detail-card-title">🏛️ Governance, Treatment & Lifecycle</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
+                    <div className="kv-row">
+                      <span className="kv-label">Risk Owner</span>
+                      <span className="kv-val font-medium">{liveRisk.risk_owner || <span className="text-muted">Not Assigned</span>}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Treatment Strategy</span>
+                      <span className="kv-val">
+                        <span className="badge badge-treatment">{liveRisk.treatment || "Mitigate"}</span>
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Lifecycle Status</span>
+                      <span className="kv-val">
+                        <span className={`status-pill ${getStatusClass(liveRisk.status)}`}>{liveRisk.status || "Open"}</span>
+                      </span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Governance Review</span>
+                      <span className="kv-val">{getReviewStatusBadge(liveRisk.review_status || "Pending Review")}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Remediation Due Date</span>
+                      <span className="kv-val text-xs">{liveRisk.due_date ? formatDateTime(liveRisk.due_date) : <span className="text-muted">Not Specified</span>}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Created At</span>
+                      <span className="kv-val text-xs">{formatDateTime(liveRisk.created_at)}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span className="kv-label">Last Updated</span>
+                      <span className="kv-val text-xs">{formatDateTime(liveRisk.updated_at)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Description & Recommendation */}
+                {(liveRisk.description || liveRisk.recommendation) && (
+                  <div className="asset-detail-card" style={{ marginTop: "16px" }}>
+                    <div className="asset-detail-card-title">📝 Finding Description & Guidance</div>
+                    {liveRisk.description && (
+                      <div style={{ marginBottom: liveRisk.recommendation ? "12px" : 0 }}>
+                        <div className="text-xs font-semibold text-slate" style={{ marginBottom: "4px" }}>DESCRIPTION:</div>
+                        <p className="vuln-desc-text">{liveRisk.description}</p>
+                      </div>
+                    )}
+                    {liveRisk.recommendation && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate" style={{ marginBottom: "4px" }}>RECOMMENDED SAFEGUARD:</div>
+                        <p className="vuln-desc-text">{liveRisk.recommendation}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Mitigating Controls Section */}
+                <div className="asset-detail-card" style={{ marginTop: "16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                    <div className="asset-detail-card-title" style={{ margin: 0 }}>
+                      🛡️ Mitigating Security Controls ({liveRisk.controls ? liveRisk.controls.length : 0})
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#64748b" }}>
+                      Controls reduce likelihood rating based on effectiveness
+                    </div>
+                  </div>
+
+                  {liveRisk.controls && liveRisk.controls.length > 0 ? (
+                    <div className="table-responsive" style={{ margin: "8px 0" }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Control Name</th>
+                            <th>Framework</th>
+                            <th>Category</th>
+                            <th>Effectiveness</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {liveRisk.controls.map((c) => (
+                            <tr key={c.id}>
+                              <td><strong>{c.name}</strong></td>
+                              <td><span className="badge badge-neutral">{c.framework || "NIST CSF"}</span></td>
+                              <td>{c.category || "Preventive"}</td>
+                              <td>
+                                <span className={`badge ${c.effectiveness === "High" ? "badge-eff-high" : "badge-eff-med"}`}>
+                                  {c.effectiveness} ({c.effectiveness === "High" ? "-2 Likelihood" : c.effectiveness === "Medium" ? "-1 Likelihood" : "0 Likelihood"})
+                                </span>
+                              </td>
+                              <td>
+                                <span className={`status-pill ${c.status === "Implemented" ? "status-resolved" : "status-review"}`}>
+                                  {c.status}
+                                </span>
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="btn-mini btn-cancel"
+                                  onClick={() => handleDetachControl(liveRisk.id, c.id)}
+                                  title="Detach control from this risk"
+                                >
+                                  Detach
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted" style={{ padding: "10px 0" }}>
+                      No mitigating security controls currently assigned to this risk.
+                    </div>
+                  )}
+
+                  {/* Inline Assign Control Box */}
+                  <div style={{ marginTop: "8px", display: "flex", gap: "8px", alignItems: "center" }}>
+                    <select
+                      value={selectedControlId}
+                      onChange={(e) => setSelectedControlId(e.target.value)}
+                      className="select-filter"
+                      style={{ maxWidth: "340px", fontSize: "12px" }}
+                    >
+                      <option value="">Select Control from Catalog to Assign...</option>
+                      {controls
+                        .filter((c) => !liveRisk.controls?.some((rc) => rc.id === c.id))
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.effectiveness} Effectiveness)
+                          </option>
+                        ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn-primary btn-sm"
+                      onClick={() => handleAssignControl(liveRisk.id)}
+                      disabled={!selectedControlId}
+                    >
+                      Assign Control
+                    </button>
+                  </div>
+                </div>
+
+                {/* Section: Technical Vulnerabilities on Affected Asset */}
+                <div className="asset-detail-card" style={{ marginTop: "16px" }}>
+                  <div className="asset-detail-card-title">
+                    ⚡ Vulnerabilities Recorded for This Asset ({relatedVulns.length})
+                  </div>
+                  <div className="vuln-section-desc">
+                    These findings were detected on the same asset ({asset ? asset.ip_address : `Asset #${liveRisk.asset_id}`}). They represent technical exposure for that host and do not establish a direct 1:1 causal link to this enterprise risk.
+                  </div>
+
+                  {relatedVulns.length === 0 ? (
+                    <div className="empty-cell" style={{ padding: "16px", textAlign: "center" }}>
+                      No technical vulnerability findings recorded for this asset.
+                    </div>
+                  ) : (
+                    <div className="table-responsive">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Finding</th>
+                            <th>CVE</th>
+                            <th>Severity</th>
+                            <th>CVSS</th>
+                            <th>Port / Service</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {relatedVulns.map((v) => (
+                            <tr key={v.id}>
+                              <td><strong>{v.title}</strong></td>
+                              <td>{v.cve ? <span className="cve-tag">{v.cve}</span> : <span className="text-muted">—</span>}</td>
+                              <td><span className={`badge ${getRiskClass(v.severity)}`}>{v.severity || "Unknown"}</span></td>
+                              <td><span className="font-mono text-xs">{v.cvss_score != null ? v.cvss_score : "—"}</span></td>
+                              <td><span className="port-pill font-mono">{v.port ? `${v.port}/${v.service || "tcp"}` : "Host-level"}</span></td>
+                              <td><span className={`status-pill ${getStatusClass(v.status)}`}>{v.status || "Open"}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Section: AI Risk Intelligence */}
+                <div className="asset-detail-card" style={{ marginTop: "16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                    <div className="asset-detail-card-title" style={{ margin: 0 }}>
+                      ✦ AI-Assisted Security Intelligence
+                    </div>
+                    <button
+                      type="button"
+                      className={`btn-ai-analyze${expandedAiPanel === liveRisk.id ? " btn-ai-active" : ""}`}
+                      onClick={() => handleAnalyzeRisk(liveRisk.id)}
+                      disabled={!!aiLoading[liveRisk.id]}
+                    >
+                      {aiLoading[liveRisk.id] ? "Analyzing..." : aiAnalysis[liveRisk.id] ? "↺ Re-analyze" : "✦ Run AI Analysis"}
+                    </button>
+                  </div>
+                  <div className="vuln-section-desc">
+                    AI analysis is advisory security intelligence and does not alter authoritative GRC risk scores.
+                  </div>
+
+                  <AIAnalysisPanel
+                    loading={!!aiLoading[liveRisk.id]}
+                    error={aiError[liveRisk.id] || null}
+                    analysis={aiAnalysis[liveRisk.id] || null}
+                    onReanalyze={() => handleReanalyzeRisk(liveRisk.id)}
+                  />
+                </div>
+              </div>
+
+              {/* Modal Footer Actions */}
+              <div className="modal-footer" style={{ justifyContent: "space-between" }}>
+                <div>
+                  {asset && (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => {
+                        setActivePage("assets");
+                        setAssetSearchQuery(asset.ip_address);
+                        setViewingRisk(null);
+                      }}
+                    >
+                      View Asset in Inventory ➔
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className="btn-action"
+                    onClick={() => {
+                      openRiskModal(liveRisk);
+                      setViewingRisk(null);
+                    }}
+                  >
+                    Manage Treatment
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-action"
+                    onClick={() => {
+                      openSubmitReviewModal(liveRisk);
+                      setViewingRisk(null);
+                    }}
+                  >
+                    Sign-Off
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-action"
+                    onClick={() => openReviewHistoryModal(liveRisk)}
+                  >
+                    Review History
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setViewingRisk(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {editingAsset && (
         <div className="modal-backdrop" onClick={() => setEditingAsset(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -5635,7 +6861,7 @@ function App() {
                 <div className="risk-summary-box">
                   <strong>{reviewingRisk.title}</strong>
                   <div>
-                    Inherent: {reviewingRisk.inherent_risk_level || "Medium"} ({reviewingRisk.inherent_risk_score || reviewingRisk.risk_score}) • Residual: {reviewingRisk.residual_risk_level || "Medium"} ({reviewingRisk.residual_risk_score || reviewingRisk.risk_score})
+                    Inherent: {reviewingRisk.inherent_risk_level || "Medium"} ({reviewingRisk.inherent_risk_score || reviewingRisk.risk_score}) • Residual: {reviewingRisk.residual_risk_level || "Not Available"} ({reviewingRisk.residual_risk_score != null ? reviewingRisk.residual_risk_score : "Not Available"})
                   </div>
                   <div className="sub-text">
                     Current Treatment: {reviewingRisk.treatment || "Mitigate"} • Lifecycle: {reviewingRisk.status || "Open"} • Review Status: {reviewingRisk.review_status || "Pending Review"}
