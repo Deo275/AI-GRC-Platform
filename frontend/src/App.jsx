@@ -933,10 +933,17 @@ function App() {
 
   // Modals state
   const [editingAsset, setEditingAsset] = useState(null);
+  const [viewingAsset, setViewingAsset] = useState(null);
   const [editingRisk, setEditingRisk] = useState(null);
   const [showAddControlModal, setShowAddControlModal] = useState(false);
   const [assigningRiskId, setAssigningRiskId] = useState(null);
   const [editingRequirement, setEditingRequirement] = useState(null);
+
+  // Phase 3: Assets Page Filters & Search
+  const [assetSearchQuery, setAssetSearchQuery] = useState("");
+  const [assetEnvFilter, setAssetEnvFilter] = useState("All");
+  const [assetCritFilter, setAssetCritFilter] = useState("All");
+  const [assetExpFilter, setAssetExpFilter] = useState("All");
 
   // Form states
   const [assetForm, setAssetForm] = useState({
@@ -1854,6 +1861,23 @@ function App() {
   // ----------------------------------------
   // Helper classes & formatters
   // ----------------------------------------
+
+  const isAssetUnclassified = (asset) => {
+    if (!asset) return false;
+    if (!asset.criticality) return true;
+    const crit = String(asset.criticality).trim().toLowerCase();
+    if (crit === "unclassified" || crit === "none") return true;
+    if (asset.is_criticality_default === true) return true;
+    return false;
+  };
+
+  const parsePortsList = (openPortsStr) => {
+    if (!openPortsStr || typeof openPortsStr !== "string") return [];
+    return openPortsStr
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+  };
 
   const getRiskClass = (level) => {
     switch (level?.toLowerCase()) {
@@ -2871,100 +2895,431 @@ function App() {
       )}
 
       {/* -------------------------------- */}
-      {/* ASSET INVENTORY & INTELLIGENCE */}
+      {/* ASSET INVENTORY & POSTURE (Phase 3) */}
       {/* -------------------------------- */}
-      {activePage === "assets" && (
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Asset Inventory & Intelligence</h2>
-            <p className="panel-desc">
-              Manage business context: criticality, exposure, and environment dynamically inform Inherent Risk.
-            </p>
-          </div>
-          <div>
-            <button
-              type="button"
-              className="btn-secondary btn-sm"
-              onClick={() => fetchAssets()}
-              title="Refresh assets from backend"
-            >
-              ↻ Refresh Assets
-            </button>
-          </div>
-        </div>
+      {activePage === "assets" && (() => {
+        const totalAssetsCount = assets.length;
+        const criticalAssetsCount = assets.filter(
+          (a) => (a.criticality || "").toLowerCase() === "critical" && !a.is_criticality_default
+        ).length;
+        const productionAssetsCount = assets.filter(
+          (a) => (a.environment || "").toLowerCase() === "production"
+        ).length;
+        const externalAssetsCount = assets.filter(
+          (a) => (a.exposure || "").toLowerCase() === "external"
+        ).length;
+        const unclassifiedAssets = assets.filter(isAssetUnclassified);
+        const unclassifiedCount = unclassifiedAssets.length;
 
-        <div className="table-responsive">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>IP Address</th>
-                <th>Hostname / OS</th>
-                <th>Criticality</th>
-                <th>Environment</th>
-                <th>Exposure</th>
-                <th>Owner / Function</th>
-                <th>Risk Score</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {assets.length === 0 ? (
-                <tr>
-                  <td colSpan="8" className="empty-cell">No assets discovered yet.</td>
-                </tr>
-              ) : (
-                assets.map((asset) => (
-                  <tr key={asset.id}>
-                    <td>
-                      <strong className="ip-text">{asset.ip_address}</strong>
-                      <div className="sub-text">ID #{asset.id}</div>
-                    </td>
-                    <td>
-                      <div>{asset.hostname || "Unknown Host"}</div>
-                      <div className="sub-text">{asset.operating_system || "OS not identified"}</div>
-                    </td>
-                    <td>
-                      <span className={`badge ${getRiskClass(asset.criticality)}`}>
-                        {asset.criticality || "Medium"}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="badge badge-neutral">
-                        {asset.environment || "Production"}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="badge badge-exposure">
-                        {asset.exposure || "Internal"}
-                      </span>
-                    </td>
-                    <td>
-                      <div>{asset.owner || <span className="text-muted">Unassigned</span>}</div>
-                      <div className="sub-text">{asset.business_function || "No function specified"}</div>
-                    </td>
-                    <td>
-                      <span className={`badge ${getRiskClass(asset.risk_level)}`}>
-                        {asset.risk_level} ({asset.risk_score})
-                      </span>
-                    </td>
-                    <td>
-                      <button
-                        className="btn-action"
-                        onClick={() => openAssetModal(asset)}
-                        title="Edit Asset Intelligence"
-                      >
-                        Edit Intelligence
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      )}
+        const filteredAssets = assets.filter((asset) => {
+          // Search matching
+          if (assetSearchQuery.trim()) {
+            const q = assetSearchQuery.toLowerCase().trim();
+            const ip = (asset.ip_address || "").toLowerCase();
+            const host = (asset.hostname || "").toLowerCase();
+            const owner = (asset.owner || "").toLowerCase();
+            const fn = (asset.business_function || "").toLowerCase();
+            const os = (asset.operating_system || "").toLowerCase();
+            if (!ip.includes(q) && !host.includes(q) && !owner.includes(q) && !fn.includes(q) && !os.includes(q)) {
+              return false;
+            }
+          }
+
+          // Environment filter
+          if (assetEnvFilter !== "All") {
+            if ((asset.environment || "").toLowerCase() !== assetEnvFilter.toLowerCase()) {
+              return false;
+            }
+          }
+
+          // Criticality filter
+          if (assetCritFilter !== "All") {
+            if (assetCritFilter === "Unclassified") {
+              if (!isAssetUnclassified(asset)) return false;
+            } else {
+              if (isAssetUnclassified(asset)) return false;
+              if ((asset.criticality || "").toLowerCase() !== assetCritFilter.toLowerCase()) return false;
+            }
+          }
+
+          // Exposure filter
+          if (assetExpFilter !== "All") {
+            if ((asset.exposure || "").toLowerCase() !== assetExpFilter.toLowerCase()) {
+              return false;
+            }
+          }
+
+          return true;
+        });
+
+        const hasActiveAssetFilters =
+          assetSearchQuery.trim() !== "" ||
+          assetEnvFilter !== "All" ||
+          assetCritFilter !== "All" ||
+          assetExpFilter !== "All";
+
+        const resetAssetFilters = () => {
+          setAssetSearchQuery("");
+          setAssetEnvFilter("All");
+          setAssetCritFilter("All");
+          setAssetExpFilter("All");
+        };
+
+        return (
+          <>
+            {/* 1. ASSET SUMMARY: Compact KPI Cards */}
+            <section className="cards cards-five">
+              <div className="card">
+                <div className="card-label">Total Assets</div>
+                <div className="card-val">{totalAssetsCount}</div>
+                <div className="card-sub">
+                  {assets.filter((a) => (a.status || "Active").toLowerCase() === "active").length} Active in scope
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">Critical Assets</div>
+                <div className="card-val highlight-critical">{criticalAssetsCount}</div>
+                <div className="card-sub">Tier-1 business impact</div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">Production Assets</div>
+                <div className="card-val highlight-blue">{productionAssetsCount}</div>
+                <div className="card-sub">
+                  {totalAssetsCount > 0 ? Math.round((productionAssetsCount / totalAssetsCount) * 100) : 0}% of infrastructure
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">External Assets</div>
+                <div className="card-val highlight-amber">{externalAssetsCount}</div>
+                <div className="card-sub">Public-facing perimeter</div>
+              </div>
+
+              <div className="card">
+                <div className="card-label">Unclassified Assets</div>
+                <div className={`card-val ${unclassifiedCount > 0 ? "highlight-orange" : "highlight-green"}`}>
+                  {unclassifiedCount}
+                </div>
+                <div className="card-sub">
+                  {unclassifiedCount > 0 ? "Requires review" : "All categorized"}
+                </div>
+              </div>
+            </section>
+
+            {/* 6. UNCLASSIFIED ASSET CALLOUT */}
+            {unclassifiedCount > 0 && (
+              <div className="asset-unclassified-banner">
+                <div className="asset-unclassified-icon">⚠️</div>
+                <div className="asset-unclassified-content">
+                  <div className="asset-unclassified-title">
+                    {unclassifiedCount} {unclassifiedCount === 1 ? "asset requires" : "assets require"} classification
+                  </div>
+                  <div className="asset-unclassified-desc">
+                    These newly discovered hosts currently lack criticality classification and/or assigned ownership. In accordance with enterprise GRC policy, newly discovered infrastructure remains unclassified until reviewed by security operations to prevent biased risk ratings.
+                  </div>
+                </div>
+                <div className="asset-unclassified-actions">
+                  <button
+                    type="button"
+                    className="btn-action-view"
+                    onClick={() => {
+                      setAssetCritFilter("Unclassified");
+                      setAssetSearchQuery("");
+                    }}
+                  >
+                    View Unclassified ({unclassifiedCount})
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 2. ASSET INVENTORY & SECURITY POSTURE */}
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Asset Inventory & Security Posture</h2>
+                  <p className="panel-desc">
+                    Continuous infrastructure inventory with correlated technical findings, GRC risks, and business criticality.
+                  </p>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={() => fetchAssets()}
+                    title="Refresh assets from backend"
+                  >
+                    ↻ Refresh Assets
+                  </button>
+                </div>
+              </div>
+
+              {/* 3 & 4. SEARCH & FILTERS TOOLBAR */}
+              <div className="asset-toolbar">
+                <div className="asset-search-box">
+                  <span className="search-icon">🔍</span>
+                  <input
+                    type="text"
+                    className="asset-search-input"
+                    placeholder="Search by IP, hostname, owner, or business function..."
+                    value={assetSearchQuery}
+                    onChange={(e) => setAssetSearchQuery(e.target.value)}
+                  />
+                  {assetSearchQuery && (
+                    <button
+                      type="button"
+                      className="asset-search-clear"
+                      onClick={() => setAssetSearchQuery("")}
+                      title="Clear search"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
+                <div className="asset-filter-group">
+                  <div className="asset-filter-item">
+                    <label htmlFor="asset-env-filter">Env:</label>
+                    <select
+                      id="asset-env-filter"
+                      className="asset-select"
+                      value={assetEnvFilter}
+                      onChange={(e) => setAssetEnvFilter(e.target.value)}
+                    >
+                      <option value="All">All Environments</option>
+                      <option value="Production">Production</option>
+                      <option value="Development">Development</option>
+                      <option value="Testing">Testing</option>
+                    </select>
+                  </div>
+
+                  <div className="asset-filter-item">
+                    <label htmlFor="asset-crit-filter">Criticality:</label>
+                    <select
+                      id="asset-crit-filter"
+                      className="asset-select"
+                      value={assetCritFilter}
+                      onChange={(e) => setAssetCritFilter(e.target.value)}
+                    >
+                      <option value="All">All Criticalities</option>
+                      <option value="Critical">Critical</option>
+                      <option value="High">High</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Low">Low</option>
+                      <option value="Unclassified">Unclassified</option>
+                    </select>
+                  </div>
+
+                  <div className="asset-filter-item">
+                    <label htmlFor="asset-exp-filter">Exposure:</label>
+                    <select
+                      id="asset-exp-filter"
+                      className="asset-select"
+                      value={assetExpFilter}
+                      onChange={(e) => setAssetExpFilter(e.target.value)}
+                    >
+                      <option value="All">All Exposures</option>
+                      <option value="Internal">Internal</option>
+                      <option value="DMZ">DMZ</option>
+                      <option value="External">External</option>
+                    </select>
+                  </div>
+
+                  {hasActiveAssetFilters && (
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm asset-reset-btn"
+                      onClick={resetAssetFilters}
+                      title="Clear all filters and search"
+                    >
+                      Reset Filters
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Status bar */}
+              <div className="asset-table-meta">
+                <span className="asset-count-info">
+                  Showing <strong>{filteredAssets.length}</strong> of <strong>{assets.length}</strong> assets
+                  {hasActiveAssetFilters && " (filtered)"}
+                </span>
+              </div>
+
+              {/* Data Table */}
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>IP Address</th>
+                      <th>Hostname / OS</th>
+                      <th>Environment</th>
+                      <th>Criticality</th>
+                      <th>Exposure</th>
+                      <th>Owner / Function</th>
+                      <th>Open Ports</th>
+                      <th>Security Posture</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {assets.length === 0 ? (
+                      <tr>
+                        <td colSpan="9" className="empty-cell">
+                          No assets discovered yet. Run a network scan to populate asset inventory.
+                        </td>
+                      </tr>
+                    ) : filteredAssets.length === 0 ? (
+                      <tr>
+                        <td colSpan="9" className="empty-cell">
+                          No assets match the active search and filter criteria.{" "}
+                          <button
+                            type="button"
+                            className="btn-link"
+                            onClick={resetAssetFilters}
+                          >
+                            Reset filters
+                          </button>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredAssets.map((asset) => {
+                        const ports = parsePortsList(asset.open_ports);
+                        const assetVulns = vulnerabilities.filter((v) => v.asset_id === asset.id);
+                        const critHighVulns = assetVulns.filter((v) =>
+                          ["critical", "high"].includes((v.severity || "").toLowerCase())
+                        ).length;
+                        const assetRisks = risks.filter((r) => r.asset_id === asset.id);
+                        const openRisks = assetRisks.filter(
+                          (r) => (r.status || "Open").toLowerCase() === "open"
+                        );
+                        const unclassified = isAssetUnclassified(asset);
+
+                        return (
+                          <tr key={asset.id}>
+                            <td>
+                              <div className="ip-cell">
+                                <span className={`status-indicator-dot ${asset.status === "Active" || !asset.status ? "dot-green" : "dot-gray"}`} />
+                                <div>
+                                  <strong className="ip-text">{asset.ip_address}</strong>
+                                  <div className="sub-text">ID #{asset.id}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <div>{asset.hostname || <span className="text-muted">Not Available</span>}</div>
+                              <div className="sub-text">{asset.operating_system || "OS not identified"}</div>
+                            </td>
+                            <td>
+                              <span className="badge badge-neutral">
+                                {asset.environment || "Not Specified"}
+                              </span>
+                            </td>
+                            <td>
+                              {unclassified ? (
+                                <span className="badge badge-unclassified" title="Awaiting GRC classification">
+                                  Unclassified
+                                </span>
+                              ) : (
+                                <span className={`badge ${getRiskClass(asset.criticality)}`}>
+                                  {asset.criticality}
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <span className="badge badge-exposure">
+                                {asset.exposure || "Not Specified"}
+                              </span>
+                            </td>
+                            <td>
+                              <div>{asset.owner || <span className="text-muted">Not Assigned</span>}</div>
+                              <div className="sub-text">{asset.business_function || "Not Specified"}</div>
+                            </td>
+                            <td>
+                              {ports.length === 0 ? (
+                                <span className="text-muted">None</span>
+                              ) : (
+                                <div>
+                                  <span className="port-count-pill" title={ports.join(", ")}>
+                                    {ports.length} Open
+                                  </span>
+                                  <div className="ports-preview">
+                                    {ports.slice(0, 2).map((p, idx) => (
+                                      <span key={idx} className="port-tag">
+                                        {p}
+                                      </span>
+                                    ))}
+                                    {ports.length > 2 && (
+                                      <span className="port-tag-more" title={ports.slice(2).join(", ")}>
+                                        +{ports.length - 2}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </td>
+                            <td>
+                              <div className="posture-tags-wrap">
+                                <div className="posture-row">
+                                  {assetVulns.length === 0 ? (
+                                    <span className="posture-chip posture-clean">0 Vulns</span>
+                                  ) : (
+                                    <span
+                                      className={`posture-chip ${critHighVulns > 0 ? "posture-danger" : "posture-warn"}`}
+                                      title={`${assetVulns.length} vulnerabilities (${critHighVulns} Critical/High)`}
+                                    >
+                                      {assetVulns.length} Vuln{assetVulns.length === 1 ? "" : "s"}
+                                      {critHighVulns > 0 ? ` (${critHighVulns} C/H)` : ""}
+                                    </span>
+                                  )}
+                                  {openRisks.length === 0 ? (
+                                    <span className="posture-chip posture-clean">0 Risks</span>
+                                  ) : (
+                                    <span className="posture-chip posture-risk" title={`${openRisks.length} open risks`}>
+                                      {openRisks.length} Risk{openRisks.length === 1 ? "" : "s"}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="posture-risk-rating">
+                                  <span className={`badge ${getRiskClass(asset.risk_level)}`}>
+                                    {asset.risk_level} ({asset.risk_score})
+                                  </span>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <div className="asset-actions-cell">
+                                <button
+                                  type="button"
+                                  className="btn-action-view"
+                                  onClick={() => setViewingAsset(asset)}
+                                  title="View Asset Details"
+                                >
+                                  Details
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-action"
+                                  onClick={() => openAssetModal(asset)}
+                                  title="Edit Asset Intelligence"
+                                >
+                                  Edit
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
+        );
+      })()}
 
       {/* -------------------------------- */}
       {/* RISK MANAGEMENT                */}
@@ -4017,6 +4372,242 @@ function App() {
       {/* ================================ */}
       {/* MODALS (global, outside pages)  */}
       {/* ================================ */}
+
+      {/* -------------------------------- */}
+      {/* MODAL: ASSET DETAILS (Phase 3)   */}
+      {/* -------------------------------- */}
+      {viewingAsset && (
+        <div className="modal-backdrop" onClick={() => setViewingAsset(null)}>
+          <div className="modal-content modal-asset-detail" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3>Asset Details — {viewingAsset.ip_address}</h3>
+                <div className="modal-subtitle">
+                  Asset ID #{viewingAsset.id} • Status: <span className="text-white font-medium">{viewingAsset.status || "Active"}</span> • Last Seen: {formatDateTime(viewingAsset.last_seen)}
+                </div>
+              </div>
+              <button type="button" className="modal-close" onClick={() => setViewingAsset(null)}>×</button>
+            </div>
+
+            <div className="modal-body asset-detail-body">
+              {isAssetUnclassified(viewingAsset) && (
+                <div className="asset-detail-warning">
+                  <span className="unclassified-pill">Unclassified Asset</span>
+                  <span>This host requires classification. Business criticality and ownership remain unassigned until reviewed.</span>
+                </div>
+              )}
+
+              {/* 2-Column Overview Cards */}
+              <div className="asset-detail-grid">
+                {/* Identity & Network */}
+                <div className="asset-detail-card">
+                  <div className="asset-detail-card-title">🖥️ Identity & Network</div>
+                  <div className="kv-row">
+                    <span className="kv-label">IP Address</span>
+                    <span className="kv-val font-mono">{viewingAsset.ip_address}</span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Hostname</span>
+                    <span className="kv-val">{viewingAsset.hostname || <span className="text-muted">Not Available</span>}</span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">MAC Address</span>
+                    <span className="kv-val font-mono">{viewingAsset.mac_address || <span className="text-muted">Not Available</span>}</span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Operating System</span>
+                    <span className="kv-val">{viewingAsset.operating_system || <span className="text-muted">OS not identified</span>}</span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Status</span>
+                    <span className="kv-val">{viewingAsset.status || "Active"}</span>
+                  </div>
+                </div>
+
+                {/* GRC Classification & Context */}
+                <div className="asset-detail-card">
+                  <div className="asset-detail-card-title">⚖️ GRC Classification & Governance</div>
+                  <div className="kv-row">
+                    <span className="kv-label">Business Criticality</span>
+                    <span className="kv-val">
+                      {isAssetUnclassified(viewingAsset) ? (
+                        <span className="badge badge-unclassified">Unclassified</span>
+                      ) : (
+                        <span className={`badge ${getRiskClass(viewingAsset.criticality)}`}>{viewingAsset.criticality}</span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Environment</span>
+                    <span className="kv-val">
+                      <span className="badge badge-neutral">{viewingAsset.environment || "Not Specified"}</span>
+                    </span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Exposure</span>
+                    <span className="kv-val">
+                      <span className="badge badge-exposure">{viewingAsset.exposure || "Not Specified"}</span>
+                    </span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Assigned Owner</span>
+                    <span className="kv-val">{viewingAsset.owner || <span className="text-muted">Not Assigned</span>}</span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Business Function</span>
+                    <span className="kv-val">{viewingAsset.business_function || <span className="text-muted">Not Specified</span>}</span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Risk Rating</span>
+                    <span className="kv-val">
+                      <span className={`badge ${getRiskClass(viewingAsset.risk_level)}`}>
+                        {viewingAsset.risk_level} ({viewingAsset.risk_score})
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Open Ports */}
+              <div className="asset-detail-section">
+                <div className="asset-detail-section-header">
+                  <h4>Open Ports & Detected Services</h4>
+                  <span className="section-count">
+                    {parsePortsList(viewingAsset.open_ports).length} Ports
+                  </span>
+                </div>
+                {(() => {
+                  const ports = parsePortsList(viewingAsset.open_ports);
+                  if (ports.length === 0) {
+                    return <div className="detail-empty-text">No open ports recorded for this asset.</div>;
+                  }
+                  return (
+                    <div className="asset-ports-grid">
+                      {ports.map((portStr, idx) => (
+                        <span key={idx} className="asset-port-pill">
+                          🔌 {portStr}
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Correlated Vulnerabilities */}
+              <div className="asset-detail-section">
+                <div className="asset-detail-section-header">
+                  <h4>Correlated Vulnerabilities</h4>
+                  {(() => {
+                    const vulns = vulnerabilities.filter((v) => v.asset_id === viewingAsset.id);
+                    return <span className="section-count">{vulns.length} Findings</span>;
+                  })()}
+                </div>
+                {(() => {
+                  const vulns = vulnerabilities.filter((v) => v.asset_id === viewingAsset.id);
+                  if (vulns.length === 0) {
+                    return <div className="detail-empty-text">No technical vulnerabilities correlated with this host.</div>;
+                  }
+                  return (
+                    <div className="asset-detail-table-wrap">
+                      <table className="asset-subtable">
+                        <thead>
+                          <tr>
+                            <th>Port / Service</th>
+                            <th>Finding</th>
+                            <th>Severity</th>
+                            <th>CVE</th>
+                            <th>CVSS</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {vulns.map((v) => (
+                            <tr key={v.id}>
+                              <td className="font-mono">{v.port}/{v.service || "unknown"}</td>
+                              <td>{v.title}</td>
+                              <td><span className={`badge ${getRiskClass(v.severity)}`}>{v.severity}</span></td>
+                              <td>{v.cve || <span className="text-muted">Not identified</span>}</td>
+                              <td>{v.cvss_score != null ? `${v.cvss_score} (${v.cvss_version || "v3.1"})` : "—"}</td>
+                              <td><span className={`status-pill ${getStatusClass(v.status)}`}>{v.status}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Enterprise GRC Risks */}
+              <div className="asset-detail-section">
+                <div className="asset-detail-section-header">
+                  <h4>Enterprise GRC Risks</h4>
+                  {(() => {
+                    const assetRisks = risks.filter((r) => r.asset_id === viewingAsset.id);
+                    return <span className="section-count">{assetRisks.length} Risks</span>;
+                  })()}
+                </div>
+                {(() => {
+                  const assetRisks = risks.filter((r) => r.asset_id === viewingAsset.id);
+                  if (assetRisks.length === 0) {
+                    return <div className="detail-empty-text">No GRC risks currently mapped to this asset.</div>;
+                  }
+                  return (
+                    <div className="asset-detail-table-wrap">
+                      <table className="asset-subtable">
+                        <thead>
+                          <tr>
+                            <th>Risk Title</th>
+                            <th>Inherent</th>
+                            <th>Residual</th>
+                            <th>Treatment</th>
+                            <th>Status</th>
+                            <th>Review</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {assetRisks.map((r) => (
+                            <tr key={r.id}>
+                              <td>{r.title}</td>
+                              <td><span className={`badge ${getRiskClass(r.inherent_risk_level)}`}>{r.inherent_risk_level} ({r.inherent_risk_score})</span></td>
+                              <td><span className={`badge ${getRiskClass(r.residual_risk_level)}`}>{r.residual_risk_level} ({r.residual_risk_score})</span></td>
+                              <td><span className="badge badge-treatment">{r.treatment}</span></td>
+                              <td><span className={`status-pill ${getStatusClass(r.status)}`}>{r.status}</span></td>
+                              <td><span className="badge badge-neutral">{r.review_status || "Pending"}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setViewingAsset(null)}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => {
+                  const a = viewingAsset;
+                  setViewingAsset(null);
+                  openAssetModal(a);
+                }}
+              >
+                Edit Intelligence
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {editingAsset && (
         <div className="modal-backdrop" onClick={() => setEditingAsset(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
