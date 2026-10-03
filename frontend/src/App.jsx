@@ -8,31 +8,51 @@ const REPORT_TYPES = [
     id: "executive_summary",
     title: "Executive Summary",
     category: "EXECUTIVE POSTURE",
+    categoryKey: "EXECUTIVE",
     desc: "C-suite strategic overview of organization-wide risk posture, Inherent vs. Residual risk scores, top critical risks, and compliance coverage.",
+    formats: ["json", "csv", "html"],
+    dataPoints: ["Monitored Assets", "Inherent / Residual Scores", "Critical Risk Ratio", "Compliance Readiness %", "AI Advisory Context"],
+    targetAudience: "Board of Directors, CISO, Executive Leadership",
   },
   {
     id: "technical_vulnerabilities",
     title: "Technical Vulnerabilities",
     category: "ATTACK SURFACE",
+    categoryKey: "TECHNICAL",
     desc: "Complete technical inventory of hosts, open ports, correlated CVE findings, CVSS v3.1 scores, and automated vulnerability intelligence.",
+    formats: ["json", "csv", "html"],
+    dataPoints: ["Active IP Inventory", "Open Port Mappings", "CVE Identifiers", "CVSS v3.1 Base Scores", "Remediation Steps"],
+    targetAudience: "Security Engineering, SOC Analysts, System Administrators",
   },
   {
     id: "compliance_gap",
     title: "Compliance Gap Analysis",
     category: "REGULATORY COMPLIANCE",
+    categoryKey: "COMPLIANCE",
     desc: "Readiness assessment mapped against NIST CSF 2.0 and ISO/IEC 27001:2022, detailing control coverage, implemented safeguards, and open gaps.",
+    formats: ["json", "csv", "html"],
+    dataPoints: ["NIST CSF 2.0 Controls", "ISO/IEC 27001:2022 Controls", "Implementation State", "Identified Gaps", "Evidence References"],
+    targetAudience: "Compliance Officers, Internal/External Auditors, GRC Teams",
   },
   {
     id: "risk_register",
     title: "Enterprise Risk Register",
     category: "RISK MANAGEMENT",
+    categoryKey: "RISK",
     desc: "Comprehensive GRC risk register with Likelihood × Impact matrix coordinates, assigned mitigating controls, treatments, and governance review sign-offs.",
+    formats: ["json", "csv", "html"],
+    dataPoints: ["Likelihood × Impact Coordinates", "Mitigating Controls", "Treatment Strategy", "Assigned Owners", "Governance Sign-offs"],
+    targetAudience: "Enterprise Risk Committees, Risk Owners, Security Officers",
   },
   {
     id: "governance_audit",
     title: "Governance Audit Trail",
     category: "AUDIT & EVIDENCE",
+    categoryKey: "AUDIT",
     desc: "Append-only chronological audit log of all administrative actions, human risk reviews, state transitions, and deterministic SHA-256 integrity hashes.",
+    formats: ["json", "csv", "html"],
+    dataPoints: ["Chronological Milestones", "Actor Attribution", "Source Channels", "State Transitions", "SHA-256 Integrity Hashes"],
+    targetAudience: "Forensic Investigators, External Regulators, Compliance Auditors",
   },
 ];
 
@@ -1184,6 +1204,9 @@ function App() {
   // 5. Reports Export Center State
   const [downloadingReport, setDownloadingReport] = useState(null); // { type, format } | null
   const [reportDownloadError, setReportDownloadError] = useState(null);
+  const [reportSearchQuery, setReportSearchQuery] = useState("");
+  const [reportCategoryFilter, setReportCategoryFilter] = useState("ALL");
+  const [lastExportedReport, setLastExportedReport] = useState(null); // { filename, reportType, format, timestamp } | null
 
   // ----------------------------------------
   // Navigation State
@@ -2224,6 +2247,12 @@ function App() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      setLastExportedReport({
+        filename,
+        reportType,
+        format,
+        timestamp: new Date().toISOString(),
+      });
     } catch (err) {
       setReportDownloadError(`Download failed for ${reportType} (${format}): ${err.message}`);
     } finally {
@@ -7311,72 +7340,331 @@ function App() {
       {/* ------------------------------------------------ */}
       {/* REPORTS PANEL                                   */}
       {/* ------------------------------------------------ */}
-      {activePage === "reports" && (
-      <section className="panel governance-panel">
-        <div className="panel-header governance-panel-header">
-          <div>
-            <div className="gov-tag">REGULATORY & COMPLIANCE EXPORTS</div>
-            <h2>Export Reports</h2>
-            <p className="panel-desc">
-              Generate and download executive, technical, and regulatory reports across multiple formats (JSON, CSV, HTML).
-            </p>
-          </div>
-        </div>
+      {activePage === "reports" && (() => {
+        const activeOperatorName = reviewForm.reviewer_name.trim() || "Security Analyst";
+        const activeOperatorRole = reviewForm.reviewer_role.trim() || "GRC Operator";
 
-        <div className="gov-tab-content">
-          {reportDownloadError && (
-            <div className="monitoring-error-banner" style={{ marginBottom: "16px" }}>
-              <span>⚠ {reportDownloadError}</span>
-              <button className="btn-link" onClick={() => setReportDownloadError(null)}>Dismiss</button>
-            </div>
-          )}
+        const categories = [
+          { key: "ALL", label: "All Suites" },
+          { key: "EXECUTIVE", label: "Executive Posture" },
+          { key: "TECHNICAL", label: "Attack Surface" },
+          { key: "COMPLIANCE", label: "Regulatory Compliance" },
+          { key: "RISK", label: "Risk Management" },
+          { key: "AUDIT", label: "Audit & Evidence" },
+        ];
 
-          <div className="reports-grid">
-            {REPORT_TYPES.map((rep) => (
-              <div key={rep.id} className="report-card">
-                <div>
-                  <div className="report-card-tag">{rep.category}</div>
-                  <div className="report-card-title">{rep.title}</div>
-                  <p className="report-card-desc">{rep.desc}</p>
+        const filteredReports = REPORT_TYPES.filter((rep) => {
+          const matchesCategory =
+            reportCategoryFilter === "ALL" || rep.categoryKey === reportCategoryFilter;
+          const q = reportSearchQuery.trim().toLowerCase();
+          const matchesSearch =
+            !q ||
+            rep.title.toLowerCase().includes(q) ||
+            rep.category.toLowerCase().includes(q) ||
+            rep.desc.toLowerCase().includes(q) ||
+            rep.targetAudience.toLowerCase().includes(q) ||
+            rep.dataPoints.some((dp) => dp.toLowerCase().includes(q));
+          return matchesCategory && matchesSearch;
+        });
+
+        const activeDownloadingTitle = downloadingReport
+          ? REPORT_TYPES.find((r) => r.id === downloadingReport.type)?.title || downloadingReport.type
+          : "";
+
+        return (
+          <section className="reports-workspace">
+            {/* Header Section */}
+            <div className="reports-header-card">
+              <div className="reports-header-info">
+                <div className="gov-tag">GOVERNANCE, RISK & COMPLIANCE REPORTING</div>
+                <h2 className="reports-header-title">Reports & Regulatory Exports</h2>
+                <p className="reports-header-desc">
+                  Generate and download authoritative GRC report artifacts across machine-readable JSON, tabular CSV,
+                  and formatted executive HTML formats. Export operations are automatically attributed to the operator
+                  and recorded in the platform Audit Trail.
+                </p>
+              </div>
+              <div className="reports-operator-badge-box">
+                <div className="reports-operator-badge-label">EXPORT OPERATOR IDENTITY</div>
+                <div className="reports-operator-badge-name">
+                  <span className="operator-dot" />
+                  <strong>{activeOperatorName}</strong>
                 </div>
-                <div className="report-card-actions">
-                  <button
-                    className="btn-format btn-format-json"
-                    disabled={downloadingReport?.type === rep.id}
-                    onClick={() => handleExportReport(rep.id, "json")}
-                    title="Export structured JSON report"
-                  >
-                    {downloadingReport?.type === rep.id && downloadingReport?.format === "json"
-                      ? "Exporting..."
-                      : "JSON"}
-                  </button>
-                  <button
-                    className="btn-format btn-format-csv"
-                    disabled={downloadingReport?.type === rep.id}
-                    onClick={() => handleExportReport(rep.id, "csv")}
-                    title="Export tabular CSV report"
-                  >
-                    {downloadingReport?.type === rep.id && downloadingReport?.format === "csv"
-                      ? "Exporting..."
-                      : "CSV"}
-                  </button>
-                  <button
-                    className="btn-format btn-format-html"
-                    disabled={downloadingReport?.type === rep.id}
-                    onClick={() => handleExportReport(rep.id, "html")}
-                    title="Export formatted HTML report"
-                  >
-                    {downloadingReport?.type === rep.id && downloadingReport?.format === "html"
-                      ? "Exporting..."
-                      : "HTML"}
-                  </button>
+                <div className="reports-operator-badge-role">{activeOperatorRole}</div>
+                <div className="reports-operator-badge-meta">Attributed via X-Operator HTTP headers</div>
+              </div>
+            </div>
+
+            {/* Capabilities & Information Ribbon */}
+            <div className="reports-capabilities-ribbon">
+              <div className="reports-capability-card">
+                <div className="capability-icon">📊</div>
+                <div className="capability-content">
+                  <div className="capability-title">Report Suites</div>
+                  <div className="capability-val">5 Formal Suites</div>
+                  <div className="capability-desc">Executive, vulnerabilities, compliance, risk, and audit trail</div>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-      </section>
-      )}
+              <div className="reports-capability-card">
+                <div className="capability-icon">📁</div>
+                <div className="capability-content">
+                  <div className="capability-title">Supported Formats</div>
+                  <div className="capability-val">JSON • CSV • HTML</div>
+                  <div className="capability-desc">Structured API data, spreadsheets, and styled executive docs</div>
+                </div>
+              </div>
+              <div className="reports-capability-card">
+                <div className="capability-icon">🛡</div>
+                <div className="capability-content">
+                  <div className="capability-title">Audit Trail Traceability</div>
+                  <div className="capability-val">Append-Only Logging</div>
+                  <div className="capability-desc">Exports are recorded in the Audit Trail by the backend</div>
+                </div>
+              </div>
+              <div className="reports-capability-card">
+                <div className="capability-icon">⚖</div>
+                <div className="capability-content">
+                  <div className="capability-title">Governance Boundary</div>
+                  <div className="capability-val">Authoritative vs. Advisory</div>
+                  <div className="capability-desc">Deterministic calculations partitioned from AI recommendations</div>
+                </div>
+              </div>
+            </div>
+
+            {/* In-Session Download Feedback & Errors */}
+            {reportDownloadError && (
+              <div className="reports-feedback-banner reports-error-banner">
+                <span className="reports-feedback-icon">⚠</span>
+                <div className="reports-feedback-body">
+                  <strong>Export Error:</strong> {reportDownloadError}
+                </div>
+                <button
+                  type="button"
+                  className="btn-link reports-dismiss-btn"
+                  onClick={() => setReportDownloadError(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {lastExportedReport && !reportDownloadError && (
+              <div className="reports-feedback-banner reports-success-banner">
+                <span className="reports-feedback-icon">✓</span>
+                <div className="reports-feedback-body">
+                  <div className="reports-success-headline">
+                    Download Completed: <code>{lastExportedReport.filename}</code>
+                  </div>
+                  <div className="reports-feedback-sub">
+                    Export format: <strong>{lastExportedReport.format.toUpperCase()}</strong> • Generated at{" "}
+                    {formatDateTime(lastExportedReport.timestamp)} • Recorded by backend in the Audit Trail with operator attribution.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-link reports-dismiss-btn"
+                  onClick={() => setLastExportedReport(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {downloadingReport && (
+              <div className="reports-feedback-banner reports-progress-banner">
+                <span className="reports-spinner" />
+                <div className="reports-feedback-body">
+                  <div className="reports-progress-headline">
+                    Compiling <strong>{activeDownloadingTitle}</strong> in{" "}
+                    <strong>{downloadingReport.format.toUpperCase()}</strong> format...
+                  </div>
+                  <div className="reports-feedback-sub">
+                    Please wait while the backend prepares records and triggers your browser download.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Workspace Controls: Category Filter Pills & Search */}
+            <div className="reports-controls-bar">
+              <div className="reports-category-pills">
+                {categories.map((cat) => {
+                  const count =
+                    cat.key === "ALL"
+                      ? REPORT_TYPES.length
+                      : REPORT_TYPES.filter((r) => r.categoryKey === cat.key).length;
+                  return (
+                    <button
+                      key={cat.key}
+                      type="button"
+                      className={`reports-cat-pill ${reportCategoryFilter === cat.key ? "active" : ""}`}
+                      onClick={() => setReportCategoryFilter(cat.key)}
+                    >
+                      {cat.label} <span className="cat-count">({count})</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="reports-search-box">
+                <span className="reports-search-icon">🔍</span>
+                <input
+                  type="text"
+                  className="reports-search-input"
+                  placeholder="Search suites by name, description, or data fields..."
+                  value={reportSearchQuery}
+                  onChange={(e) => setReportSearchQuery(e.target.value)}
+                />
+                {reportSearchQuery && (
+                  <button
+                    type="button"
+                    className="reports-clear-search-btn"
+                    onClick={() => setReportSearchQuery("")}
+                    title="Clear search query"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="reports-results-meta">
+              Showing <strong>{filteredReports.length}</strong> of {REPORT_TYPES.length} governance report suites
+              {reportSearchQuery && (
+                <span>
+                  {" "}
+                  matching &ldquo;<strong>{reportSearchQuery}</strong>&rdquo;
+                </span>
+              )}
+              {reportCategoryFilter !== "ALL" && (
+                <span>
+                  {" "}
+                  in <strong>{categories.find((c) => c.key === reportCategoryFilter)?.label}</strong>
+                </span>
+              )}
+            </div>
+
+            {/* Report Suites Grid */}
+            <div className="reports-cards-grid">
+              {filteredReports.map((rep) => {
+                const isDownloadingThisReport = downloadingReport?.type === rep.id;
+                return (
+                  <div key={rep.id} className="reports-suite-card">
+                    <div className="reports-suite-card-top">
+                      <div className="reports-suite-top-row">
+                        <span className={`reports-suite-badge badge-${rep.categoryKey.toLowerCase()}`}>
+                          {rep.category}
+                        </span>
+                        <span className="reports-audience-tag">
+                          {rep.targetAudience}
+                        </span>
+                      </div>
+                      <h3 className="reports-suite-title">{rep.title}</h3>
+                      <p className="reports-suite-desc">{rep.desc}</p>
+                    </div>
+
+                    <div className="reports-suite-dimensions">
+                      <div className="reports-dim-label">Aggregated Data Dimensions:</div>
+                      <div className="reports-dim-chips">
+                        {rep.dataPoints.map((dp, idx) => (
+                          <span key={idx} className="reports-dim-chip">
+                            {dp}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="reports-suite-footer">
+                      <div className="reports-export-row-header">
+                        <span className="reports-export-label">Export Format:</span>
+                        <span className="reports-export-hint">
+                          {isDownloadingThisReport ? "Download in progress..." : "Select format to download"}
+                        </span>
+                      </div>
+                      <div className="reports-format-btn-group">
+                        {rep.formats.map((fmt) => {
+                          const isCurrentFmtDownloading =
+                            isDownloadingThisReport && downloadingReport.format === fmt;
+                          return (
+                            <button
+                              key={fmt}
+                              type="button"
+                              className={`reports-btn-fmt fmt-${fmt} ${
+                                isCurrentFmtDownloading ? "btn-generating" : ""
+                              }`}
+                              disabled={Boolean(downloadingReport)}
+                              onClick={() => handleExportReport(rep.id, fmt)}
+                              title={`Export ${rep.title} in ${fmt.toUpperCase()} format`}
+                            >
+                              {isCurrentFmtDownloading ? (
+                                <>
+                                  <span className="btn-spinner" />
+                                  <span>Exporting...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="fmt-icon-badge">{fmt.toUpperCase()}</span>
+                                  <span className="fmt-name">{fmt.toUpperCase()}</span>
+                                </>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {filteredReports.length === 0 && (
+                <div className="reports-empty-state">
+                  <div className="reports-empty-icon">📂</div>
+                  <h3>No Report Suites Match Your Filter</h3>
+                  <p>No governance report suites match the current search query or category filter.</p>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setReportSearchQuery("");
+                      setReportCategoryFilter("ALL");
+                    }}
+                  >
+                    Reset Filters
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Architecture & Audit Information Panel */}
+            <div className="reports-info-panel">
+              <div className="reports-info-card">
+                <div className="reports-info-icon">🛡</div>
+                <h4>Tamper-Evident Audit Logging</h4>
+                <p>
+                  Every report export action is recorded by the backend as an <code>EXPORT</code> event in the
+                  append-only Audit Trail, capturing operator identity, timestamp, and requested format.
+                </p>
+              </div>
+              <div className="reports-info-card">
+                <div className="reports-info-icon">⚖</div>
+                <h4>Authoritative vs. Advisory Separation</h4>
+                <p>
+                  Generated JSON and HTML reports cleanly partition deterministic risk scores and formal compliance
+                  controls from automated AI advisory recommendations.
+                </p>
+              </div>
+              <div className="reports-info-card">
+                <div className="reports-info-icon">📋</div>
+                <h4>Standard Compliance Disclaimer</h4>
+                <p>
+                  All exports include formal disclaimers identifying the assessment as point-in-time security intelligence
+                  to support regulatory, internal audit, and executive oversight.
+                </p>
+              </div>
+            </div>
+          </section>
+        );
+      })()}
 
         </div>{/* end page-content */}
       </div>{/* end main-content */}
