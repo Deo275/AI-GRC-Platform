@@ -1137,7 +1137,13 @@ function App() {
   const [govReviews, setGovReviews] = useState([]);
   const [govReviewsLoading, setGovReviewsLoading] = useState(false);
   const [govReviewsError, setGovReviewsError] = useState(null);
-  const [govQueueFilter, setGovQueueFilter] = useState("All");
+
+  // Phase 8: Reviews & Sign-off State
+  const [reviewsSubTab, setReviewsSubTab] = useState("queue"); // "queue" | "all"
+  const [reviewsSearchQuery, setReviewsSearchQuery] = useState("");
+  const [reviewsStatusFilter, setReviewsStatusFilter] = useState("All");
+  const [reviewsLevelFilter, setReviewsLevelFilter] = useState("All");
+  const [reviewsTreatmentFilter, setReviewsTreatmentFilter] = useState("All");
 
   // 2. Audit Trail
   const [auditLogs, setAuditLogs] = useState([]);
@@ -2230,17 +2236,15 @@ function App() {
     }
   };
 
-  const filteredGovQueue = govReviews.filter((item) => {
-    if (govQueueFilter === "All") return true;
-    return item.review_status === govQueueFilter;
-  });
-
   // ----------------------------------------
   // Navigation Helpers
   // ----------------------------------------
   const handleNavClick = (page) => {
     setActivePage(page);
-    if (page === "reviews") setGovActiveTab("queue");
+    if (page === "reviews") {
+      setGovActiveTab("queue");
+      setReviewsSubTab("queue");
+    }
     else if (page === "audit") {
       setGovActiveTab("audit");
       if (auditLogs.length === 0) fetchAuditLogs(0, auditSourceFilter, auditActionFilter);
@@ -6349,74 +6353,540 @@ function App() {
       })()}
 
       {/* ------------------------------------------------ */}
-      {/* GOVERNANCE: REVIEWS, AUDIT & REPORTS            */}
+      {/* PHASE 8: REVIEWS & SIGN-OFF WORKSPACE           */}
       {/* ------------------------------------------------ */}
-      {(activePage === "reviews" || activePage === "audit" || activePage === "reports") && (
+      {activePage === "reviews" && (() => {
+        // 1. KPI Calculations strictly from application state
+        const attentionCount = risks.filter((r) => ["Pending Review", "Stale", "Changes Requested"].includes(r.review_status)).length;
+        const pendingCount = risks.filter((r) => r.review_status === "Pending Review").length;
+        const staleCount = risks.filter((r) => r.review_status === "Stale").length;
+        const changesCount = risks.filter((r) => r.review_status === "Changes Requested").length;
+        const approvedCount = risks.filter((r) => r.review_status === "Approved").length;
+        const rejectedCount = risks.filter((r) => r.review_status === "Rejected").length;
+
+        // Pending endpoint specific counts (Attention Queue)
+        const pendingGovCount = govReviews.filter((e) => e.review_status === "Pending Review").length;
+        const staleGovCount = govReviews.filter((e) => e.review_status === "Stale").length;
+        const changesGovCount = govReviews.filter((e) => e.review_status === "Changes Requested").length;
+
+        // Lookup map for govReviews items
+        const govReviewMap = new Map(govReviews.map((item) => [item.risk.id, item]));
+
+        // 2. Filter logic
+        let displayedItems;
+        if (reviewsSubTab === "queue") {
+          displayedItems = govReviews.filter((item) => {
+            const r = item.risk;
+            const asset = assets.find((a) => a.id === r.asset_id);
+            const status = item.review_status || r.review_status || "Pending Review";
+
+            if (reviewsStatusFilter !== "All" && status !== reviewsStatusFilter) {
+              return false;
+            }
+
+            if (reviewsLevelFilter !== "All") {
+              const level = (r.residual_risk_level || r.inherent_risk_level || "").toLowerCase();
+              if (level !== reviewsLevelFilter.toLowerCase()) return false;
+            }
+
+            if (reviewsTreatmentFilter !== "All") {
+              const treatment = (r.treatment || "").toLowerCase();
+              if (treatment !== reviewsTreatmentFilter.toLowerCase()) return false;
+            }
+
+            if (reviewsSearchQuery.trim()) {
+              const q = reviewsSearchQuery.trim().toLowerCase();
+              const titleMatch = (r.title || "").toLowerCase().includes(q);
+              const idMatch = String(r.id).includes(q);
+              const ipMatch = asset && (asset.ip_address || "").toLowerCase().includes(q);
+              const hostMatch = asset && (asset.hostname || "").toLowerCase().includes(q);
+              const treatMatch = (r.treatment || "").toLowerCase().includes(q);
+              const statusMatch = status.toLowerCase().includes(q);
+              if (!titleMatch && !idMatch && !ipMatch && !hostMatch && !treatMatch && !statusMatch) {
+                return false;
+              }
+            }
+
+            return true;
+          });
+        } else {
+          displayedItems = risks.filter((r) => {
+            const asset = assets.find((a) => a.id === r.asset_id);
+            const status = r.review_status || "Pending Review";
+
+            if (reviewsStatusFilter !== "All" && status !== reviewsStatusFilter) {
+              return false;
+            }
+
+            if (reviewsLevelFilter !== "All") {
+              const level = (r.residual_risk_level || r.inherent_risk_level || "").toLowerCase();
+              if (level !== reviewsLevelFilter.toLowerCase()) return false;
+            }
+
+            if (reviewsTreatmentFilter !== "All") {
+              const treatment = (r.treatment || "").toLowerCase();
+              if (treatment !== reviewsTreatmentFilter.toLowerCase()) return false;
+            }
+
+            if (reviewsSearchQuery.trim()) {
+              const q = reviewsSearchQuery.trim().toLowerCase();
+              const titleMatch = (r.title || "").toLowerCase().includes(q);
+              const idMatch = String(r.id).includes(q);
+              const ipMatch = asset && (asset.ip_address || "").toLowerCase().includes(q);
+              const hostMatch = asset && (asset.hostname || "").toLowerCase().includes(q);
+              const treatMatch = (r.treatment || "").toLowerCase().includes(q);
+              const statusMatch = status.toLowerCase().includes(q);
+              const catMatch = (r.category || "").toLowerCase().includes(q);
+              if (!titleMatch && !idMatch && !ipMatch && !hostMatch && !treatMatch && !statusMatch && !catMatch) {
+                return false;
+              }
+            }
+
+            return true;
+          });
+        }
+
+        const isFiltered = reviewsSearchQuery.trim() !== "" || reviewsStatusFilter !== "All" || reviewsLevelFilter !== "All" || reviewsTreatmentFilter !== "All";
+        const totalBaseCount = reviewsSubTab === "queue" ? govReviews.length : risks.length;
+
+        const handleResetFilters = () => {
+          setReviewsSearchQuery("");
+          setReviewsStatusFilter("All");
+          setReviewsLevelFilter("All");
+          setReviewsTreatmentFilter("All");
+        };
+
+        return (
+          <section className="panel reviews-panel">
+            {/* Header */}
+            <div className="reviews-page-header">
+              <div className="reviews-header-left">
+                <div className="reviews-badge-tag">GOVERNANCE & SIGN-OFF WORKFLOW</div>
+                <h2>Reviews & Sign-off</h2>
+                <p className="reviews-header-desc">
+                  Human-in-the-loop risk sign-offs, dynamic staleness invalidation tracking, treatment approval workflows, and immutable review audit histories.
+                </p>
+              </div>
+              <div className="reviews-header-actions">
+                <button
+                  className="btn-secondary btn-sm"
+                  onClick={() => {
+                    fetchGovReviews();
+                    fetchRisks();
+                  }}
+                  title="Refresh governance reviews and risks"
+                >
+                  ↻ Refresh Reviews
+                </button>
+              </div>
+            </div>
+
+            {/* KPI Summary Grid (6 cards) */}
+            <div className="reviews-kpi-grid">
+              <div
+                className={`reviews-kpi-card ${reviewsSubTab === "queue" && reviewsStatusFilter === "All" ? "kpi-card-active" : ""}`}
+                onClick={() => {
+                  setReviewsSubTab("queue");
+                  setReviewsStatusFilter("All");
+                }}
+                title="Click to view Attention Queue"
+              >
+                <div className="reviews-kpi-header">
+                  <span className="reviews-kpi-icon kpi-icon-amber">🛡️</span>
+                  <span className="reviews-kpi-badge badge-attention">Attention Queue</span>
+                </div>
+                <div className="reviews-kpi-value highlight-amber">{attentionCount}</div>
+                <div className="reviews-kpi-label">Pending, Stale, or Changes</div>
+              </div>
+
+              <div
+                className={`reviews-kpi-card ${reviewsStatusFilter === "Pending Review" ? "kpi-card-active" : ""}`}
+                onClick={() => {
+                  setReviewsSubTab("queue");
+                  setReviewsStatusFilter("Pending Review");
+                }}
+                title="Click to filter by Pending Review"
+              >
+                <div className="reviews-kpi-header">
+                  <span className="reviews-kpi-icon kpi-icon-amber">⏳</span>
+                  <span className="reviews-kpi-badge badge-pending">Pending Review</span>
+                </div>
+                <div className="reviews-kpi-value highlight-amber">{pendingCount}</div>
+                <div className="reviews-kpi-label">Awaiting initial sign-off</div>
+              </div>
+
+              <div
+                className={`reviews-kpi-card ${reviewsStatusFilter === "Stale" ? "kpi-card-active" : ""}`}
+                onClick={() => {
+                  setReviewsSubTab("queue");
+                  setReviewsStatusFilter("Stale");
+                }}
+                title="Click to filter by Stale Baselines"
+              >
+                <div className="reviews-kpi-header">
+                  <span className="reviews-kpi-icon kpi-icon-orange">⚠</span>
+                  <span className="reviews-kpi-badge badge-stale-kpi">Stale Baselines</span>
+                </div>
+                <div className="reviews-kpi-value highlight-orange">{staleCount}</div>
+                <div className="reviews-kpi-label">Invalidated by drift/changes</div>
+              </div>
+
+              <div
+                className={`reviews-kpi-card ${reviewsStatusFilter === "Changes Requested" ? "kpi-card-active" : ""}`}
+                onClick={() => {
+                  setReviewsSubTab("queue");
+                  setReviewsStatusFilter("Changes Requested");
+                }}
+                title="Click to filter by Changes Requested"
+              >
+                <div className="reviews-kpi-header">
+                  <span className="reviews-kpi-icon kpi-icon-purple">💬</span>
+                  <span className="reviews-kpi-badge badge-changes-kpi">Changes Requested</span>
+                </div>
+                <div className="reviews-kpi-value highlight-purple">{changesCount}</div>
+                <div className="reviews-kpi-label">Treatment revision needed</div>
+              </div>
+
+              <div
+                className={`reviews-kpi-card ${reviewsSubTab === "all" && reviewsStatusFilter === "Approved" ? "kpi-card-active" : ""}`}
+                onClick={() => {
+                  setReviewsSubTab("all");
+                  setReviewsStatusFilter("Approved");
+                }}
+                title="Click to view Approved Sign-offs"
+              >
+                <div className="reviews-kpi-header">
+                  <span className="reviews-kpi-icon kpi-icon-green">✅</span>
+                  <span className="reviews-kpi-badge badge-approved-kpi">Approved</span>
+                </div>
+                <div className="reviews-kpi-value highlight-green">{approvedCount}</div>
+                <div className="reviews-kpi-label">Active certified baselines</div>
+              </div>
+
+              <div
+                className={`reviews-kpi-card ${reviewsSubTab === "all" && reviewsStatusFilter === "Rejected" ? "kpi-card-active" : ""}`}
+                onClick={() => {
+                  setReviewsSubTab("all");
+                  setReviewsStatusFilter("Rejected");
+                }}
+                title="Click to view Rejected Reviews"
+              >
+                <div className="reviews-kpi-header">
+                  <span className="reviews-kpi-icon kpi-icon-red">⛔</span>
+                  <span className="reviews-kpi-badge badge-rejected-kpi">Rejected</span>
+                </div>
+                <div className="reviews-kpi-value highlight-critical">{rejectedCount}</div>
+                <div className="reviews-kpi-label">Remediation unapproved</div>
+              </div>
+            </div>
+
+            {/* Sub-View Navigation Tabs */}
+            <div className="reviews-sub-nav">
+              <button
+                className={`reviews-tab-btn ${reviewsSubTab === "queue" ? "active" : ""}`}
+                onClick={() => {
+                  setReviewsSubTab("queue");
+                  setReviewsStatusFilter("All");
+                }}
+              >
+                <span className="reviews-tab-label">Attention Queue</span>
+                <span className="reviews-tab-pill">{govReviews.length}</span>
+              </button>
+              <button
+                className={`reviews-tab-btn ${reviewsSubTab === "all" ? "active" : ""}`}
+                onClick={() => {
+                  setReviewsSubTab("all");
+                  setReviewsStatusFilter("All");
+                }}
+              >
+                <span className="reviews-tab-label">All Enterprise Reviews</span>
+                <span className="reviews-tab-pill">{risks.length}</span>
+              </button>
+            </div>
+
+            {/* Filter and Search Controls Bar */}
+            <div className="reviews-controls-bar">
+              <div className="reviews-search-wrap">
+                <span className="reviews-search-icon">🔍</span>
+                <input
+                  type="text"
+                  className="reviews-search-input"
+                  placeholder="Search by risk title, ID, IP address, treatment..."
+                  value={reviewsSearchQuery}
+                  onChange={(e) => setReviewsSearchQuery(e.target.value)}
+                />
+                {reviewsSearchQuery && (
+                  <button
+                    className="reviews-search-clear"
+                    onClick={() => setReviewsSearchQuery("")}
+                    title="Clear search query"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+
+              <div className="filter-group">
+                <label>Status:</label>
+                <select
+                  className="select-filter"
+                  value={reviewsStatusFilter}
+                  onChange={(e) => setReviewsStatusFilter(e.target.value)}
+                >
+                  {reviewsSubTab === "queue" ? (
+                    <>
+                      <option value="All">All Attention Items ({govReviews.length})</option>
+                      <option value="Pending Review">Pending Review ({pendingGovCount})</option>
+                      <option value="Stale">Stale Reviews ({staleGovCount})</option>
+                      <option value="Changes Requested">Changes Requested ({changesGovCount})</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="All">All Review Statuses ({risks.length})</option>
+                      <option value="Pending Review">Pending Review ({pendingCount})</option>
+                      <option value="Approved">Approved ({approvedCount})</option>
+                      <option value="Stale">Stale ({staleCount})</option>
+                      <option value="Changes Requested">Changes Requested ({changesCount})</option>
+                      <option value="Rejected">Rejected ({rejectedCount})</option>
+                    </>
+                  )}
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <label>Risk Level:</label>
+                <select
+                  className="select-filter"
+                  value={reviewsLevelFilter}
+                  onChange={(e) => setReviewsLevelFilter(e.target.value)}
+                >
+                  <option value="All">All Risk Levels</option>
+                  <option value="Critical">Critical</option>
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <label>Treatment:</label>
+                <select
+                  className="select-filter"
+                  value={reviewsTreatmentFilter}
+                  onChange={(e) => setReviewsTreatmentFilter(e.target.value)}
+                >
+                  <option value="All">All Treatments</option>
+                  <option value="Mitigate">Mitigate</option>
+                  <option value="Accept">Accept</option>
+                  <option value="Transfer">Transfer</option>
+                  <option value="Avoid">Avoid</option>
+                </select>
+              </div>
+
+              {isFiltered && (
+                <button
+                  className="btn-secondary btn-sm"
+                  onClick={handleResetFilters}
+                  title="Clear all filters and search query"
+                >
+                  ✕ Reset Filters
+                </button>
+              )}
+
+              <div className="reviews-count-summary">
+                Showing {displayedItems.length} of {totalBaseCount} {reviewsSubTab === "queue" ? "attention items" : "risks"}
+              </div>
+            </div>
+
+            {/* Table or States */}
+            {govReviewsLoading && govReviews.length === 0 ? (
+              <div className="monitoring-loading-box">
+                <span className="ai-spinner" /> Loading governance review queue...
+              </div>
+            ) : govReviewsError ? (
+              <div className="monitoring-error-box">
+                <div>⚠ {govReviewsError}</div>
+                <button className="btn-secondary btn-sm" onClick={fetchGovReviews}>Retry</button>
+              </div>
+            ) : displayedItems.length === 0 ? (
+              <div className="gov-empty-box">
+                <div className="empty-icon">{isFiltered ? "🔍" : (reviewsSubTab === "queue" ? "🛡️" : "📋")}</div>
+                <div>
+                  <strong>
+                    {isFiltered
+                      ? "No matching review items found"
+                      : (reviewsSubTab === "queue" ? "Attention Queue Clear" : "No Enterprise Risks Found")}
+                  </strong>
+                </div>
+                <div className="sub-text">
+                  {isFiltered
+                    ? "No items matched your current filter criteria or search keyword."
+                    : (reviewsSubTab === "queue"
+                        ? "All identified risks have an active human governance sign-off or no items require immediate attention."
+                        : "No risks have been registered in the enterprise risk inventory.")}
+                </div>
+                {isFiltered && (
+                  <button className="btn-secondary btn-sm" onClick={handleResetFilters}>
+                    Reset Filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Risk Title & ID</th>
+                      <th>Asset / Target</th>
+                      <th>Inherent Risk</th>
+                      <th>Residual Risk</th>
+                      <th>Review Status</th>
+                      <th>Treatment</th>
+                      <th>Due Date</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayedItems.map((item) => {
+                      const r = reviewsSubTab === "queue" ? item.risk : item;
+                      const reviewStatus = reviewsSubTab === "queue" ? item.review_status : (r.review_status || "Pending Review");
+                      const currentReview = reviewsSubTab === "queue" ? item.current_review : govReviewMap.get(r.id)?.current_review;
+                      const asset = assets.find((a) => a.id === r.asset_id);
+
+                      return (
+                        <Fragment key={r.id}>
+                          <tr>
+                            <td style={{ minWidth: "220px" }}>
+                              <div className="font-semibold text-white">{r.title}</div>
+                              <div className="sub-text" style={{ display: "flex", gap: "6px", alignItems: "center", marginTop: "2px" }}>
+                                <span>Risk #{r.id}</span>
+                                {r.category && <span className="reviews-cat-pill">{r.category}</span>}
+                              </div>
+                            </td>
+                            <td>
+                              <span className="ip-pill">
+                                {asset ? asset.ip_address : (r.asset_id ? `Asset #${r.asset_id}` : "—")}
+                              </span>
+                              {asset?.hostname && (
+                                <div className="sub-text">{asset.hostname}</div>
+                              )}
+                            </td>
+                            <td>
+                              <span className={`badge ${getRiskClass(r.inherent_risk_level)}`}>
+                                {r.inherent_risk_level || "Medium"} ({r.inherent_risk_score || r.risk_score})
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`badge ${getRiskClass(r.residual_risk_level)}`}>
+                                {r.residual_risk_level || "Medium"} ({r.residual_risk_score != null ? r.residual_risk_score : (r.risk_score || "—")})
+                              </span>
+                            </td>
+                            <td>
+                              {getReviewStatusBadge(reviewStatus)}
+                            </td>
+                            <td>
+                              <span className="badge badge-treatment">
+                                {r.treatment || "Mitigate"}
+                              </span>
+                            </td>
+                            <td>
+                              <span className="text-xs text-slate">
+                                {r.due_date ? new Date(r.due_date).toLocaleDateString() : "—"}
+                              </span>
+                            </td>
+                            <td>
+                              <div className="action-buttons-group">
+                                <button
+                                  className="btn-action btn-action-primary"
+                                  onClick={() => openSubmitReviewModal(r)}
+                                  title="Submit Human Sign-Off Decision"
+                                >
+                                  Submit Sign-Off
+                                </button>
+                                <button
+                                  className="btn-action"
+                                  onClick={() => openReviewHistoryModal(r)}
+                                  title="View Review History"
+                                >
+                                  View History
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+
+                          {reviewStatus === "Stale" && (
+                            <tr className="stale-callout-row">
+                              <td colSpan="8" style={{ padding: "0 16px 12px 16px", background: "transparent" }}>
+                                <div className="gov-stale-callout">
+                                  <span className="stale-callout-icon">⚠</span>
+                                  <div>
+                                    <strong>Review Invalidation (Stale Baseline):</strong>
+                                    {currentReview?.stale_reasons && currentReview.stale_reasons.length > 0 ? (
+                                      <ul className="stale-reasons-list">
+                                        {currentReview.stale_reasons.map((reason, idx) => (
+                                          <li key={idx}>{reason}</li>
+                                        ))}
+                                      </ul>
+                                    ) : (
+                                      <div className="sub-text" style={{ color: "#fef08a", marginTop: "4px" }}>
+                                        Technical baseline changes (drift, port status, or CVSS update) invalidated the previous sign-off.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+
+                          {reviewStatus === "Changes Requested" && (
+                            <tr className="changes-callout-row">
+                              <td colSpan="8" style={{ padding: "0 16px 12px 16px", background: "transparent" }}>
+                                <div className="gov-changes-requested-callout">
+                                  <span className="changes-callout-icon">💬</span>
+                                  <div>
+                                    <strong>Changes Requested:</strong>{" "}
+                                    {currentReview?.comments || "Additional mitigating controls or treatment revisions requested by reviewer."}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        );
+      })()}
+
+      {/* ------------------------------------------------ */}
+      {/* GOVERNANCE: AUDIT TRAIL & REPORTS               */}
+      {/* ------------------------------------------------ */}
+      {(activePage === "audit" || activePage === "reports") && (
       <section className="panel governance-panel">
         <div className="panel-header governance-panel-header">
           <div>
-            <div className="gov-tag">PHASE 6: HUMAN GOVERNANCE & AUDIT TRAIL</div>
-            <h2>Governance Review Center</h2>
+            <div className="gov-tag">GOVERNANCE, AUDIT & REPORTING</div>
+            <h2>Governance Audit & Reports</h2>
             <p className="panel-desc">
-              Human-in-the-loop risk sign-offs, dynamic staleness invalidation, tamper-evident audit logging with SHA-256 integrity hashes, and regulatory report exports.
+              Tamper-evident audit logging with SHA-256 integrity hashes, actor attribution, and regulatory report exports.
             </p>
           </div>
           <div className="gov-header-actions">
             <button
               className="btn-secondary btn-sm"
               onClick={() => {
-                fetchGovReviews();
                 if (govActiveTab === "audit") {
                   fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter);
                 }
               }}
-              title="Refresh Governance reviews and feeds"
+              title="Refresh Governance feeds"
             >
               ↻ Refresh Governance
             </button>
-          </div>
-        </div>
-
-        {/* Governance KPIs (4 cards) */}
-        <div className="gov-kpis">
-          <div className="gov-kpi-card">
-            <div className="kpi-icon-wrap kpi-amber">⏳</div>
-            <div>
-              <div className="kpi-val">
-                {govReviews.filter((e) => e.review_status === "Pending Review").length}
-              </div>
-              <div className="kpi-label">Pending Review</div>
-            </div>
-          </div>
-
-          <div className="gov-kpi-card">
-            <div className="kpi-icon-wrap kpi-orange">⚠</div>
-            <div>
-              <div className="kpi-val">
-                {govReviews.filter((e) => e.review_status === "Stale").length}
-              </div>
-              <div className="kpi-label">Stale Reviews</div>
-            </div>
-          </div>
-
-          <div className="gov-kpi-card">
-            <div className="kpi-icon-wrap kpi-purple">💬</div>
-            <div>
-              <div className="kpi-val">
-                {govReviews.filter((e) => e.review_status === "Changes Requested").length}
-              </div>
-              <div className="kpi-label">Changes Requested</div>
-            </div>
-          </div>
-
-          <div className="gov-kpi-card">
-            <div className="kpi-icon-wrap kpi-blue">✅</div>
-            <div>
-              <div className="kpi-val">
-                {risks.filter((r) => r.review_status === "Approved").length}
-              </div>
-              <div className="kpi-label">Approved</div>
-            </div>
           </div>
         </div>
 
@@ -6426,7 +6896,7 @@ function App() {
             className={`btn-subtab ${govActiveTab === "queue" ? "active" : ""}`}
             onClick={() => { setGovActiveTab("queue"); setActivePage("reviews"); }}
           >
-            <span>Attention Queue</span>
+            <span>Reviews & Sign-off</span>
             <span className="subtab-count">{govReviews.length}</span>
           </button>
           <button
@@ -6450,164 +6920,6 @@ function App() {
             <span className="subtab-count">5</span>
           </button>
         </div>
-
-        {/* TAB 1: ATTENTION QUEUE */}
-        {govActiveTab === "queue" && (
-          <div className="gov-tab-content">
-            <div className="gov-queue-filter-bar">
-              <div className="filter-group">
-                <label>Filter Attention Queue:</label>
-                <select
-                  className="select-filter"
-                  value={govQueueFilter}
-                  onChange={(e) => setGovQueueFilter(e.target.value)}
-                >
-                  <option value="All">All Attention Items ({govReviews.length})</option>
-                  <option value="Pending Review">Pending Review ({govReviews.filter((e) => e.review_status === "Pending Review").length})</option>
-                  <option value="Stale">Stale Reviews ({govReviews.filter((e) => e.review_status === "Stale").length})</option>
-                  <option value="Changes Requested">Changes Requested ({govReviews.filter((e) => e.review_status === "Changes Requested").length})</option>
-                </select>
-              </div>
-              <div className="drift-count-summary">
-                Showing {filteredGovQueue.length} attention queue items
-              </div>
-            </div>
-
-            {govReviewsLoading && govReviews.length === 0 ? (
-              <div className="monitoring-loading-box">
-                <span className="ai-spinner" /> Loading governance review queue...
-              </div>
-            ) : govReviewsError ? (
-              <div className="monitoring-error-box">
-                <div>⚠ {govReviewsError}</div>
-                <button className="btn-secondary btn-sm" onClick={fetchGovReviews}>Retry</button>
-              </div>
-            ) : filteredGovQueue.length === 0 ? (
-              <div className="gov-empty-box">
-                <div className="empty-icon">🛡</div>
-                <div><strong>No risks require attention</strong></div>
-                <div className="sub-text">
-                  All identified risks have been reviewed or no items match the selected filter.
-                </div>
-              </div>
-            ) : (
-              <div className="table-responsive">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Risk Title</th>
-                      <th>Asset / Target</th>
-                      <th>Inherent Risk</th>
-                      <th>Residual Risk</th>
-                      <th>Review Status</th>
-                      <th>Treatment</th>
-                      <th>Due Date</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredGovQueue.map((item) => {
-                      const r = item.risk;
-                      const asset = assets.find((a) => a.id === r.asset_id);
-                      return (
-                        <Fragment key={r.id}>
-                          <tr>
-                            <td style={{ minWidth: "220px" }}>
-                              <strong>{r.title}</strong>
-                              <div className="sub-text">Risk ID #{r.id}</div>
-                            </td>
-                            <td>
-                              <span className="ip-pill">
-                                {asset ? asset.ip_address : `Asset #${r.asset_id}`}
-                              </span>
-                            </td>
-                            <td>
-                              <span className={`badge ${getRiskClass(r.inherent_risk_level)}`}>
-                                {r.inherent_risk_level || "Medium"} ({r.inherent_risk_score || r.risk_score})
-                              </span>
-                            </td>
-                            <td>
-                              <span className={`badge ${getRiskClass(r.residual_risk_level)}`}>
-                                {r.residual_risk_level || "Medium"} ({r.residual_risk_score || r.risk_score})
-                              </span>
-                            </td>
-                            <td>
-                              {getReviewStatusBadge(item.review_status)}
-                            </td>
-                            <td>
-                              <span className="badge badge-treatment">
-                                {r.treatment || "Mitigate"}
-                              </span>
-                            </td>
-                            <td>
-                              <span className="text-xs text-slate">
-                                {r.due_date ? new Date(r.due_date).toLocaleDateString() : "—"}
-                              </span>
-                            </td>
-                            <td>
-                              <div className="action-buttons-group">
-                                <button
-                                  className="btn-action"
-                                  onClick={() => openSubmitReviewModal(r)}
-                                  title="Submit Human Sign-Off Decision"
-                                >
-                                  Submit Sign-Off
-                                </button>
-                                <button
-                                  className="btn-action"
-                                  onClick={() => openReviewHistoryModal(r)}
-                                  title="View Review History"
-                                >
-                                  View History
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                          {item.review_status === "Stale" && (
-                            <tr className="stale-callout-row">
-                              <td colSpan="8" style={{ padding: "0 16px 12px 16px", background: "transparent" }}>
-                                <div className="gov-stale-callout">
-                                  <span className="stale-callout-icon">⚠</span>
-                                  <div>
-                                    <strong>Review Invalidation (Stale Baseline):</strong>
-                                    {item.current_review?.stale_reasons && item.current_review.stale_reasons.length > 0 ? (
-                                      <ul className="stale-reasons-list">
-                                        {item.current_review.stale_reasons.map((reason, idx) => (
-                                          <li key={idx}>{reason}</li>
-                                        ))}
-                                      </ul>
-                                    ) : (
-                                      <div className="sub-text" style={{ color: "#fef08a", marginTop: "4px" }}>
-                                        Technical baseline changes (drift, port status, or CVSS update) invalidated the previous sign-off.
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                          {item.review_status === "Changes Requested" && (
-                            <tr className="changes-callout-row">
-                              <td colSpan="8" style={{ padding: "0 16px 12px 16px", background: "transparent" }}>
-                                <div className="gov-changes-requested-callout">
-                                  <span className="changes-callout-icon">💬</span>
-                                  <div>
-                                    <strong>Changes Requested:</strong>{" "}
-                                    {item.current_review?.comments || "Additional mitigating controls or treatment revisions requested by reviewer."}
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
 
         {/* TAB 2: AUDIT TRAIL */}
         {govActiveTab === "audit" && (
