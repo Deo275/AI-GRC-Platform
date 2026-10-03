@@ -68,6 +68,27 @@ const formatDateTime = (iso, fallback = "—") => {
   }
 };
 
+const calculateJobDuration = (startedAt, completedAt) => {
+  if (!startedAt || !completedAt) return "—";
+  try {
+    const s = parseUtcDate(startedAt);
+    const c = parseUtcDate(completedAt);
+    if (!s || !c || isNaN(s.getTime()) || isNaN(c.getTime())) return "—";
+    const diffMs = c.getTime() - s.getTime();
+    if (diffMs < 0) return "—";
+    const totalSec = Math.floor(diffMs / 1000);
+    if (totalSec < 60) return `${totalSec}s`;
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    if (mins < 60) return `${mins}m ${secs}s`;
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hours}h ${remMins}m`;
+  } catch {
+    return "—";
+  }
+};
+
 // ---------------------------------------------------------------------------
 // AIAnalysisPanel — Phase 4B: Pure display component for AI security intelligence
 // Receives pre-fetched analysis data; no API calls, no GRC state mutations.
@@ -1087,6 +1108,7 @@ function App() {
   const [driftOffset, setDriftOffset] = useState(0);
 
   const [monitoringActiveTab, setMonitoringActiveTab] = useState("jobs"); // "jobs" | "schedules" | "drift"
+  const [monitoringJobStatusFilter, setMonitoringJobStatusFilter] = useState("All");
 
   // New Scan Job Trigger
   const [newJobTarget, setNewJobTarget] = useState("192.168.127.0/24");
@@ -2468,519 +2490,730 @@ function App() {
       </>)}
 
       {/* ------------------------------------------------ */}
-      {/* CONTINUOUS MONITORING                            */}
+      {/* CONTINUOUS MONITORING (PHASE 7 REDESIGN)         */}
       {/* ------------------------------------------------ */}
-      {activePage === "monitoring" && (
-      <section className="panel monitoring-panel">
-        <div className="panel-header monitoring-panel-header">
-          <div>
-            <div className="monitoring-tag">CONTINUOUS ATTACK SURFACE MONITORING</div>
-            <h2>Continuous Monitoring & Drift Center</h2>
-            <p className="panel-desc">
-              Automated background scanning, recurring schedules, and attack surface drift detection with RFC 1918 boundary protection.
-            </p>
-          </div>
-          <div className="monitoring-header-actions">
-            <button
-              className="btn-secondary btn-sm"
-              onClick={() => {
-                fetchMonitoringJobs();
-                fetchMonitoringSchedules();
-                fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
-              }}
-              title="Refresh all monitoring data"
-            >
-              ↻ Refresh Feeds
-            </button>
-          </div>
-        </div>
+      {activePage === "monitoring" && (() => {
+        // Derive real metrics from authoritative state
+        const runningJobs = monitoringJobs.filter((j) => j.status === "Running");
+        const queuedJobs = monitoringJobs.filter((j) => j.status === "Queued");
+        const activeSchedules = monitoringSchedules.filter((s) => s.is_active);
+        const unclassifiedDrift = driftEvents.filter((e) => e.event_type === "NEW_ASSET");
 
-        {/* Monitoring KPIs */}
-        <div className="monitoring-kpis">
-          <div className="monitoring-kpi-card">
-            <div className="kpi-icon-wrap kpi-blue">⚡</div>
-            <div>
-              <div className="kpi-val">{monitoringSchedules.filter((s) => s.is_active).length}</div>
-              <div className="kpi-label">Active Schedules</div>
-            </div>
-          </div>
+        // Deterministically sorted completed jobs
+        const completedJobs = monitoringJobs
+          .filter((j) => j.status === "Completed")
+          .sort((a, b) => {
+            const timeA = a.completed_at ? new Date(a.completed_at).getTime() : 0;
+            const timeB = b.completed_at ? new Date(b.completed_at).getTime() : 0;
+            if (timeB !== timeA) return timeB - timeA;
+            return (b.id || 0) - (a.id || 0);
+          });
+        const latestCompletedJob = completedJobs[0] || null;
 
-          <div className="monitoring-kpi-card">
-            <div className="kpi-icon-wrap kpi-amber">
-              {monitoringJobs.some((j) => j.status === "Running") ? (
-                <span className="ai-spinner" style={{ width: "16px", height: "16px" }} />
-              ) : "⏳"}
-            </div>
-            <div>
-              <div className="kpi-val">
-                {monitoringJobs.filter((j) => j.status === "Queued" || j.status === "Running").length}
-              </div>
-              <div className="kpi-label">Queued / Running Jobs</div>
-            </div>
-          </div>
+        // Honest monitoring status based strictly on existing state
+        let monitoringStatus = "No Active Scan";
+        let monitoringStatusSub = "No recurring schedule enabled";
+        let monitoringStatusColor = "text-muted";
+        let monitoringStatusDot = "dot-gray";
 
-          <div className="monitoring-kpi-card">
-            <div className="kpi-icon-wrap kpi-orange">🛰</div>
-            <div>
-              <div className="kpi-val">{driftTotal}</div>
-              <div className="kpi-label">Drift Events Detected</div>
-            </div>
-          </div>
+        if (runningJobs.length > 0) {
+          monitoringStatus = "Running";
+          monitoringStatusSub = `${runningJobs.length} scan${runningJobs.length > 1 ? "s" : ""} in progress`;
+          monitoringStatusColor = "text-accent";
+          monitoringStatusDot = "dot-pulse";
+        } else if (activeSchedules.length > 0) {
+          monitoringStatus = "Enabled";
+          monitoringStatusSub = `${activeSchedules.length} active recurring schedule${activeSchedules.length > 1 ? "s" : ""}`;
+          monitoringStatusColor = "text-green";
+          monitoringStatusDot = "dot-green";
+        } else if (monitoringSchedules.length > 0) {
+          monitoringStatus = "Disabled";
+          monitoringStatusSub = "All configured schedules paused";
+          monitoringStatusColor = "text-yellow";
+          monitoringStatusDot = "dot-amber";
+        }
 
-          <div className="monitoring-kpi-card">
-            <div className="kpi-icon-wrap kpi-teal">❓</div>
-            <div>
-              <div className="kpi-val">
-                {driftEvents.filter((e) => e.event_type === "NEW_ASSET").length}
-              </div>
-              <div className="kpi-label">Unclassified New Assets</div>
-            </div>
-          </div>
-        </div>
+        // Filter scan jobs
+        const filteredJobs = monitoringJobs.filter((job) => {
+          if (monitoringJobStatusFilter !== "All" && job.status !== monitoringJobStatusFilter) {
+            return false;
+          }
+          return true;
+        });
 
-        {/* Sub-Tab Navigation */}
-        <div className="monitoring-subtabs">
-          <button
-            className={`btn-subtab ${monitoringActiveTab === "jobs" ? "active" : ""}`}
-            onClick={() => {
-              setMonitoringActiveTab("jobs");
-              fetchMonitoringJobs();
-            }}
-          >
-            <span>Scan Jobs & Queue</span>
-            <span className="subtab-count">{monitoringJobs.length}</span>
-          </button>
-          <button
-            className={`btn-subtab ${monitoringActiveTab === "schedules" ? "active" : ""}`}
-            onClick={() => {
-              setMonitoringActiveTab("schedules");
-              fetchMonitoringSchedules();
-            }}
-          >
-            <span>Automated Schedules</span>
-            <span className="subtab-count">{monitoringSchedules.length}</span>
-          </button>
-          <button
-            className={`btn-subtab ${monitoringActiveTab === "drift" ? "active" : ""}`}
-            onClick={() => {
-              setMonitoringActiveTab("drift");
-              fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
-            }}
-          >
-            <span>Network Drift & Audit Feed</span>
-            <span className="subtab-count">{driftTotal}</span>
-          </button>
-        </div>
+        // Most recent active job (if running or queued)
+        const primaryActiveJob = runningJobs[0] || queuedJobs[0] || null;
 
-        {/* Action Error Banner */}
-        {jobActionError && (
-          <div className="monitoring-error-banner">
-            <span>⚠ {jobActionError}</span>
-            <button className="btn-link" onClick={() => setJobActionError(null)}>Dismiss</button>
-          </div>
-        )}
-
-        {/* TAB 1: SCAN JOBS & QUEUE */}
-        {monitoringActiveTab === "jobs" && (
-          <div className="monitoring-tab-content">
-            {/* New Job Launcher */}
-            <div className="job-launcher-card">
-              <div className="launcher-title">
-                <strong>Queue Continuous Scan Job</strong>
-                <span className="launcher-hint">
-                  Non-blocking background scan executed by bounded ThreadPoolExecutor (max 3 concurrent; excess jobs wait safely in queue).
-                </span>
-              </div>
-              <form onSubmit={submitNewJob} className="launcher-form">
-                <div className="launcher-field">
-                  <label>Target Scope (RFC 1918 Private, Max /24)</label>
-                  <input
-                    type="text"
-                    value={newJobTarget}
-                    onChange={(e) => setNewJobTarget(e.target.value)}
-                    placeholder="e.g. 192.168.127.0/24 or 192.168.1.50"
-                    disabled={submittingJob}
-                    required
-                  />
-                </div>
-                <div className="launcher-field">
-                  <label>Scan Strategy</label>
-                  <select
-                    value={newJobType}
-                    onChange={(e) => setNewJobType(e.target.value)}
-                    disabled={submittingJob}
-                  >
-                    <option value="subnet_discovery">Subnet Discovery (Ping sweep + Service scan)</option>
-                    <option value="single_host">Single Host (Targeted top 100 ports)</option>
-                  </select>
-                </div>
-                <button
-                  type="submit"
-                  className="btn-primary launcher-btn"
-                  disabled={submittingJob}
-                >
-                  {submittingJob ? "Queueing Job..." : "+ Queue Scan Job"}
-                </button>
-              </form>
-            </div>
-
-            {/* Jobs Table */}
-            {monitoringJobsLoading && monitoringJobs.length === 0 ? (
-              <div className="monitoring-loading-box">
-                <span className="ai-spinner" /> Loading scan jobs...
-              </div>
-            ) : monitoringJobsError ? (
-              <div className="monitoring-error-box">
-                <div>⚠ {monitoringJobsError}</div>
-                <button className="btn-secondary btn-sm" onClick={fetchMonitoringJobs}>Retry</button>
-              </div>
-            ) : (
-              <div className="table-responsive">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Job ID</th>
-                      <th>Target & Strategy</th>
-                      <th>Status</th>
-                      <th>Progress</th>
-                      <th>Discovered Assets</th>
-                      <th>Vulnerabilities</th>
-                      <th>Timestamps</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {monitoringJobs.length === 0 ? (
-                      <tr>
-                        <td colSpan="8" className="empty-cell">
-                          No scan jobs queued or completed yet. Use the form above to submit a scan.
-                        </td>
-                      </tr>
-                    ) : (
-                      monitoringJobs.map((job) => (
-                        <tr key={job.id}>
-                          <td>
-                            <strong>#{job.id}</strong>
-                          </td>
-                          <td>
-                            <strong className="ip-text">{job.target}</strong>
-                            <div className="sub-text">
-                              {job.scan_type === "subnet_discovery" ? "Subnet Sweep" : "Single Host"}
-                            </div>
-                          </td>
-                          <td>
-                            {getJobStatusBadge(job.status)}
-                            {job.error_message && (
-                              <div className="job-error-msg" title={job.error_message}>
-                                {job.error_message}
-                              </div>
-                            )}
-                          </td>
-                          <td>
-                            <div className="job-progress-cell">
-                              <div className="progress-bar-bg" style={{ width: "90px", margin: "4px 0" }}>
-                                <div
-                                  className="progress-bar-fill"
-                                  style={{
-                                    width: `${job.progress_percent}%`,
-                                    background: job.status === "Failed" ? "#ef4444" : undefined,
-                                  }}
-                                />
-                              </div>
-                              <span className="text-xs text-slate">{job.progress_percent}%</span>
-                            </div>
-                          </td>
-                          <td>
-                            <span className="metric-pill">
-                              {job.discovered_assets_count ?? 0} hosts
-                            </span>
-                          </td>
-                          <td>
-                            <span className="metric-pill">
-                              {job.discovered_vulns_count ?? 0} findings
-                            </span>
-                          </td>
-                          <td>
-                            <div className="text-xs">
-                              <div>Created: {formatDateTime(job.created_at)}</div>
-                              {job.completed_at && (
-                                <div className="text-slate">Done: {formatDateTime(job.completed_at)}</div>
-                              )}
-                            </div>
-                          </td>
-                          <td>
-                            {(job.status === "Queued" || job.status === "Running") && (
-                              <button
-                                className="btn-cancel-job"
-                                onClick={() => cancelJob(job.id)}
-                                disabled={cancellingJobId === job.id}
-                                title="Request cooperative cancellation (terminates subprocess safely)"
-                              >
-                                {cancellingJobId === job.id ? "Cancelling..." : "Cancel"}
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 2: AUTOMATED SCHEDULES */}
-        {monitoringActiveTab === "schedules" && (
-          <div className="monitoring-tab-content">
-            <div className="schedules-header-bar">
+        return (
+          <section className="panel monitoring-panel">
+            {/* Header with Title, Tag & Refresh Action */}
+            <div className="panel-header monitoring-page-header">
               <div>
-                <p className="tab-subtitle">
-                  Automated background recurring sweeps executed by the single-process in-process scheduler.
+                <div className="section-tag">CONTINUOUS MONITORING (PHASE 7)</div>
+                <h2>Continuous Monitoring</h2>
+                <p className="panel-desc">
+                  Network discovery, scheduled scans, and infrastructure drift detection
                 </p>
               </div>
+              <div className="monitoring-header-actions">
+                <button
+                  className="btn-secondary btn-sm"
+                  onClick={() => {
+                    fetchMonitoringJobs();
+                    fetchMonitoringSchedules();
+                    fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
+                  }}
+                  title="Refresh all monitoring data"
+                >
+                  <span className="monitoring-refresh-icon">↻</span> Refresh Feeds
+                </button>
+              </div>
+            </div>
+
+            {/* Top KPI Grid (5 Cards strictly using real state) */}
+            <div className="monitoring-kpi-grid">
+              <div className="monitoring-kpi-card">
+                <div className="monitoring-kpi-header">
+                  <span className="monitoring-kpi-label">Monitoring Status</span>
+                  <span className="monitoring-kpi-icon">📡</span>
+                </div>
+                <div className={`monitoring-kpi-val ${monitoringStatusColor}`}>
+                  <span className={`status-indicator-dot ${monitoringStatusDot}`} />
+                  {monitoringStatus}
+                </div>
+                <div className="monitoring-kpi-sub">{monitoringStatusSub}</div>
+              </div>
+
+              <div className="monitoring-kpi-card">
+                <div className="monitoring-kpi-header">
+                  <span className="monitoring-kpi-label">Running Scans</span>
+                  <span className="monitoring-kpi-icon">⚡</span>
+                </div>
+                <div className={`monitoring-kpi-val ${runningJobs.length > 0 ? "text-accent" : "text-light"}`}>
+                  {runningJobs.length}
+                </div>
+                <div className="monitoring-kpi-sub">
+                  {queuedJobs.length} scan{queuedJobs.length !== 1 ? "s" : ""} queued in pool
+                </div>
+              </div>
+
+              <div className="monitoring-kpi-card">
+                <div className="monitoring-kpi-header">
+                  <span className="monitoring-kpi-label">Scheduled Scans</span>
+                  <span className="monitoring-kpi-icon">⏱</span>
+                </div>
+                <div className="monitoring-kpi-val text-light">
+                  {activeSchedules.length} <span className="monitoring-kpi-denom">/ {monitoringSchedules.length}</span>
+                </div>
+                <div className="monitoring-kpi-sub">Active recurring schedules</div>
+              </div>
+
+              <div className="monitoring-kpi-card">
+                <div className="monitoring-kpi-header">
+                  <span className="monitoring-kpi-label">Recent Drift Events</span>
+                  <span className="monitoring-kpi-icon">🛰</span>
+                </div>
+                <div className="monitoring-kpi-val text-orange">
+                  {driftTotal}
+                </div>
+                <div className="monitoring-kpi-sub">
+                  {unclassifiedDrift.length} unclassified asset{unclassifiedDrift.length !== 1 ? "s" : ""}
+                </div>
+              </div>
+
+              <div className="monitoring-kpi-card">
+                <div className="monitoring-kpi-header">
+                  <span className="monitoring-kpi-label">Last Successful Scan</span>
+                  <span className="monitoring-kpi-icon">🛡</span>
+                </div>
+                <div
+                  className="monitoring-kpi-val text-light"
+                  style={{ fontSize: latestCompletedJob ? "15px" : "24px", fontWeight: 700 }}
+                  title={latestCompletedJob ? formatDateTime(latestCompletedJob.completed_at) : undefined}
+                >
+                  {latestCompletedJob ? formatDateTime(latestCompletedJob.completed_at) : "None"}
+                </div>
+                <div className="monitoring-kpi-sub">
+                  {latestCompletedJob
+                    ? `Job #${latestCompletedJob.id} (${latestCompletedJob.target})`
+                    : "No completed scans recorded"}
+                </div>
+              </div>
+            </div>
+
+            {/* Sub-Navigation Tabs */}
+            <div className="monitoring-sub-nav">
               <button
-                className="btn-primary btn-sm"
-                onClick={openAddScheduleModal}
+                className={`monitoring-sub-nav-btn ${monitoringActiveTab === "jobs" ? "active" : ""}`}
+                onClick={() => {
+                  setMonitoringActiveTab("jobs");
+                  fetchMonitoringJobs();
+                }}
               >
-                + Add Scan Schedule
+                <span>Scan Jobs</span>
+                <span className="monitoring-sub-nav-badge">{monitoringJobs.length}</span>
+              </button>
+              <button
+                className={`monitoring-sub-nav-btn ${monitoringActiveTab === "schedules" ? "active" : ""}`}
+                onClick={() => {
+                  setMonitoringActiveTab("schedules");
+                  fetchMonitoringSchedules();
+                }}
+              >
+                <span>Schedules</span>
+                <span className="monitoring-sub-nav-badge">{monitoringSchedules.length}</span>
+              </button>
+              <button
+                className={`monitoring-sub-nav-btn ${monitoringActiveTab === "drift" ? "active" : ""}`}
+                onClick={() => {
+                  setMonitoringActiveTab("drift");
+                  fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
+                }}
+              >
+                <span>Drift Feed</span>
+                <span className="monitoring-sub-nav-badge">{driftTotal}</span>
               </button>
             </div>
 
-            {monitoringSchedulesLoading && monitoringSchedules.length === 0 ? (
-              <div className="monitoring-loading-box">
-                <span className="ai-spinner" /> Loading automated schedules...
-              </div>
-            ) : monitoringSchedulesError ? (
-              <div className="monitoring-error-box">
-                <div>⚠ {monitoringSchedulesError}</div>
-                <button className="btn-secondary btn-sm" onClick={fetchMonitoringSchedules}>Retry</button>
-              </div>
-            ) : (
-              <div className="table-responsive">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Schedule Name</th>
-                      <th>Target Scope</th>
-                      <th>Interval</th>
-                      <th>Schedule State</th>
-                      <th>Last Run</th>
-                      <th>Next Scheduled Run</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {monitoringSchedules.length === 0 ? (
-                      <tr>
-                        <td colSpan="7" className="empty-cell">
-                          No automated scan schedules configured. Click "+ Add Scan Schedule" to create one.
-                        </td>
-                      </tr>
-                    ) : (
-                      monitoringSchedules.map((sched) => (
-                        <tr key={sched.id}>
-                          <td>
-                            <strong>{sched.name}</strong>
-                            <div className="sub-text">Schedule ID #{sched.id}</div>
-                          </td>
-                          <td>
-                            <strong className="ip-text">{sched.target}</strong>
-                          </td>
-                          <td>
-                            <span className="badge badge-neutral">Every {sched.interval_minutes}m</span>
-                          </td>
-                          <td>
-                            <button
-                              className={`toggle-pill ${sched.is_active ? "toggle-active" : "toggle-inactive"}`}
-                              onClick={() => toggleScheduleActive(sched)}
-                              title={sched.is_active ? "Click to pause schedule" : "Click to activate schedule"}
-                            >
-                              <span className={`toggle-dot ${sched.is_active ? "dot-active" : ""}`} />
-                              {sched.is_active ? "Active" : "Paused"}
-                            </button>
-                          </td>
-                          <td>
-                            <span className="text-xs text-slate">{formatDateTime(sched.last_run_at)}</span>
-                          </td>
-                          <td>
-                            <span className="text-xs" style={{ color: sched.is_active ? "#38bdf8" : "#64748b" }}>
-                              {sched.is_active ? formatDateTime(sched.next_run_at) : "Paused"}
-                            </span>
-                          </td>
-                          <td>
-                            <div className="action-buttons-group">
-                              <button
-                                className="btn-action"
-                                onClick={() => openEditScheduleModal(sched)}
-                                title="Edit schedule details"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                className="btn-action btn-action-danger"
-                                onClick={() => deleteSchedule(sched.id)}
-                                title="Delete schedule"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+            {/* Action Error Banner */}
+            {jobActionError && (
+              <div className="monitoring-error-banner">
+                <span>⚠ {jobActionError}</span>
+                <button className="btn-link" onClick={() => setJobActionError(null)}>Dismiss</button>
               </div>
             )}
-          </div>
-        )}
 
-        {/* TAB 3: NETWORK DRIFT & AUDIT FEED */}
-        {monitoringActiveTab === "drift" && (
-          <div className="monitoring-tab-content">
-            <div className="drift-filter-bar">
-              <div className="filter-group">
-                <label>Severity:</label>
-                <select
-                  className="select-filter"
-                  value={driftSeverityFilter}
-                  onChange={(e) => {
-                    const newSev = e.target.value;
-                    setDriftSeverityFilter(newSev);
-                    setDriftOffset(0);
-                    fetchDriftEvents(0, newSev, driftTypeFilter);
-                  }}
-                >
-                  <option value="All">All Severities</option>
-                  <option value="Critical">Critical</option>
-                  <option value="High">High</option>
-                  <option value="Medium">Medium</option>
-                  <option value="Low">Low</option>
-                </select>
-              </div>
-
-              <div className="filter-group">
-                <label>Event Type:</label>
-                <select
-                  className="select-filter"
-                  value={driftTypeFilter}
-                  onChange={(e) => {
-                    const newType = e.target.value;
-                    setDriftTypeFilter(newType);
-                    setDriftOffset(0);
-                    fetchDriftEvents(0, driftSeverityFilter, newType);
-                  }}
-                >
-                  <option value="All">All Event Types</option>
-                  <option value="NEW_ASSET">New Asset (Unclassified)</option>
-                  <option value="PORT_OPENED">Port Opened</option>
-                  <option value="PORT_CLOSED">Port Closed</option>
-                  <option value="CVE_DETECTED">CVE Detected</option>
-                  <option value="FINDING_RESOLVED">Finding Resolved</option>
-                </select>
-              </div>
-
-              <div className="drift-count-summary">
-                Showing {driftEvents.length} of {driftTotal} events (newest first)
-              </div>
-            </div>
-
-            {driftEventsLoading && driftEvents.length === 0 ? (
-              <div className="monitoring-loading-box">
-                <span className="ai-spinner" /> Loading drift events feed...
-              </div>
-            ) : driftEventsError ? (
-              <div className="monitoring-error-box">
-                <div>⚠ {driftEventsError}</div>
-                <button
-                  className="btn-secondary btn-sm"
-                  onClick={() => fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter)}
-                >
-                  Retry
-                </button>
-              </div>
-            ) : (
-              <div className="drift-events-list">
-                {driftEvents.length === 0 ? (
-                  <div className="drift-empty-box">
-                    <div className="empty-icon">🛡</div>
-                    <div><strong>No network drift events detected</strong></div>
-                    <div className="sub-text">
-                      Subsequent automated background scans will compare against the last successful baseline and record new assets, port changes, and CVE detections here.
+            {/* ========================================================================= */}
+            {/* SUB-VIEW 1: SCAN JOBS                                                     */}
+            {/* ========================================================================= */}
+            {monitoringActiveTab === "jobs" && (
+              <div className="monitoring-tab-content">
+                {/* Active Scan Spotlight if any scan is running or queued */}
+                {primaryActiveJob && (
+                  <div className="active-scan-spotlight">
+                    <div className="active-scan-header">
+                      <div className="active-scan-badge-wrap">
+                        <span className="active-scan-live-tag">
+                          <span className="status-indicator-dot dot-pulse" />
+                          ACTIVE SCAN EXECUTION
+                        </span>
+                        <span className="active-scan-id">Job #{primaryActiveJob.id}</span>
+                      </div>
+                      <div className="active-scan-actions">
+                        {getJobStatusBadge(primaryActiveJob.status)}
+                        <button
+                          className="btn-cancel-job"
+                          onClick={() => cancelJob(primaryActiveJob.id)}
+                          disabled={cancellingJobId === primaryActiveJob.id}
+                          title="Terminate subprocess safely"
+                        >
+                          {cancellingJobId === primaryActiveJob.id ? "Cancelling..." : "Cancel Scan"}
+                        </button>
+                      </div>
                     </div>
+
+                    <div className="active-scan-details">
+                      <div className="active-scan-detail-item">
+                        <span className="detail-label">Target Scope</span>
+                        <strong className="detail-value ip-text">{primaryActiveJob.target}</strong>
+                      </div>
+                      <div className="active-scan-detail-item">
+                        <span className="detail-label">Strategy</span>
+                        <span className="detail-value">
+                          {primaryActiveJob.scan_type === "subnet_discovery"
+                            ? "Subnet Sweep (Ping + Service)"
+                            : "Single Host (Top 100 ports)"}
+                        </span>
+                      </div>
+                      <div className="active-scan-detail-item">
+                        <span className="detail-label">Started</span>
+                        <span className="detail-value text-slate">
+                          {formatDateTime(primaryActiveJob.started_at || primaryActiveJob.created_at)}
+                        </span>
+                      </div>
+                      <div className="active-scan-detail-item progress-item">
+                        <div className="progress-info-row">
+                          <span className="detail-label">Progress</span>
+                          <strong className="progress-pct-text">{primaryActiveJob.progress_percent ?? 0}%</strong>
+                        </div>
+                        <div className="active-scan-progress-bar">
+                          <div
+                            className="active-scan-progress-fill"
+                            style={{ width: `${Math.min(100, Math.max(0, primaryActiveJob.progress_percent ?? 0))}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Queue New Scan Job Launcher */}
+                <div className="monitoring-launcher-card">
+                  <div className="launcher-title">
+                    <div className="launcher-title-row">
+                      <strong>Queue Continuous Scan Job</strong>
+                      <span className="launcher-badge">RFC 1918 Private Scope</span>
+                    </div>
+                    <span className="launcher-hint">
+                      Non-blocking background scan executed by bounded ThreadPoolExecutor (max 3 concurrent; excess jobs wait safely in queue).
+                    </span>
+                  </div>
+
+                  <form onSubmit={submitNewJob} className="launcher-form">
+                    <div className="launcher-field">
+                      <label>Target Scope (RFC 1918 Private, Max /24)</label>
+                      <input
+                        type="text"
+                        value={newJobTarget}
+                        onChange={(e) => setNewJobTarget(e.target.value)}
+                        placeholder="e.g. 192.168.127.0/24 or 192.168.1.50"
+                        disabled={submittingJob}
+                        required
+                      />
+                    </div>
+                    <div className="launcher-field">
+                      <label>Scan Strategy</label>
+                      <select
+                        value={newJobType}
+                        onChange={(e) => setNewJobType(e.target.value)}
+                        disabled={submittingJob}
+                      >
+                        <option value="subnet_discovery">Subnet Discovery (Ping sweep + Service scan)</option>
+                        <option value="single_host">Single Host (Targeted top 100 ports)</option>
+                      </select>
+                    </div>
+                    <button
+                      type="submit"
+                      className="btn-primary launcher-btn"
+                      disabled={submittingJob}
+                    >
+                      {submittingJob ? "Queueing Job..." : "+ Queue Scan Job"}
+                    </button>
+                  </form>
+                </div>
+
+                {/* Filter and Summary Bar */}
+                <div className="monitoring-controls-bar">
+                  <div className="monitoring-filter-group">
+                    <label>Filter Status:</label>
+                    <select
+                      className="select-filter"
+                      value={monitoringJobStatusFilter}
+                      onChange={(e) => setMonitoringJobStatusFilter(e.target.value)}
+                    >
+                      <option value="All">All Statuses ({monitoringJobs.length})</option>
+                      <option value="Running">Running ({monitoringJobs.filter((j) => j.status === "Running").length})</option>
+                      <option value="Queued">Queued ({monitoringJobs.filter((j) => j.status === "Queued").length})</option>
+                      <option value="Completed">Completed ({monitoringJobs.filter((j) => j.status === "Completed").length})</option>
+                      <option value="Failed">Failed ({monitoringJobs.filter((j) => j.status === "Failed").length})</option>
+                      <option value="Cancelled">Cancelled ({monitoringJobs.filter((j) => j.status === "Cancelled").length})</option>
+                    </select>
+                  </div>
+                  <div className="monitoring-results-count">
+                    Showing <strong>{filteredJobs.length}</strong> of <strong>{monitoringJobs.length}</strong> scan jobs
+                  </div>
+                </div>
+
+                {/* Scan Jobs Table */}
+                {monitoringJobsLoading && monitoringJobs.length === 0 ? (
+                  <div className="monitoring-loading-box">
+                    <span className="ai-spinner" /> Loading scan jobs...
+                  </div>
+                ) : monitoringJobsError ? (
+                  <div className="monitoring-error-box">
+                    <div>⚠ {monitoringJobsError}</div>
+                    <button className="btn-secondary btn-sm" onClick={fetchMonitoringJobs}>Retry</button>
                   </div>
                 ) : (
-                  driftEvents.map((event) => (
-                    <div key={event.id} className="drift-event-card">
-                      <div className="drift-card-header">
-                        <div className="drift-header-left">
-                          {getDriftSeverityBadge(event.severity)}
-                          {getDriftEventTypeBadge(event.event_type)}
-                          <span className="drift-time">{formatDateTime(event.detected_at)}</span>
-                        </div>
-                        <div className="drift-header-right">
-                          <span className="drift-job-tag">Scan Job #{event.scan_job_id}</span>
-                          {event.asset_id && (
-                            <span className="drift-asset-tag">Asset #{event.asset_id}</span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="drift-card-body">
-                        <div className="drift-card-title">{event.title}</div>
-                        <p className="drift-card-desc">{event.description}</p>
-
-                        {/* CRITICAL: Unclassified Asset Warning Badge for NEW_ASSET */}
-                        {event.event_type === "NEW_ASSET" && (
-                          <div className="drift-unclassified-callout">
-                            <span className="unclassified-pill">Unclassified asset</span>
-                            <span className="unclassified-text">
-                              Newly discovered host awaiting GRC assignment. Business criticality, environment, exposure, and ownership remain unassigned until an operator classifies them.
-                            </span>
-                          </div>
+                  <div className="table-responsive">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Job ID</th>
+                          <th>Target Scope</th>
+                          <th>Strategy</th>
+                          <th>Status</th>
+                          <th>Progress</th>
+                          <th>Discovered</th>
+                          <th>Started / Completed</th>
+                          <th>Duration</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredJobs.length === 0 ? (
+                          <tr>
+                            <td colSpan="9" className="empty-cell">
+                              <div className="monitoring-empty-state">
+                                <div className="empty-icon">📡</div>
+                                <strong>No monitoring scans have been executed yet.</strong>
+                                <span className="text-slate text-xs">
+                                  {monitoringJobStatusFilter !== "All"
+                                    ? `No scan jobs with status "${monitoringJobStatusFilter}" found.`
+                                    : "Configure a private target scope above and queue a scan to discover network hosts and identify drift."}
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredJobs.map((job) => (
+                            <tr key={job.id}>
+                              <td>
+                                <strong className="job-id-text">#{job.id}</strong>
+                              </td>
+                              <td>
+                                <strong className="ip-text">{job.target}</strong>
+                                <span className="rfc1918-tag">RFC 1918</span>
+                              </td>
+                              <td>
+                                <span className="strategy-badge">
+                                  {job.scan_type === "subnet_discovery" ? "Subnet Sweep" : "Single Host"}
+                                </span>
+                              </td>
+                              <td>
+                                {getJobStatusBadge(job.status)}
+                                {job.error_message && (
+                                  <div className="job-error-msg" title={job.error_message}>
+                                    ⚠ {job.error_message}
+                                  </div>
+                                )}
+                              </td>
+                              <td>
+                                <div className="job-progress-cell">
+                                  <div className="progress-bar-bg" style={{ width: "90px", margin: "4px 0" }}>
+                                    <div
+                                      className="progress-bar-fill"
+                                      style={{
+                                        width: `${Math.min(100, Math.max(0, job.progress_percent ?? 0))}%`,
+                                        background: job.status === "Failed" ? "#ef4444" : undefined,
+                                      }}
+                                    />
+                                  </div>
+                                  <span className="text-xs text-slate">{job.progress_percent ?? 0}%</span>
+                                </div>
+                              </td>
+                              <td>
+                                <div className="job-metrics-stack">
+                                  <span className="metric-pill" title="Discovered hosts">
+                                    {job.discovered_assets_count ?? 0} host{job.discovered_assets_count !== 1 ? "s" : ""}
+                                  </span>
+                                  <span className="metric-pill" title="Discovered vulnerabilities">
+                                    {job.discovered_vulns_count ?? 0} vuln{job.discovered_vulns_count !== 1 ? "s" : ""}
+                                  </span>
+                                </div>
+                              </td>
+                              <td>
+                                <div className="text-xs">
+                                  <div>
+                                    <span className="text-slate">Started:</span> {formatDateTime(job.started_at || job.created_at)}
+                                  </div>
+                                  {job.completed_at && (
+                                    <div>
+                                      <span className="text-slate">Done:</span> {formatDateTime(job.completed_at)}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                              <td>
+                                <span className="duration-pill">
+                                  {calculateJobDuration(job.started_at || job.created_at, job.completed_at)}
+                                </span>
+                              </td>
+                              <td>
+                                {(job.status === "Queued" || job.status === "Running") && (
+                                  <button
+                                    className="btn-cancel-job"
+                                    onClick={() => cancelJob(job.id)}
+                                    disabled={cancellingJobId === job.id}
+                                    title="Request cooperative cancellation (terminates subprocess safely)"
+                                  >
+                                    {cancellingJobId === job.id ? "Cancelling..." : "Cancel"}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          ))
                         )}
-                      </div>
-                    </div>
-                  ))
-                )}
-
-                {/* Pagination Controls */}
-                {driftTotal > driftLimit && (
-                  <div className="drift-pagination-bar">
-                    <button
-                      className="btn-secondary btn-sm"
-                      disabled={driftOffset === 0}
-                      onClick={() => {
-                        const newOffset = Math.max(0, driftOffset - driftLimit);
-                        setDriftOffset(newOffset);
-                        fetchDriftEvents(newOffset, driftSeverityFilter, driftTypeFilter);
-                      }}
-                    >
-                      ← Previous Page
-                    </button>
-                    <span className="pagination-info">
-                      Page {Math.floor(driftOffset / driftLimit) + 1} of {Math.ceil(driftTotal / driftLimit)}
-                    </span>
-                    <button
-                      className="btn-secondary btn-sm"
-                      disabled={driftOffset + driftLimit >= driftTotal}
-                      onClick={() => {
-                        const newOffset = driftOffset + driftLimit;
-                        setDriftOffset(newOffset);
-                        fetchDriftEvents(newOffset, driftSeverityFilter, driftTypeFilter);
-                      }}
-                    >
-                      Next Page →
-                    </button>
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
             )}
-          </div>
-        )}
-      </section>
-      )}
+
+            {/* ========================================================================= */}
+            {/* SUB-VIEW 2: AUTOMATED SCHEDULES                                           */}
+            {/* ========================================================================= */}
+            {monitoringActiveTab === "schedules" && (
+              <div className="monitoring-tab-content">
+                <div className="schedules-header-bar">
+                  <div>
+                    <h3 className="section-subtitle">Automated Scan Schedules</h3>
+                    <p className="tab-subtitle">
+                      Automated background recurring sweeps executed by the single-process in-process scheduler.
+                    </p>
+                  </div>
+                  <button
+                    className="btn-primary btn-sm"
+                    onClick={openAddScheduleModal}
+                  >
+                    + Add Scan Schedule
+                  </button>
+                </div>
+
+                {monitoringSchedulesLoading && monitoringSchedules.length === 0 ? (
+                  <div className="monitoring-loading-box">
+                    <span className="ai-spinner" /> Loading automated schedules...
+                  </div>
+                ) : monitoringSchedulesError ? (
+                  <div className="monitoring-error-box">
+                    <div>⚠ {monitoringSchedulesError}</div>
+                    <button className="btn-secondary btn-sm" onClick={fetchMonitoringSchedules}>Retry</button>
+                  </div>
+                ) : (
+                  <div className="table-responsive">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Schedule Name</th>
+                          <th>Target Scope</th>
+                          <th>Interval</th>
+                          <th>Schedule State</th>
+                          <th>Last Run</th>
+                          <th>Next Scheduled Run</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monitoringSchedules.length === 0 ? (
+                          <tr>
+                            <td colSpan="7" className="empty-cell">
+                              <div className="monitoring-empty-state">
+                                <div className="empty-icon">⏱</div>
+                                <strong>No monitoring schedules are configured.</strong>
+                                <span className="text-slate text-xs">
+                                  Click "+ Add Scan Schedule" above to set up automated recurring attack surface scans.
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : (
+                          monitoringSchedules.map((sched) => (
+                            <tr key={sched.id}>
+                              <td>
+                                <strong>{sched.name}</strong>
+                                <div className="sub-text">Schedule ID #{sched.id}</div>
+                              </td>
+                              <td>
+                                <strong className="ip-text">{sched.target}</strong>
+                                <span className="rfc1918-tag">RFC 1918</span>
+                              </td>
+                              <td>
+                                <span className="badge badge-neutral">Every {sched.interval_minutes}m</span>
+                              </td>
+                              <td>
+                                <button
+                                  className={`toggle-pill ${sched.is_active ? "toggle-active" : "toggle-inactive"}`}
+                                  onClick={() => toggleScheduleActive(sched)}
+                                  title={sched.is_active ? "Click to pause schedule" : "Click to activate schedule"}
+                                >
+                                  <span className={`toggle-dot ${sched.is_active ? "dot-active" : ""}`} />
+                                  {sched.is_active ? "Active" : "Paused"}
+                                </button>
+                              </td>
+                              <td>
+                                <span className="text-xs text-slate">{formatDateTime(sched.last_run_at)}</span>
+                              </td>
+                              <td>
+                                <span className="text-xs" style={{ color: sched.is_active ? "#38bdf8" : "#64748b" }}>
+                                  {sched.is_active ? formatDateTime(sched.next_run_at) : "Paused"}
+                                </span>
+                              </td>
+                              <td>
+                                <div className="action-buttons-group">
+                                  <button
+                                    className="btn-action"
+                                    onClick={() => openEditScheduleModal(sched)}
+                                    title="Edit schedule details"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    className="btn-action btn-action-danger"
+                                    onClick={() => deleteSchedule(sched.id)}
+                                    title="Delete schedule"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ========================================================================= */}
+            {/* SUB-VIEW 3: NETWORK DRIFT & AUDIT FEED                                    */}
+            {/* ========================================================================= */}
+            {monitoringActiveTab === "drift" && (
+              <div className="monitoring-tab-content">
+                <div className="drift-filter-bar">
+                  <div className="filter-group">
+                    <label>Severity:</label>
+                    <select
+                      className="select-filter"
+                      value={driftSeverityFilter}
+                      onChange={(e) => {
+                        const newSev = e.target.value;
+                        setDriftSeverityFilter(newSev);
+                        setDriftOffset(0);
+                        fetchDriftEvents(0, newSev, driftTypeFilter);
+                      }}
+                    >
+                      <option value="All">All Severities</option>
+                      <option value="Critical">Critical</option>
+                      <option value="High">High</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Low">Low</option>
+                    </select>
+                  </div>
+
+                  <div className="filter-group">
+                    <label>Event Type:</label>
+                    <select
+                      className="select-filter"
+                      value={driftTypeFilter}
+                      onChange={(e) => {
+                        const newType = e.target.value;
+                        setDriftTypeFilter(newType);
+                        setDriftOffset(0);
+                        fetchDriftEvents(0, driftSeverityFilter, newType);
+                      }}
+                    >
+                      <option value="All">All Event Types</option>
+                      <option value="NEW_ASSET">New Asset (Unclassified)</option>
+                      <option value="PORT_OPENED">Port Opened</option>
+                      <option value="PORT_CLOSED">Port Closed</option>
+                      <option value="CVE_DETECTED">CVE Detected</option>
+                      <option value="FINDING_RESOLVED">Finding Resolved</option>
+                    </select>
+                  </div>
+
+                  <div className="drift-count-summary">
+                    Showing <strong>{driftEvents.length}</strong> of <strong>{driftTotal}</strong> drift events (newest first)
+                  </div>
+                </div>
+
+                {driftEventsLoading && driftEvents.length === 0 ? (
+                  <div className="monitoring-loading-box">
+                    <span className="ai-spinner" /> Loading drift events feed...
+                  </div>
+                ) : driftEventsError ? (
+                  <div className="monitoring-error-box">
+                    <div>⚠ {driftEventsError}</div>
+                    <button
+                      className="btn-secondary btn-sm"
+                      onClick={() => fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter)}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : (
+                  <div className="drift-events-list">
+                    {driftEvents.length === 0 ? (
+                      <div className="drift-empty-box">
+                        <div className="empty-icon">🛡</div>
+                        <div><strong>No infrastructure drift has been recorded.</strong></div>
+                        <div className="sub-text">
+                          Subsequent automated background scans will compare against the last successful baseline and record new assets, port changes, and CVE detections here.
+                        </div>
+                      </div>
+                    ) : (
+                      driftEvents.map((event) => {
+                        const matchedAsset = event.asset_id
+                          ? (assets || []).find((a) => a.id === event.asset_id)
+                          : null;
+
+                        return (
+                          <div key={event.id} className="drift-event-card">
+                            <div className="drift-card-header">
+                              <div className="drift-header-left">
+                                {getDriftSeverityBadge(event.severity)}
+                                {getDriftEventTypeBadge(event.event_type)}
+                                <span className="drift-time">{formatDateTime(event.detected_at)}</span>
+                              </div>
+                              <div className="drift-header-right">
+                                <span className="drift-job-tag">Scan Job #{event.scan_job_id}</span>
+                                {event.asset_id && (
+                                  <span className="drift-asset-tag">
+                                    Asset #{event.asset_id}
+                                    {matchedAsset?.ip_address ? ` (${matchedAsset.ip_address})` : ""}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="drift-card-body">
+                              <div className="drift-card-title">{event.title}</div>
+                              <p className="drift-card-desc">{event.description}</p>
+
+                              {/* CRITICAL: Unclassified Asset Warning Callout for NEW_ASSET */}
+                              {event.event_type === "NEW_ASSET" && (
+                                <div className="drift-unclassified-callout">
+                                  <span className="unclassified-pill">Unclassified asset</span>
+                                  <span className="unclassified-text">
+                                    Newly discovered host awaiting GRC assignment. Business criticality, environment, exposure, and ownership remain unassigned until an operator classifies them.
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+
+                    {/* Pagination Controls */}
+                    {driftTotal > driftLimit && (
+                      <div className="drift-pagination-bar">
+                        <button
+                          className="btn-secondary btn-sm"
+                          disabled={driftOffset === 0}
+                          onClick={() => {
+                            const newOffset = Math.max(0, driftOffset - driftLimit);
+                            setDriftOffset(newOffset);
+                            fetchDriftEvents(newOffset, driftSeverityFilter, driftTypeFilter);
+                          }}
+                        >
+                          ← Previous Page
+                        </button>
+                        <span className="pagination-info">
+                          Page {Math.floor(driftOffset / driftLimit) + 1} of {Math.ceil(driftTotal / driftLimit)}
+                        </span>
+                        <button
+                          className="btn-secondary btn-sm"
+                          disabled={driftOffset + driftLimit >= driftTotal}
+                          onClick={() => {
+                            const newOffset = driftOffset + driftLimit;
+                            setDriftOffset(newOffset);
+                            fetchDriftEvents(newOffset, driftSeverityFilter, driftTypeFilter);
+                          }}
+                        >
+                          Next Page →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        );
+      })()}
 
       {/* -------------------------------- */}
       {/* ASSET INVENTORY & POSTURE (Phase 3) */}
