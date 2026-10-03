@@ -1129,9 +1129,8 @@ function App() {
   const [submittingSchedule, setSubmittingSchedule] = useState(false);
 
   // ----------------------------------------
-  // Phase 6: Governance Review & Audit Center State
+  // Governance & Review Queue State
   // ----------------------------------------
-  const [govActiveTab, setGovActiveTab] = useState("queue"); // "queue" | "audit" | "reports"
 
   // 1. Governance Review Queue
   const [govReviews, setGovReviews] = useState([]);
@@ -1150,10 +1149,18 @@ function App() {
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState(null);
-  const [auditLimit] = useState(25);
+  const [auditLimit, setAuditLimit] = useState(25);
   const [auditOffset, setAuditOffset] = useState(0);
   const [auditSourceFilter, setAuditSourceFilter] = useState("All");
   const [auditActionFilter, setAuditActionFilter] = useState("All");
+  const [auditEntityFilter, setAuditEntityFilter] = useState("All");
+  const [auditSearchQuery, setAuditSearchQuery] = useState("");
+
+  // Audit Detail Modal State (Phase 9)
+  const [viewingAuditLog, setViewingAuditLog] = useState(null);
+  const [auditDetailLoading, setAuditDetailLoading] = useState(false);
+  const [auditDetailError, setAuditDetailError] = useState(null);
+  const [hashCopied, setHashCopied] = useState(false);
 
   // 3. Review Submission Modal State
   const [reviewingRisk, setReviewingRisk] = useState(null);
@@ -1362,15 +1369,24 @@ function App() {
     }
   };
 
-  const fetchAuditLogs = async (customOffset = auditOffset, customSource = auditSourceFilter, customAction = auditActionFilter) => {
+  const fetchAuditLogs = async (
+    customOffset = auditOffset,
+    customSource = auditSourceFilter,
+    customAction = auditActionFilter,
+    customEntity = auditEntityFilter,
+    customLimit = auditLimit
+  ) => {
     setAuditLoading(true);
     try {
-      let url = `${API_BASE}/audit-logs?limit=${auditLimit}&offset=${customOffset}`;
+      let url = `${API_BASE}/audit-logs?limit=${customLimit}&offset=${customOffset}`;
       if (customSource && customSource !== "All") {
         url += `&source=${encodeURIComponent(customSource)}`;
       }
       if (customAction && customAction !== "All") {
         url += `&action=${encodeURIComponent(customAction)}`;
+      }
+      if (customEntity && customEntity !== "All") {
+        url += `&entity_type=${encodeURIComponent(customEntity)}`;
       }
       const response = await fetch(url);
       if (response.ok) {
@@ -1386,6 +1402,37 @@ function App() {
       setAuditError("Unable to connect to audit logging service");
     } finally {
       setAuditLoading(false);
+    }
+  };
+
+  const openAuditDetailModal = async (log) => {
+    setViewingAuditLog(log);
+    setAuditDetailLoading(true);
+    setAuditDetailError(null);
+    setHashCopied(false);
+    try {
+      const response = await fetch(`${API_BASE}/audit-logs/${log.id}`);
+      if (response.ok) {
+        const fullLog = await response.json();
+        setViewingAuditLog(fullLog);
+      } else {
+        const err = await response.json().catch(() => null);
+        setAuditDetailError(err?.detail || `Failed to fetch complete event details (Status ${response.status})`);
+      }
+    } catch (err) {
+      setAuditDetailError(err.message || "Network error loading audit event details");
+    } finally {
+      setAuditDetailLoading(false);
+    }
+  };
+
+  const copyIntegrityHash = (hash) => {
+    if (!hash) return;
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(hash).then(() => {
+        setHashCopied(true);
+        setTimeout(() => setHashCopied(false), 2000);
+      }).catch(() => {});
     }
   };
 
@@ -2242,14 +2289,11 @@ function App() {
   const handleNavClick = (page) => {
     setActivePage(page);
     if (page === "reviews") {
-      setGovActiveTab("queue");
       setReviewsSubTab("queue");
     }
     else if (page === "audit") {
-      setGovActiveTab("audit");
-      if (auditLogs.length === 0) fetchAuditLogs(0, auditSourceFilter, auditActionFilter);
+      if (auditLogs.length === 0) fetchAuditLogs(0, auditSourceFilter, auditActionFilter, auditEntityFilter, auditLimit);
     }
-    else if (page === "reports") setGovActiveTab("reports");
   };
 
   const PAGE_META = {
@@ -6863,129 +6907,248 @@ function App() {
       })()}
 
       {/* ------------------------------------------------ */}
-      {/* GOVERNANCE: AUDIT TRAIL & REPORTS               */}
+      {/* PHASE 9: AUDIT TRAIL WORKSPACE                  */}
       {/* ------------------------------------------------ */}
-      {(activePage === "audit" || activePage === "reports") && (
-      <section className="panel governance-panel">
-        <div className="panel-header governance-panel-header">
-          <div>
-            <div className="gov-tag">GOVERNANCE, AUDIT & REPORTING</div>
-            <h2>Governance Audit & Reports</h2>
-            <p className="panel-desc">
-              Tamper-evident audit logging with SHA-256 integrity hashes, actor attribution, and regulatory report exports.
-            </p>
-          </div>
-          <div className="gov-header-actions">
-            <button
-              className="btn-secondary btn-sm"
-              onClick={() => {
-                if (govActiveTab === "audit") {
-                  fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter);
-                }
-              }}
-              title="Refresh Governance feeds"
-            >
-              ↻ Refresh Governance
-            </button>
-          </div>
-        </div>
+      {activePage === "audit" && (() => {
+        // Client-side search on currently loaded page records (Clarification 2)
+        const filteredLogs = auditLogs.filter((log) => {
+          if (!auditSearchQuery.trim()) return true;
+          const q = auditSearchQuery.trim().toLowerCase();
+          const descMatch = (log.description || "").toLowerCase().includes(q);
+          const actorMatch = (log.actor || "").toLowerCase().includes(q);
+          const entityNameMatch = (log.entity_name || "").toLowerCase().includes(q);
+          const entityIdMatch = log.entity_id != null && String(log.entity_id).includes(q);
+          const ipMatch = (log.ip_address || "").toLowerCase().includes(q);
+          const hashMatch = (log.integrity_hash || "").toLowerCase().includes(q);
+          const actionMatch = (log.action || "").toLowerCase().includes(q);
+          const sourceMatch = (log.source || "").toLowerCase().includes(q);
+          return descMatch || actorMatch || entityNameMatch || entityIdMatch || ipMatch || hashMatch || actionMatch || sourceMatch;
+        });
 
-        {/* Sub-Tab Navigation */}
-        <div className="gov-subtabs">
-          <button
-            className={`btn-subtab ${govActiveTab === "queue" ? "active" : ""}`}
-            onClick={() => { setGovActiveTab("queue"); setActivePage("reviews"); }}
-          >
-            <span>Reviews & Sign-off</span>
-            <span className="subtab-count">{govReviews.length}</span>
-          </button>
-          <button
-            className={`btn-subtab ${govActiveTab === "audit" ? "active" : ""}`}
-            onClick={() => {
-              setGovActiveTab("audit");
-              setActivePage("audit");
-              if (auditLogs.length === 0) {
-                fetchAuditLogs(0, auditSourceFilter, auditActionFilter);
-              }
-            }}
-          >
-            <span>Audit Trail</span>
-            <span className="subtab-count">{auditTotal}</span>
-          </button>
-          <button
-            className={`btn-subtab ${govActiveTab === "reports" ? "active" : ""}`}
-            onClick={() => { setGovActiveTab("reports"); setActivePage("reports"); }}
-          >
-            <span>Export Reports</span>
-            <span className="subtab-count">5</span>
-          </button>
-        </div>
+        const isFiltered = auditSearchQuery.trim() !== "" || auditSourceFilter !== "All" || auditActionFilter !== "All" || auditEntityFilter !== "All";
 
-        {/* TAB 2: AUDIT TRAIL */}
-        {govActiveTab === "audit" && (
-          <div className="gov-tab-content">
-            <div className="audit-filter-bar">
-              <div className="filter-group">
-                <label>Source:</label>
-                <select
-                  className="select-filter"
-                  value={auditSourceFilter}
-                  onChange={(e) => {
-                    const newSource = e.target.value;
-                    setAuditSourceFilter(newSource);
-                    setAuditOffset(0);
-                    fetchAuditLogs(0, newSource, auditActionFilter);
-                  }}
-                >
-                  <option value="All">All Sources</option>
-                  <option value="USER">USER</option>
-                  <option value="SYSTEM">SYSTEM</option>
-                  <option value="SCANNER">SCANNER</option>
-                  <option value="SCHEDULER">SCHEDULER</option>
-                  <option value="AI">AI</option>
-                  <option value="API">API</option>
-                </select>
+        const handleSourceChange = (e) => {
+          const newSource = e.target.value;
+          setAuditSourceFilter(newSource);
+          setAuditOffset(0);
+          fetchAuditLogs(0, newSource, auditActionFilter, auditEntityFilter, auditLimit);
+        };
+
+        const handleActionChange = (e) => {
+          const newAction = e.target.value;
+          setAuditActionFilter(newAction);
+          setAuditOffset(0);
+          fetchAuditLogs(0, auditSourceFilter, newAction, auditEntityFilter, auditLimit);
+        };
+
+        const handleEntityChange = (e) => {
+          const newEntity = e.target.value;
+          setAuditEntityFilter(newEntity);
+          setAuditOffset(0);
+          fetchAuditLogs(0, auditSourceFilter, auditActionFilter, newEntity, auditLimit);
+        };
+
+        const handleLimitChange = (e) => {
+          const newLimit = Number(e.target.value);
+          setAuditLimit(newLimit);
+          setAuditOffset(0);
+          fetchAuditLogs(0, auditSourceFilter, auditActionFilter, auditEntityFilter, newLimit);
+        };
+
+        const handleResetAllFilters = () => {
+          setAuditSourceFilter("All");
+          setAuditActionFilter("All");
+          setAuditEntityFilter("All");
+          setAuditSearchQuery("");
+          setAuditOffset(0);
+          fetchAuditLogs(0, "All", "All", "All", auditLimit);
+        };
+
+        // Calculate loaded page counts (Clarification 1: Clearly distinguish DB-wide total from page-level counts)
+        const pageUserCount = auditLogs.filter((l) => l.source === "USER").length;
+        const pageAutoCount = auditLogs.filter((l) => ["SCANNER", "SCHEDULER", "AI", "SYSTEM", "API"].includes(l.source)).length;
+        const pageDiffCount = auditLogs.filter((l) => Boolean(l.old_values || l.new_values)).length;
+
+        const totalPages = Math.max(1, Math.ceil(auditTotal / auditLimit));
+        const currentPage = Math.floor(auditOffset / auditLimit) + 1;
+
+        return (
+          <section className="panel audit-panel">
+            {/* Header */}
+            <div className="audit-page-header">
+              <div className="audit-header-left">
+                <div className="audit-badge-tag">TAMPER-EVIDENT GOVERNANCE LOG</div>
+                <h2>Audit Trail</h2>
+                <p className="audit-header-desc">
+                  Cryptographically verifiable, append-only chronological log of all governance reviews, security findings, automated scan executions, and risk treatment decisions.
+                </p>
               </div>
-
-              <div className="filter-group">
-                <label>Action:</label>
-                <select
-                  className="select-filter"
-                  value={auditActionFilter}
-                  onChange={(e) => {
-                    const newAction = e.target.value;
-                    setAuditActionFilter(newAction);
-                    setAuditOffset(0);
-                    fetchAuditLogs(0, auditSourceFilter, newAction);
-                  }}
+              <div className="audit-header-actions">
+                <div className="audit-append-pill" title="AuditLog is append-only through application API. No UPDATE or DELETE endpoints exist.">
+                  <span className="status-indicator-dot dot-green" /> Append-Only Mode
+                </div>
+                <button
+                  className="btn-secondary btn-sm"
+                  onClick={() => fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter, auditEntityFilter, auditLimit)}
+                  title="Refresh audit log feed"
                 >
-                  <option value="All">All Actions</option>
-                  <option value="RISK_REVIEW_SUBMITTED">RISK_REVIEW_SUBMITTED</option>
-                  <option value="RISK_REVIEW_STALE">RISK_REVIEW_STALE</option>
-                  <option value="EXPORT">EXPORT</option>
-                  <option value="EVIDENCE_CREATED">EVIDENCE_CREATED</option>
-                  <option value="EVIDENCE_DELETED">EVIDENCE_DELETED</option>
-                  <option value="SCAN_COMPLETED">SCAN_COMPLETED</option>
-                  <option value="SCAN_TRIGGERED">SCAN_TRIGGERED</option>
-                  <option value="CREATE">CREATE</option>
-                  <option value="UPDATE">UPDATE</option>
-                  <option value="DELETE">DELETE</option>
-                </select>
-              </div>
-
-              <button
-                className="btn-secondary btn-sm"
-                onClick={() => fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter)}
-                title="Refresh audit trail"
-              >
-                ↻ Refresh Audit
-              </button>
-
-              <div className="drift-count-summary" style={{ marginLeft: "auto" }}>
-                Showing {auditLogs.length} of {auditTotal} audit events (newest first)
+                  ↻ Refresh Audit
+                </button>
               </div>
             </div>
 
+            {/* KPI Cards Grid (4 Cards - Clarification 1: Clearly distinguishing DB-wide from page-level) */}
+            <div className="audit-kpi-grid">
+              <div className="audit-kpi-card">
+                <div className="audit-kpi-header">
+                  <span className="audit-kpi-icon kpi-icon-blue">📜</span>
+                  <span className="audit-kpi-badge badge-server-total">Server Total</span>
+                </div>
+                <div className="audit-kpi-value highlight-blue">{auditTotal}</div>
+                <div className="audit-kpi-label">Events matching DB filters</div>
+              </div>
+
+              <div className="audit-kpi-card">
+                <div className="audit-kpi-header">
+                  <span className="audit-kpi-icon kpi-icon-green">👤</span>
+                  <span className="audit-kpi-badge badge-page-user">Page Count</span>
+                </div>
+                <div className="audit-kpi-value highlight-green">{pageUserCount}</div>
+                <div className="audit-kpi-label">Human operator events (Loaded Page)</div>
+              </div>
+
+              <div className="audit-kpi-card">
+                <div className="audit-kpi-header">
+                  <span className="audit-kpi-icon kpi-icon-amber">⚙️</span>
+                  <span className="audit-kpi-badge badge-page-auto">Page Count</span>
+                </div>
+                <div className="audit-kpi-value highlight-amber">{pageAutoCount}</div>
+                <div className="audit-kpi-label">Automated / System events (Loaded Page)</div>
+              </div>
+
+              <div className="audit-kpi-card">
+                <div className="audit-kpi-header">
+                  <span className="audit-kpi-icon kpi-icon-purple">🔄</span>
+                  <span className="audit-kpi-badge badge-page-diff">Page Count</span>
+                </div>
+                <div className="audit-kpi-value highlight-purple">{pageDiffCount}</div>
+                <div className="audit-kpi-label">State mutations with delta (Loaded Page)</div>
+              </div>
+            </div>
+
+            {/* Filter and Search Controls Bar (Clarification 2) */}
+            <div className="audit-controls-bar">
+              <div className="audit-controls-top">
+                <div className="audit-search-wrap">
+                  <span className="audit-search-icon">🔍</span>
+                  <input
+                    type="text"
+                    className="audit-search-input"
+                    placeholder="Filter loaded page by description, actor, IP, hash..."
+                    value={auditSearchQuery}
+                    onChange={(e) => setAuditSearchQuery(e.target.value)}
+                  />
+                  {auditSearchQuery && (
+                    <button
+                      className="audit-search-clear"
+                      onClick={() => setAuditSearchQuery("")}
+                      title="Clear page search filter"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
+                <div className="filter-group">
+                  <label>Source:</label>
+                  <select
+                    className="select-filter"
+                    value={auditSourceFilter}
+                    onChange={handleSourceChange}
+                  >
+                    <option value="All">All Sources</option>
+                    <option value="USER">USER</option>
+                    <option value="SYSTEM">SYSTEM</option>
+                    <option value="SCANNER">SCANNER</option>
+                    <option value="SCHEDULER">SCHEDULER</option>
+                    <option value="AI">AI</option>
+                    <option value="API">API</option>
+                  </select>
+                </div>
+
+                <div className="filter-group">
+                  <label>Action:</label>
+                  <select
+                    className="select-filter"
+                    value={auditActionFilter}
+                    onChange={handleActionChange}
+                  >
+                    <option value="All">All Actions</option>
+                    <option value="RISK_REVIEW_SUBMITTED">RISK_REVIEW_SUBMITTED</option>
+                    <option value="RISK_REVIEW_STALE">RISK_REVIEW_STALE</option>
+                    <option value="EXPORT">EXPORT</option>
+                    <option value="EVIDENCE_CREATED">EVIDENCE_CREATED</option>
+                    <option value="EVIDENCE_DELETED">EVIDENCE_DELETED</option>
+                    <option value="SCAN_COMPLETED">SCAN_COMPLETED</option>
+                    <option value="SCAN_TRIGGERED">SCAN_TRIGGERED</option>
+                    <option value="CREATE">CREATE</option>
+                    <option value="UPDATE">UPDATE</option>
+                    <option value="DELETE">DELETE</option>
+                  </select>
+                </div>
+
+                <div className="filter-group">
+                  <label>Entity Type:</label>
+                  <select
+                    className="select-filter"
+                    value={auditEntityFilter}
+                    onChange={handleEntityChange}
+                  >
+                    <option value="All">All Entity Types</option>
+                    <option value="Risk">Risk</option>
+                    <option value="Asset">Asset</option>
+                    <option value="Control">Control</option>
+                    <option value="ComplianceRequirement">ComplianceRequirement</option>
+                    <option value="ScanJob">ScanJob</option>
+                    <option value="EvidenceRecord">EvidenceRecord</option>
+                  </select>
+                </div>
+
+                <div className="filter-group">
+                  <label>Page Size:</label>
+                  <select
+                    className="select-filter"
+                    value={auditLimit}
+                    onChange={handleLimitChange}
+                  >
+                    <option value="25">25 per page</option>
+                    <option value="50">50 per page</option>
+                    <option value="100">100 per page</option>
+                  </select>
+                </div>
+
+                {isFiltered && (
+                  <button
+                    className="btn-secondary btn-sm"
+                    onClick={handleResetAllFilters}
+                    title="Reset all filters and page search"
+                  >
+                    ✕ Reset Filters
+                  </button>
+                )}
+              </div>
+
+              <div className="audit-controls-bottom">
+                <div className="audit-search-hint">
+                  ℹ️ Text search filters visible records on currently loaded page ({filteredLogs.length} of {auditLogs.length} shown). Dropdowns execute server-wide database queries.
+                </div>
+                <div className="audit-count-summary">
+                  Showing {auditLogs.length} of {auditTotal} database records (Page {currentPage} of {totalPages})
+                </div>
+              </div>
+            </div>
+
+            {/* Table or Loading/Error States */}
             {auditLoading && auditLogs.length === 0 ? (
               <div className="monitoring-loading-box">
                 <span className="ai-spinner" /> Loading audit trail...
@@ -6995,33 +7158,45 @@ function App() {
                 <div>⚠ {auditError}</div>
                 <button
                   className="btn-secondary btn-sm"
-                  onClick={() => fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter)}
+                  onClick={() => fetchAuditLogs(auditOffset, auditSourceFilter, auditActionFilter, auditEntityFilter, auditLimit)}
                 >
                   Retry
                 </button>
               </div>
-            ) : auditLogs.length === 0 ? (
+            ) : filteredLogs.length === 0 ? (
               <div className="gov-empty-box">
-                <div className="empty-icon">📜</div>
-                <div><strong>No audit log entries found</strong></div>
-                <div className="sub-text">
-                  Events matching the current filter will be recorded here in an append-only, tamper-evident log.
+                <div className="empty-icon">{isFiltered ? "🔍" : "📜"}</div>
+                <div>
+                  <strong>
+                    {isFiltered ? "No matching audit log entries" : "No audit log entries found"}
+                  </strong>
                 </div>
+                <div className="sub-text">
+                  {isFiltered
+                    ? "No audit records matched your current search keyword or filter settings."
+                    : "Events will be recorded here in an append-only, tamper-evident log as security and governance actions occur."}
+                </div>
+                {isFiltered && (
+                  <button className="btn-secondary btn-sm" onClick={handleResetAllFilters}>
+                    Reset Filters
+                  </button>
+                )}
               </div>
             ) : (
               <div className="table-responsive">
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Timestamp</th>
+                      <th>Timestamp & ID</th>
                       <th>Source & Action</th>
-                      <th>Actor</th>
-                      <th>Entity</th>
-                      <th>Description & Diff</th>
+                      <th>Actor & IP</th>
+                      <th>Target Entity</th>
+                      <th>Description & Integrity</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {auditLogs.map((log) => (
+                    {filteredLogs.map((log) => (
                       <tr key={log.id}>
                         <td style={{ whiteSpace: "nowrap" }}>
                           <div className="text-xs font-semibold">{formatDateTime(log.timestamp)}</div>
@@ -7034,15 +7209,15 @@ function App() {
                           </div>
                         </td>
                         <td>
-                          <strong>{log.actor}</strong>
-                          {log.ip_address && (
-                            <div className="sub-text">{log.ip_address}</div>
-                          )}
+                          <div className="font-semibold text-white">{log.actor}</div>
+                          <div className="sub-text" style={{ marginTop: "2px" }}>
+                            <span className="ip-pill">{log.ip_address || "127.0.0.1"}</span>
+                          </div>
                         </td>
                         <td>
                           <strong>{log.entity_type || "—"}</strong>
                           <div className="sub-text">
-                            {log.entity_name ? log.entity_name : (log.entity_id ? `ID #${log.entity_id}` : "")}
+                            {log.entity_name ? log.entity_name : (log.entity_id != null ? `ID #${log.entity_id}` : "")}
                           </div>
                         </td>
                         <td style={{ minWidth: "320px" }}>
@@ -7056,24 +7231,41 @@ function App() {
                                 {log.old_values && (
                                   <div className="diff-col">
                                     <div className="diff-col-header">Previous State</div>
-                                    <pre className="diff-json">{JSON.stringify(log.old_values, null, 2)}</pre>
+                                    <pre className="diff-json">
+                                      {typeof log.old_values === "object"
+                                        ? JSON.stringify(log.old_values, null, 2)
+                                        : String(log.old_values)}
+                                    </pre>
                                   </div>
                                 )}
                                 {log.new_values && (
                                   <div className="diff-col">
                                     <div className="diff-col-header">Updated State</div>
-                                    <pre className="diff-json">{JSON.stringify(log.new_values, null, 2)}</pre>
+                                    <pre className="diff-json">
+                                      {typeof log.new_values === "object"
+                                        ? JSON.stringify(log.new_values, null, 2)
+                                        : String(log.new_values)}
+                                    </pre>
                                   </div>
                                 )}
                               </div>
                             </details>
                           )}
                           {log.integrity_hash && (
-                            <div className="audit-hash" title={`SHA-256 Digest: ${log.integrity_hash}`}>
-                              <span className="hash-label">Integrity Hash:</span>
+                            <div className="audit-hash" title={`Deterministic SHA-256 Digest: ${log.integrity_hash}`}>
+                              <span className="hash-label">SHA-256:</span>
                               <code>{log.integrity_hash.substring(0, 16)}...</code>
                             </div>
                           )}
+                        </td>
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          <button
+                            className="btn-action btn-action-primary"
+                            onClick={() => openAuditDetailModal(log)}
+                            title="Inspect event metadata, full SHA-256 hash, and state delta"
+                          >
+                            Inspect Event
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -7089,13 +7281,13 @@ function App() {
                       onClick={() => {
                         const newOffset = Math.max(0, auditOffset - auditLimit);
                         setAuditOffset(newOffset);
-                        fetchAuditLogs(newOffset, auditSourceFilter, auditActionFilter);
+                        fetchAuditLogs(newOffset, auditSourceFilter, auditActionFilter, auditEntityFilter, auditLimit);
                       }}
                     >
                       ← Previous Page
                     </button>
                     <span className="pagination-info">
-                      Page {Math.floor(auditOffset / auditLimit) + 1} of {Math.ceil(auditTotal / auditLimit)}
+                      Page {currentPage} of {totalPages}
                     </span>
                     <button
                       className="btn-secondary btn-sm"
@@ -7103,7 +7295,7 @@ function App() {
                       onClick={() => {
                         const newOffset = auditOffset + auditLimit;
                         setAuditOffset(newOffset);
-                        fetchAuditLogs(newOffset, auditSourceFilter, auditActionFilter);
+                        fetchAuditLogs(newOffset, auditSourceFilter, auditActionFilter, auditEntityFilter, auditLimit);
                       }}
                     >
                       Next Page →
@@ -7112,64 +7304,77 @@ function App() {
                 )}
               </div>
             )}
+          </section>
+        );
+      })()}
+
+      {/* ------------------------------------------------ */}
+      {/* REPORTS PANEL                                   */}
+      {/* ------------------------------------------------ */}
+      {activePage === "reports" && (
+      <section className="panel governance-panel">
+        <div className="panel-header governance-panel-header">
+          <div>
+            <div className="gov-tag">REGULATORY & COMPLIANCE EXPORTS</div>
+            <h2>Export Reports</h2>
+            <p className="panel-desc">
+              Generate and download executive, technical, and regulatory reports across multiple formats (JSON, CSV, HTML).
+            </p>
           </div>
-        )}
+        </div>
 
-        {/* TAB 3: EXPORT REPORTS */}
-        {govActiveTab === "reports" && (
-          <div className="gov-tab-content">
-            {reportDownloadError && (
-              <div className="monitoring-error-banner" style={{ marginBottom: "16px" }}>
-                <span>⚠ {reportDownloadError}</span>
-                <button className="btn-link" onClick={() => setReportDownloadError(null)}>Dismiss</button>
-              </div>
-            )}
-
-            <div className="reports-grid">
-              {REPORT_TYPES.map((rep) => (
-                <div key={rep.id} className="report-card">
-                  <div>
-                    <div className="report-card-tag">{rep.category}</div>
-                    <div className="report-card-title">{rep.title}</div>
-                    <p className="report-card-desc">{rep.desc}</p>
-                  </div>
-                  <div className="report-card-actions">
-                    <button
-                      className="btn-format btn-format-json"
-                      disabled={downloadingReport?.type === rep.id}
-                      onClick={() => handleExportReport(rep.id, "json")}
-                      title="Export structured JSON report"
-                    >
-                      {downloadingReport?.type === rep.id && downloadingReport?.format === "json"
-                        ? "Exporting..."
-                        : "JSON"}
-                    </button>
-                    <button
-                      className="btn-format btn-format-csv"
-                      disabled={downloadingReport?.type === rep.id}
-                      onClick={() => handleExportReport(rep.id, "csv")}
-                      title="Export tabular CSV report"
-                    >
-                      {downloadingReport?.type === rep.id && downloadingReport?.format === "csv"
-                        ? "Exporting..."
-                        : "CSV"}
-                    </button>
-                    <button
-                      className="btn-format btn-format-html"
-                      disabled={downloadingReport?.type === rep.id}
-                      onClick={() => handleExportReport(rep.id, "html")}
-                      title="Export formatted HTML report"
-                    >
-                      {downloadingReport?.type === rep.id && downloadingReport?.format === "html"
-                        ? "Exporting..."
-                        : "HTML"}
-                    </button>
-                  </div>
-                </div>
-              ))}
+        <div className="gov-tab-content">
+          {reportDownloadError && (
+            <div className="monitoring-error-banner" style={{ marginBottom: "16px" }}>
+              <span>⚠ {reportDownloadError}</span>
+              <button className="btn-link" onClick={() => setReportDownloadError(null)}>Dismiss</button>
             </div>
+          )}
+
+          <div className="reports-grid">
+            {REPORT_TYPES.map((rep) => (
+              <div key={rep.id} className="report-card">
+                <div>
+                  <div className="report-card-tag">{rep.category}</div>
+                  <div className="report-card-title">{rep.title}</div>
+                  <p className="report-card-desc">{rep.desc}</p>
+                </div>
+                <div className="report-card-actions">
+                  <button
+                    className="btn-format btn-format-json"
+                    disabled={downloadingReport?.type === rep.id}
+                    onClick={() => handleExportReport(rep.id, "json")}
+                    title="Export structured JSON report"
+                  >
+                    {downloadingReport?.type === rep.id && downloadingReport?.format === "json"
+                      ? "Exporting..."
+                      : "JSON"}
+                  </button>
+                  <button
+                    className="btn-format btn-format-csv"
+                    disabled={downloadingReport?.type === rep.id}
+                    onClick={() => handleExportReport(rep.id, "csv")}
+                    title="Export tabular CSV report"
+                  >
+                    {downloadingReport?.type === rep.id && downloadingReport?.format === "csv"
+                      ? "Exporting..."
+                      : "CSV"}
+                  </button>
+                  <button
+                    className="btn-format btn-format-html"
+                    disabled={downloadingReport?.type === rep.id}
+                    onClick={() => handleExportReport(rep.id, "html")}
+                    title="Export formatted HTML report"
+                  >
+                    {downloadingReport?.type === rep.id && downloadingReport?.format === "html"
+                      ? "Exporting..."
+                      : "HTML"}
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
-        )}
+        </div>
       </section>
       )}
 
@@ -8868,6 +9073,161 @@ function App() {
             </div>
             <div className="modal-footer">
               <button className="btn-secondary" onClick={() => setHistoryRisk(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ------------------------------------------------ */}
+      {/* MODAL: AUDIT EVENT INSPECTOR & DIFF (PHASE 9)    */}
+      {/* ------------------------------------------------ */}
+      {viewingAuditLog && (
+        <div className="modal-backdrop" onClick={() => setViewingAuditLog(null)}>
+          <div className="modal-content modal-audit-inspector" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3>Audit Event Inspector — Event #{viewingAuditLog.id}</h3>
+                <div className="sub-text">
+                  Recorded {formatDateTime(viewingAuditLog.timestamp)} • Source: {viewingAuditLog.source}
+                </div>
+              </div>
+              <button className="modal-close" onClick={() => setViewingAuditLog(null)}>×</button>
+            </div>
+
+            <div className="modal-body" style={{ maxHeight: "calc(85vh - 140px)", overflowY: "auto" }}>
+              {auditDetailLoading ? (
+                <div className="monitoring-loading-box" style={{ padding: "30px 10px" }}>
+                  <span className="ai-spinner" /> Loading complete canonical event record...
+                </div>
+              ) : auditDetailError ? (
+                <div className="monitoring-error-box">
+                  <div>⚠ {auditDetailError}</div>
+                  <button className="btn-secondary btn-sm" onClick={() => openAuditDetailModal(viewingAuditLog)}>
+                    Retry
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {/* Event Attributes */}
+                  <div className="audit-meta-grid">
+                    <div className="audit-meta-item">
+                      <span className="audit-meta-label">Actor Attribution</span>
+                      <div className="audit-meta-val font-semibold">{viewingAuditLog.actor || "—"}</div>
+                    </div>
+                    <div className="audit-meta-item">
+                      <span className="audit-meta-label">Client / Source IP</span>
+                      <div className="audit-meta-val">
+                        <span className="ip-pill">{viewingAuditLog.ip_address || "127.0.0.1"}</span>
+                      </div>
+                    </div>
+                    <div className="audit-meta-item">
+                      <span className="audit-meta-label">Execution Source</span>
+                      <div className="audit-meta-val">{getAuditSourceBadge(viewingAuditLog.source)}</div>
+                    </div>
+                    <div className="audit-meta-item">
+                      <span className="audit-meta-label">Action Classification</span>
+                      <div className="audit-meta-val">{getAuditActionBadge(viewingAuditLog.action)}</div>
+                    </div>
+                    <div className="audit-meta-item">
+                      <span className="audit-meta-label">Target Entity</span>
+                      <div className="audit-meta-val">
+                        <strong>{viewingAuditLog.entity_type || "—"}</strong>
+                        {viewingAuditLog.entity_id != null && (
+                          <span className="sub-text" style={{ marginLeft: "6px" }}>
+                            (ID #{viewingAuditLog.entity_id})
+                          </span>
+                        )}
+                        {viewingAuditLog.entity_name && (
+                          <div className="sub-text">{viewingAuditLog.entity_name}</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="audit-meta-item">
+                      <span className="audit-meta-label">UTC Timestamp</span>
+                      <div className="audit-meta-val text-xs text-slate">
+                        {viewingAuditLog.timestamp ? new Date(viewingAuditLog.timestamp).toUTCString() : "—"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Description */}
+                  <div className="audit-desc-box">
+                    <div className="desc-header">Event Description</div>
+                    <div className="desc-text">{viewingAuditLog.description || "No descriptive summary provided."}</div>
+                  </div>
+
+                  {/* Tamper-Evident SHA-256 Hash */}
+                  <div className="audit-hash-card">
+                    <div className="audit-hash-header">
+                      <span className="audit-hash-title">Tamper-Evident SHA-256 Digest</span>
+                      {viewingAuditLog.integrity_hash && (
+                        <button
+                          type="button"
+                          className="audit-hash-copy-btn"
+                          onClick={() => copyIntegrityHash(viewingAuditLog.integrity_hash)}
+                          title="Copy SHA-256 hash to clipboard"
+                        >
+                          {hashCopied ? "✓ Copied!" : "📋 Copy SHA-256"}
+                        </button>
+                      )}
+                    </div>
+                    <div className="audit-hash-code-full">
+                      {viewingAuditLog.integrity_hash || "No integrity hash recorded for this entry."}
+                    </div>
+                    <p className="audit-hash-explainer">
+                      Deterministic SHA-256 digest computed over canonical immutable event fields (timestamp, source, actor, action, entity, IP, and state values) upon record creation. Audit log is append-only via application API constraints.
+                    </p>
+                  </div>
+
+                  {/* State Diff / Changes */}
+                  <div className="audit-diff-section">
+                    <div className="audit-diff-section-title">Recorded State Mutation (Delta)</div>
+                    {viewingAuditLog.old_values || viewingAuditLog.new_values ? (
+                      <div className="audit-diff-content">
+                        {viewingAuditLog.old_values ? (
+                          <div className="diff-col">
+                            <div className="diff-col-header">Previous State (Pre-Change)</div>
+                            <pre className="diff-json">
+                              {typeof viewingAuditLog.old_values === "object"
+                                ? JSON.stringify(viewingAuditLog.old_values, null, 2)
+                                : String(viewingAuditLog.old_values)}
+                            </pre>
+                          </div>
+                        ) : (
+                          <div className="diff-col" style={{ opacity: 0.6 }}>
+                            <div className="diff-col-header">Previous State</div>
+                            <div className="sub-text" style={{ padding: "8px 0" }}>None (Entity creation event)</div>
+                          </div>
+                        )}
+                        {viewingAuditLog.new_values ? (
+                          <div className="diff-col">
+                            <div className="diff-col-header">Updated State (Post-Change)</div>
+                            <pre className="diff-json">
+                              {typeof viewingAuditLog.new_values === "object"
+                                ? JSON.stringify(viewingAuditLog.new_values, null, 2)
+                                : String(viewingAuditLog.new_values)}
+                            </pre>
+                          </div>
+                        ) : (
+                          <div className="diff-col" style={{ opacity: 0.6 }}>
+                            <div className="diff-col-header">Updated State</div>
+                            <div className="sub-text" style={{ padding: "8px 0" }}>None (Entity deletion event)</div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="audit-no-diff-box">
+                        No state mutation recorded for this event (informational or read-only event).
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setViewingAuditLog(null)}>
                 Close
               </button>
             </div>
