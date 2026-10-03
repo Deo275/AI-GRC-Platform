@@ -1042,6 +1042,11 @@ function App() {
   const [aiError, setAiError] = useState({});                // { [riskId]: string | null }
   const [expandedAiPanel, setExpandedAiPanel] = useState(null); // riskId | null (one panel open at a time)
 
+  // Phase 11: AI Copilot Drawer State
+  const [showCopilotDrawer, setShowCopilotDrawer] = useState(false);
+  const [copilotSelectedRiskId, setCopilotSelectedRiskId] = useState(null);
+  const [copilotActiveSection, setCopilotActiveSection] = useState("all"); // "all" | "remediation" | "controls" | "impact"
+
   // Modals state
   const [editingAsset, setEditingAsset] = useState(null);
   const [viewingAsset, setViewingAsset] = useState(null);
@@ -1458,6 +1463,17 @@ function App() {
       }).catch(() => {});
     }
   };
+
+  // Phase 11: Close Copilot drawer on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape" && showCopilotDrawer) {
+        setShowCopilotDrawer(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showCopilotDrawer]);
 
   const submitNewJob = async (e) => {
     if (e) e.preventDefault();
@@ -1984,9 +2000,10 @@ function App() {
   // Never calls refreshAll() — AI state is isolated from GRC risk data.
   // ----------------------------------------
 
-  const handleAnalyzeRisk = async (riskId) => {
-    // Toggle panel closed if already open for this risk
-    if (expandedAiPanel === riskId) {
+  const handleAnalyzeRisk = async (riskId, skipToggle = false) => {
+    setCopilotSelectedRiskId(riskId);
+    // Toggle panel closed if already open for this risk (unless skipToggle is true)
+    if (!skipToggle && expandedAiPanel === riskId) {
       setExpandedAiPanel(null);
       return;
     }
@@ -2404,24 +2421,19 @@ function App() {
           </div>
           <div className="top-bar-right">
             <button
-              className={`ai-copilot-btn${activePage === "risk-management" ? " ai-copilot-available" : ""}`}
-              disabled={activePage !== "risk-management"}
-              title={activePage === "risk-management"
-                ? "AI Risk Analysis available \u2014 select an individual risk finding below or open Details to run \u2726 AI Analysis"
-                : "AI analysis is available on the Risk Management page"}
+              type="button"
+              className={`ai-copilot-btn ai-copilot-available${showCopilotDrawer ? " ai-copilot-active" : ""}`}
+              title="Open AI Copilot — Security & Risk Intelligence Workspace"
               onClick={() => {
-                if (activePage === "risk-management") {
-                  if (viewingRisk) {
-                    handleAnalyzeRisk(viewingRisk.id);
-                  } else {
-                    setRiskSubTab("register");
-                  }
+                setShowCopilotDrawer((prev) => !prev);
+                if (!copilotSelectedRiskId && risks.length > 0) {
+                  setCopilotSelectedRiskId(viewingRisk ? viewingRisk.id : risks[0].id);
                 }
               }}
             >
               <span className="ai-copilot-icon">✦</span>
               <span className="ai-copilot-label">AI Copilot</span>
-              {activePage === "risk-management" && <span className="ai-copilot-status-dot" />}
+              <span className="ai-copilot-status-dot" />
             </button>
           </div>
         </header>
@@ -9522,6 +9534,449 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* ------------------------------------------------ */}
+      {/* GLOBAL AI COPILOT SLIDE-OVER DRAWER (PHASE 11)   */}
+      {/* ------------------------------------------------ */}
+      {showCopilotDrawer && (() => {
+        const activeRisk =
+          risks.find((r) => r.id === copilotSelectedRiskId) ||
+          (risks.length > 0 ? risks[0] : null);
+
+        const activeRiskId = activeRisk?.id;
+        const currentAnalysis = activeRiskId ? aiAnalysis[activeRiskId] : null;
+        const isLoading = activeRiskId ? Boolean(aiLoading[activeRiskId]) : false;
+        const currentError = activeRiskId ? aiError[activeRiskId] : null;
+
+        const confidencePct = currentAnalysis ? Math.round((currentAnalysis.confidence || 0) * 100) : 0;
+        const confClass = confidencePct >= 75 ? "high" : confidencePct >= 50 ? "med" : "low";
+
+        const priorityBadgeClass = (p) => {
+          switch ((p || "").toLowerCase()) {
+            case "critical": return "badge-critical";
+            case "high": return "badge-high";
+            case "medium": return "badge-medium";
+            case "low": return "badge-low";
+            default: return "badge-neutral";
+          }
+        };
+
+        const activeOperatorName = reviewForm.reviewer_name.trim() || "Security Analyst";
+
+        return (
+          <div className="copilot-drawer-backdrop" onClick={() => setShowCopilotDrawer(false)}>
+            <aside
+              className="copilot-drawer"
+              onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-label="AI Security and GRC Copilot"
+            >
+              {/* Drawer Header */}
+              <div className="copilot-drawer-header">
+                <div className="copilot-header-brand">
+                  <div className="copilot-icon-badge">✦</div>
+                  <div>
+                    <h2 className="copilot-title">AI Security & GRC Copilot</h2>
+                    <p className="copilot-sub">
+                      On-demand risk intelligence, dual-audience explanations, and 3-tier remediation
+                    </p>
+                  </div>
+                </div>
+                <div className="copilot-header-actions">
+                  <div className="copilot-header-meta">
+                    <span className="copilot-advisory-pill">Advisory Only</span>
+                    <span className="copilot-operator-tag" title="Operator attributed in analysis audit logs">
+                      Operator: {activeOperatorName}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="copilot-close-btn"
+                    onClick={() => setShowCopilotDrawer(false)}
+                    title="Close Copilot drawer (Escape)"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {/* Drawer Body */}
+              <div className="copilot-drawer-body">
+                {/* 1. Finding Selector Section */}
+                <div className="copilot-section-card">
+                  <div className="copilot-card-label">SELECTED RISK FINDING CONTEXT</div>
+                  {risks.length === 0 ? (
+                    <div className="copilot-empty-note">
+                      No risks registered yet. Discover hosts or add risks in Risk Management to analyze with AI.
+                    </div>
+                  ) : (
+                    <>
+                      <select
+                        className="copilot-risk-select"
+                        value={activeRiskId || ""}
+                        onChange={(e) => {
+                          const id = Number(e.target.value);
+                          setCopilotSelectedRiskId(id);
+                        }}
+                      >
+                        {risks.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            Risk #{r.id}: {r.title} ({r.asset ? r.asset.ip_address : "Unassigned"}) [{r.residual_risk_level || r.risk_level || "Medium"}]
+                          </option>
+                        ))}
+                      </select>
+
+                      {activeRisk && (
+                        <div className="copilot-risk-meta-grid">
+                          <div className="copilot-meta-item">
+                            <span className="meta-k">Host Asset:</span>
+                            <span className="meta-v font-mono">{activeRisk.asset?.ip_address || "Unassigned"}</span>
+                          </div>
+                          <div className="copilot-meta-item">
+                            <span className="meta-k">Inherent Risk:</span>
+                            <span className="meta-v">{activeRisk.inherent_risk_level || activeRisk.risk_level || "Medium"} ({activeRisk.inherent_risk_score || activeRisk.risk_score || "—"})</span>
+                          </div>
+                          <div className="copilot-meta-item">
+                            <span className="meta-k">Residual Risk:</span>
+                            <span className="meta-v">{activeRisk.residual_risk_level || "—"} ({activeRisk.residual_risk_score || "—"})</span>
+                          </div>
+                          <div className="copilot-meta-item">
+                            <span className="meta-k">Treatment:</span>
+                            <span className="meta-v">{activeRisk.treatment || "Mitigate"}</span>
+                          </div>
+                          <div className="copilot-meta-item">
+                            <span className="meta-k">Status:</span>
+                            <span className="meta-v">{activeRisk.status || "Open"}</span>
+                          </div>
+                          <div className="copilot-meta-item">
+                            <span className="meta-k">Governance Review:</span>
+                            <span className="meta-v">{activeRisk.review_status || "Pending Review"}</span>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* 2. Analysis Actions & Focus Chips */}
+                {activeRisk && (
+                  <div className="copilot-actions-bar">
+                    {!currentAnalysis && !isLoading ? (
+                      <button
+                        type="button"
+                        className="btn-primary copilot-primary-btn"
+                        onClick={() => handleAnalyzeRisk(activeRisk.id, true)}
+                      >
+                        ✦ Run AI Intelligence Analysis
+                      </button>
+                    ) : (
+                      <div className="copilot-controls-row">
+                        <div className="copilot-focus-chips">
+                          <span className="copilot-chips-label">Focus View:</span>
+                          <button
+                            type="button"
+                            className={`copilot-chip ${copilotActiveSection === "all" ? "active" : ""}`}
+                            onClick={() => setCopilotActiveSection("all")}
+                          >
+                            All Insights
+                          </button>
+                          <button
+                            type="button"
+                            className={`copilot-chip ${copilotActiveSection === "remediation" ? "active" : ""}`}
+                            onClick={() => setCopilotActiveSection("remediation")}
+                          >
+                            3-Tier Remediation
+                          </button>
+                          <button
+                            type="button"
+                            className={`copilot-chip ${copilotActiveSection === "controls" ? "active" : ""}`}
+                            onClick={() => setCopilotActiveSection("controls")}
+                          >
+                            Catalog Controls
+                          </button>
+                          <button
+                            type="button"
+                            className={`copilot-chip ${copilotActiveSection === "impact" ? "active" : ""}`}
+                            onClick={() => setCopilotActiveSection("impact")}
+                          >
+                            Root Cause & Impact
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-secondary copilot-reanalyze-btn"
+                          disabled={isLoading}
+                          onClick={() => handleReanalyzeRisk(activeRisk.id)}
+                          title="Trigger fresh AI analysis from backend"
+                        >
+                          ↺ Re-analyze
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 3. Status States: Loading, Error, Content, Empty */}
+                {isLoading && (
+                  <div className="copilot-state-card copilot-loading-card">
+                    <span className="copilot-spinner" />
+                    <div className="copilot-state-content">
+                      <div className="copilot-state-title">
+                        Synthesizing Security Intelligence...
+                      </div>
+                      <p className="copilot-state-desc">
+                        Invoking the configured backend AI provider chain for Risk #{activeRiskId}. Evaluating normalized host context, CVE correlations, and catalog controls.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {currentError && !isLoading && (
+                  <div className="copilot-state-card copilot-error-card">
+                    <span className="copilot-error-icon">⚠</span>
+                    <div className="copilot-state-content">
+                      <div className="copilot-state-title">Analysis Failed</div>
+                      <p className="copilot-state-desc">{currentError}</p>
+                      <button
+                        type="button"
+                        className="btn-secondary btn-sm"
+                        onClick={() => handleAnalyzeRisk(activeRiskId, true)}
+                        style={{ marginTop: "10px" }}
+                      >
+                        Retry Analysis
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {!isLoading && !currentError && !currentAnalysis && activeRisk && (
+                  <div className="copilot-state-card copilot-empty-card">
+                    <div className="copilot-empty-icon">✦</div>
+                    <div className="copilot-state-title">No Prior Analysis for Risk #{activeRiskId}</div>
+                    <p className="copilot-state-desc">
+                      The backend evaluates this security finding against configured LLMs (Gemini / OpenAI / Groq) with deterministic local rule fallback, generating plain-language explanations, business consequences, and a 3-tier remediation plan.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => handleAnalyzeRisk(activeRiskId, true)}
+                      style={{ marginTop: "12px" }}
+                    >
+                      ✦ Analyze Risk #{activeRiskId} Now
+                    </button>
+                  </div>
+                )}
+
+                {!isLoading && !currentError && currentAnalysis && (
+                  <div className="copilot-result-container">
+                    {/* Model, Priority & Confidence Header */}
+                    <div className="copilot-result-header">
+                      <div className="copilot-res-left">
+                        <span className={`badge ${priorityBadgeClass(currentAnalysis.priority)}`}>
+                          AI Priority: {currentAnalysis.priority}
+                        </span>
+                        <span className="copilot-model-pill" title="Actual provider/model reported in backend response">
+                          Engine: {currentAnalysis.model_name}
+                        </span>
+                        {currentAnalysis.created_at && (
+                          <span className="copilot-time-pill">
+                            Generated: {formatDateTime(currentAnalysis.created_at)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="copilot-res-right">
+                        <span className="copilot-conf-label">Confidence:</span>
+                        <div className="copilot-confidence-bar">
+                          <div
+                            className={`copilot-confidence-fill conf-${confClass}`}
+                            style={{ width: `${confidencePct}%` }}
+                          />
+                        </div>
+                        <span className={`copilot-conf-pct conf-${confClass}`}>{confidencePct}%</span>
+                      </div>
+                    </div>
+
+                    {/* Human Review Warning if triggered */}
+                    {currentAnalysis.human_review_required && (
+                      <div className="copilot-review-warning">
+                        <div className="warning-title">
+                          ⚠ Human Review Recommended — Validate before making governance or operational decisions
+                        </div>
+                        {currentAnalysis.human_review_reasons && currentAnalysis.human_review_reasons.length > 0 && (
+                          <ul className="warning-reasons">
+                            {currentAnalysis.human_review_reasons.map((reason, idx) => (
+                              <li key={idx}>{reason}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Executive Summary */}
+                    {(copilotActiveSection === "all" || copilotActiveSection === "impact") && currentAnalysis.simple_explanation && (
+                      <div className="copilot-insight-box">
+                        <div className="insight-title">Executive Security Intelligence Summary</div>
+                        <p className="insight-body">{currentAnalysis.simple_explanation}</p>
+                      </div>
+                    )}
+
+                    {/* Why It Matters & Technical Severity */}
+                    {(copilotActiveSection === "all" || copilotActiveSection === "impact") && (
+                      <div className="copilot-two-col">
+                        {currentAnalysis.why_it_matters && (
+                          <div className="copilot-mini-card">
+                            <div className="mini-card-title">Why It Matters</div>
+                            <div className="mini-card-text">{currentAnalysis.why_it_matters}</div>
+                          </div>
+                        )}
+                        {currentAnalysis.severity_explanation && (
+                          <div className="copilot-mini-card">
+                            <div className="mini-card-title">Technical Severity Assessment</div>
+                            <div className="mini-card-text">{currentAnalysis.severity_explanation}</div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Risk Factors & Potential Impact */}
+                    {(copilotActiveSection === "all" || copilotActiveSection === "impact") && (
+                      <>
+                        {currentAnalysis.risk_factors && currentAnalysis.risk_factors.length > 0 && (
+                          <div className="copilot-insight-box">
+                            <div className="insight-title">Identified Risk Factors</div>
+                            <div className="copilot-chips-wrap">
+                              {currentAnalysis.risk_factors.map((rf, idx) => (
+                                <span key={idx} className="copilot-factor-chip">{rf}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {currentAnalysis.potential_business_impact && currentAnalysis.potential_business_impact.length > 0 && (
+                          <div className="copilot-insight-box">
+                            <div className="insight-title">Potential Business Consequences</div>
+                            <ul className="copilot-bullet-list">
+                              {currentAnalysis.potential_business_impact.map((imp, idx) => (
+                                <li key={idx}>{imp}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* 3-Tier Remediation Steps */}
+                    {(copilotActiveSection === "all" || copilotActiveSection === "remediation") && currentAnalysis.remediation && (
+                      <div className="copilot-remediation-section">
+                        <div className="insight-title">3-Tier Structured Remediation Plan</div>
+                        <div className="copilot-remediation-grid">
+                          {currentAnalysis.remediation.immediate_mitigation && currentAnalysis.remediation.immediate_mitigation.length > 0 && (
+                            <div className="copilot-tier-box tier-immediate">
+                              <div className="tier-header">🔴 Tier 1: Immediate Mitigation</div>
+                              <ul className="copilot-bullet-list">
+                                {currentAnalysis.remediation.immediate_mitigation.map((m, idx) => (
+                                  <li key={idx}>{m}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {currentAnalysis.remediation.permanent_remediation && currentAnalysis.remediation.permanent_remediation.length > 0 && (
+                            <div className="copilot-tier-box tier-permanent">
+                              <div className="tier-header">🔵 Tier 2: Permanent Remediation</div>
+                              <ul className="copilot-bullet-list">
+                                {currentAnalysis.remediation.permanent_remediation.map((p, idx) => (
+                                  <li key={idx}>{p}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {currentAnalysis.remediation.validation && currentAnalysis.remediation.validation.length > 0 && (
+                            <div className="copilot-tier-box tier-validation">
+                              <div className="tier-header">✅ Tier 3: Validation & Verification</div>
+                              <ul className="copilot-bullet-list">
+                                {currentAnalysis.remediation.validation.map((v, idx) => (
+                                  <li key={idx}>{v}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Recommended Platform Controls */}
+                    {(copilotActiveSection === "all" || copilotActiveSection === "controls") && currentAnalysis.recommended_controls && currentAnalysis.recommended_controls.length > 0 && (
+                      <div className="copilot-insight-box">
+                        <div className="insight-title">Recommended Platform Safeguards (from Catalog)</div>
+                        <div className="copilot-rec-controls-list">
+                          {currentAnalysis.recommended_controls.map((ctrl, idx) => (
+                            <div key={idx} className="copilot-rec-control-card">
+                              <div className="ctrl-name">{ctrl.name}</div>
+                              <div className="ctrl-reason">{ctrl.reason}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* General Recommendations */}
+                    {(copilotActiveSection === "all" || copilotActiveSection === "controls") && currentAnalysis.recommendation && currentAnalysis.recommendation.length > 0 && (
+                      <div className="copilot-insight-box">
+                        <div className="insight-title">Actionable Recommendations</div>
+                        <ul className="copilot-bullet-list">
+                          {currentAnalysis.recommendation.map((rec, idx) => (
+                            <li key={idx}>{rec}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* AI Advisory Disclaimer */}
+                    <div className="copilot-advisory-disclaimer">
+                      <span className="disclaimer-icon">ℹ️</span>
+                      <div className="disclaimer-text">
+                        <strong>AI Advisory Decision Support Only:</strong> This output is supplementary intelligence to assist human decision makers. It does not modify authoritative GRC risk scores. Official likelihood, impact, treatments, and statuses remain strictly governed by the rule-based risk engine.
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Drawer Footer */}
+              <div className="copilot-drawer-footer">
+                <div className="copilot-footer-status">
+                  <span className="copilot-live-dot" />
+                  <span>AI GRC Copilot Active</span>
+                </div>
+                <div className="copilot-footer-actions">
+                  {activeRisk && (
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm"
+                      onClick={() => {
+                        setShowCopilotDrawer(false);
+                        setActivePage("risk-management");
+                        setRiskSubTab("register");
+                      }}
+                    >
+                      View in Risk Register ➔
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={() => setShowCopilotDrawer(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </aside>
+          </div>
+        );
+      })()}
     </div>
   );
 }
