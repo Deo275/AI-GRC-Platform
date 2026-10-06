@@ -162,6 +162,78 @@ body {
   flex-direction: column;
   min-height: 100vh;
   background: #080d1a;
+  min-width: 0;
+}
+
+/* =========================================
+   RESPONSIVE LAYOUT (MOBILE & TABLET <= 768px)
+   ========================================= */
+@media (max-width: 768px) {
+  .app-layout {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    position: static;
+    width: 100%;
+    min-width: 100%;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid #141d2f;
+    overflow-y: visible;
+  }
+
+  .sidebar-brand {
+    padding: 12px 16px;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    gap: 6px;
+    overflow-x: auto;
+  }
+
+  .nav-group-label {
+    display: none;
+  }
+
+  .nav-item {
+    width: auto;
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
+  .nav-item.active::before {
+    display: none;
+  }
+
+  .sidebar-footer {
+    display: none;
+  }
+
+  .main-content {
+    margin-left: 0;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .top-bar {
+    padding: 12px 16px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .top-bar-right {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .page-content {
+    padding: 16px 16px 32px;
+  }
 }
 
 /* =========================================
@@ -3841,7 +3913,7 @@ header p {
 /* 5. Report Cards Grid */
 .reports-cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
   gap: 20px;
 }
 
@@ -4278,6 +4350,9 @@ header p {
     grid-template-columns: 1fr;
   }
   .reports-grid {
+    grid-template-columns: 1fr;
+  }
+  .reports-cards-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -944,16 +944,21 @@ function RecentSecurityActivity({ auditLogs, driftEvents, monitoringJobs, govRev
     });
   });
 
-  (govReviews || []).forEach((rev) => {
-    activities.push({
-      id: `rev-${rev.id || rev.risk_id}-${rev.created_at}`,
-      timestamp: rev.created_at,
-      title: `Risk Review: ${rev.decision || rev.review_status}`,
-      category: "Governance",
-      desc: `Risk #${rev.risk_id} ${rev.risk_title ? `"${rev.risk_title}"` : ""} by ${rev.reviewer_name || "Analyst"}`,
-      icon: "✍️",
-      badge: rev.decision || "Review",
-    });
+  (govReviews || []).forEach((item, idx) => {
+    const r = item.risk || {};
+    const rev = item.current_review;
+    const ts = rev?.created_at || r.created_at;
+    if (ts) {
+      activities.push({
+        id: `gov-${r.id || rev?.id || item.id || idx}-${ts}`,
+        timestamp: ts,
+        title: `Risk Review: ${rev?.decision || item.review_status || r.review_status || "Pending"}`,
+        category: "Governance",
+        desc: `Risk #${r.id || "—"} ${r.title ? `"${r.title}"` : ""} by ${rev?.reviewer_name || "Analyst"}`,
+        icon: "✍️",
+        badge: rev?.decision || item.review_status || "Review",
+      });
+    }
   });
 
   // Sort descending by timestamp, take top 6
@@ -1464,16 +1469,42 @@ function App() {
     }
   };
 
-  // Phase 11: Close Copilot drawer on Escape key
+  // Phase 11 & 12: Universal Escape key handler — closes topmost open modal or drawer
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === "Escape" && showCopilotDrawer) {
-        setShowCopilotDrawer(false);
+      if (e.key === "Escape") {
+        if (showCopilotDrawer) { setShowCopilotDrawer(false); return; }
+        if (viewingAuditLog) { setViewingAuditLog(null); return; }
+        if (historyRisk) { setHistoryRisk(null); return; }
+        if (reviewingRisk) { setReviewingRisk(null); return; }
+        if (showScheduleModal) { setShowScheduleModal(false); return; }
+        if (editingRequirement) { setEditingRequirement(null); return; }
+        if (viewingRequirement) { setViewingRequirement(null); return; }
+        if (showAddControlModal) { setShowAddControlModal(false); return; }
+        if (editingRisk) { setEditingRisk(null); return; }
+        if (editingAsset) { setEditingAsset(null); return; }
+        if (viewingRisk) { setViewingRisk(null); return; }
+        if (viewingVuln) { setViewingVuln(null); return; }
+        if (viewingAsset) { setViewingAsset(null); return; }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [showCopilotDrawer]);
+  }, [
+    showCopilotDrawer,
+    viewingAuditLog,
+    historyRisk,
+    reviewingRisk,
+    showScheduleModal,
+    editingRequirement,
+    viewingRequirement,
+    showAddControlModal,
+    editingRisk,
+    editingAsset,
+    viewingRisk,
+    viewingVuln,
+    viewingAsset,
+  ]);
 
   const submitNewJob = async (e) => {
     if (e) e.preventDefault();
@@ -2022,7 +2053,15 @@ function App() {
         return;
       }
       if (getRes.status === 404) {
-        const postRes = await fetch(`${API_BASE}/risks/${riskId}/analyze`, { method: "POST" });
+        const actorName = reviewForm.reviewer_name?.trim() || "Security Analyst";
+        const actorRole = reviewForm.reviewer_role?.trim() || "GRC Operator";
+        const postRes = await fetch(`${API_BASE}/risks/${riskId}/analyze`, {
+          method: "POST",
+          headers: {
+            "X-Operator-Name": actorName,
+            "X-Operator-Role": actorRole,
+          },
+        });
         const postData = await postRes.json().catch(() => null);
         if (!postRes.ok) {
           setAiError(prev => ({ ...prev, [riskId]: postData?.detail || `Analysis failed (${postRes.status})` }));
@@ -2046,7 +2085,15 @@ function App() {
     setAiError(prev => ({ ...prev, [riskId]: null }));
     setAiAnalysis(prev => { const n = { ...prev }; delete n[riskId]; return n; });
     try {
-      const res = await fetch(`${API_BASE}/risks/${riskId}/analyze`, { method: "POST" });
+      const actorName = reviewForm.reviewer_name?.trim() || "Security Analyst";
+      const actorRole = reviewForm.reviewer_role?.trim() || "GRC Operator";
+      const res = await fetch(`${API_BASE}/risks/${riskId}/analyze`, {
+        method: "POST",
+        headers: {
+          "X-Operator-Name": actorName,
+          "X-Operator-Role": actorRole,
+        },
+      });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setAiError(prev => ({ ...prev, [riskId]: data?.detail || `Analysis failed (${res.status})` }));
@@ -2370,22 +2417,22 @@ function App() {
         </div>
         <nav className="sidebar-nav">
           <div className="nav-group-label">CORE</div>
-          <button className={`nav-item${activePage === "overview" ? " active" : ""}`} onClick={() => setActivePage("overview")}>
+          <button className={`nav-item${activePage === "overview" ? " active" : ""}`} onClick={() => handleNavClick("overview")}>
             <span className="nav-icon">🏠</span><span className="nav-label">Overview</span>
           </button>
-          <button className={`nav-item${activePage === "assets" ? " active" : ""}`} onClick={() => setActivePage("assets")}>
+          <button className={`nav-item${activePage === "assets" ? " active" : ""}`} onClick={() => handleNavClick("assets")}>
             <span className="nav-icon">🖥</span><span className="nav-label">Assets</span>
           </button>
-          <button className={`nav-item${activePage === "vulnerabilities" ? " active" : ""}`} onClick={() => setActivePage("vulnerabilities")}>
+          <button className={`nav-item${activePage === "vulnerabilities" ? " active" : ""}`} onClick={() => handleNavClick("vulnerabilities")}>
             <span className="nav-icon">🛡</span><span className="nav-label">Vulnerabilities</span>
           </button>
-          <button className={`nav-item${activePage === "risk-management" ? " active" : ""}`} onClick={() => setActivePage("risk-management")}>
+          <button className={`nav-item${activePage === "risk-management" ? " active" : ""}`} onClick={() => handleNavClick("risk-management")}>
             <span className="nav-icon">⚠</span><span className="nav-label">Risk Management</span>
           </button>
-          <button className={`nav-item${activePage === "compliance" ? " active" : ""}`} onClick={() => setActivePage("compliance")}>
+          <button className={`nav-item${activePage === "compliance" ? " active" : ""}`} onClick={() => handleNavClick("compliance")}>
             <span className="nav-icon">📋</span><span className="nav-label">Compliance</span>
           </button>
-          <button className={`nav-item${activePage === "monitoring" ? " active" : ""}`} onClick={() => setActivePage("monitoring")}>
+          <button className={`nav-item${activePage === "monitoring" ? " active" : ""}`} onClick={() => handleNavClick("monitoring")}>
             <span className="nav-icon">📡</span><span className="nav-label">Continuous Monitoring</span>
           </button>
 
@@ -7690,7 +7737,7 @@ function App() {
       {/* -------------------------------- */}
       {viewingAsset && (
         <div className="modal-backdrop" onClick={() => setViewingAsset(null)}>
-          <div className="modal-content modal-asset-detail" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content modal-asset-detail" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Asset Details — ${viewingAsset.ip_address}`}>
             <div className="modal-header">
               <div>
                 <h3>Asset Details — {viewingAsset.ip_address}</h3>
@@ -7698,7 +7745,7 @@ function App() {
                   Asset ID #{viewingAsset.id} • Status: <span className="text-white font-medium">{viewingAsset.status || "Active"}</span> • Last Seen: {formatDateTime(viewingAsset.last_seen)}
                 </div>
               </div>
-              <button type="button" className="modal-close" onClick={() => setViewingAsset(null)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setViewingAsset(null)} aria-label="Close">×</button>
             </div>
 
             <div className="modal-body asset-detail-body">
@@ -7929,7 +7976,7 @@ function App() {
 
         return (
           <div className="modal-backdrop" onClick={() => setViewingVuln(null)}>
-            <div className="modal-content modal-vuln-detail" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-content modal-vuln-detail" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Vulnerability Details — ${viewingVuln.title}`}>
               <div className="modal-header">
                 <div>
                   <h3>Vulnerability Details — {viewingVuln.title}</h3>
@@ -7937,7 +7984,7 @@ function App() {
                     Finding ID #{viewingVuln.id} • {viewingVuln.cve || "No CVE identifier"} • Discovered: {formatDateTime(viewingVuln.discovered_at)}
                   </div>
                 </div>
-                <button type="button" className="modal-close" onClick={() => setViewingVuln(null)}>×</button>
+                <button type="button" className="modal-close" onClick={() => setViewingVuln(null)} aria-label="Close">×</button>
               </div>
 
               <div className="modal-body asset-detail-body">
@@ -8186,7 +8233,7 @@ function App() {
 
         return (
           <div className="modal-backdrop" onClick={() => setViewingRisk(null)}>
-            <div className="modal-content modal-risk-detail" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-content modal-risk-detail" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Risk Details — #${liveRisk.id}: ${liveRisk.title}`}>
               <div className="modal-header">
                 <div>
                   <h3>Risk Details — #{liveRisk.id}: {liveRisk.title}</h3>
@@ -8194,7 +8241,7 @@ function App() {
                     Asset: {asset ? `${asset.ip_address} (${asset.hostname || "Host"})` : `Asset #${liveRisk.asset_id}`} • Lifecycle: {liveRisk.status || "Open"} • Governance: {liveRisk.review_status || "Pending Review"}
                   </div>
                 </div>
-                <button type="button" className="modal-close" onClick={() => setViewingRisk(null)}>×</button>
+                <button type="button" className="modal-close" onClick={() => setViewingRisk(null)} aria-label="Close">×</button>
               </div>
 
               <div className="modal-body asset-detail-body">
@@ -8590,10 +8637,10 @@ function App() {
 
       {editingAsset && (
         <div className="modal-backdrop" onClick={() => setEditingAsset(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Edit Asset Intelligence — ${editingAsset.ip_address}`}>
             <div className="modal-header">
               <h3>Edit Asset Intelligence — {editingAsset.ip_address}</h3>
-              <button className="modal-close" onClick={() => setEditingAsset(null)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setEditingAsset(null)} aria-label="Close">×</button>
             </div>
             <div className="modal-body">
               <div className="form-group">
@@ -8656,8 +8703,8 @@ function App() {
               </div>
             </div>
             <div className="modal-footer">
-              <button className="btn-secondary" onClick={() => setEditingAsset(null)}>Cancel</button>
-              <button className="btn-primary" onClick={saveAsset}>Save & Recalculate Risks</button>
+              <button type="button" className="btn-secondary" onClick={() => setEditingAsset(null)}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={saveAsset}>Save & Recalculate Risks</button>
             </div>
           </div>
         </div>
@@ -8668,10 +8715,10 @@ function App() {
       {/* -------------------------------- */}
       {editingRisk && (
         <div className="modal-backdrop" onClick={() => setEditingRisk(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Manage Risk Treatment — #${editingRisk.id}`}>
             <div className="modal-header">
               <h3>Manage Risk Treatment — #{editingRisk.id}</h3>
-              <button className="modal-close" onClick={() => setEditingRisk(null)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setEditingRisk(null)} aria-label="Close">×</button>
             </div>
             <div className="modal-body">
               <div className="risk-summary-box">
@@ -8725,8 +8772,8 @@ function App() {
               </div>
             </div>
             <div className="modal-footer">
-              <button className="btn-secondary" onClick={() => setEditingRisk(null)}>Cancel</button>
-              <button className="btn-primary" onClick={saveRisk}>Save Changes</button>
+              <button type="button" className="btn-secondary" onClick={() => setEditingRisk(null)}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={saveRisk}>Save Changes</button>
             </div>
           </div>
         </div>
@@ -8737,10 +8784,10 @@ function App() {
       {/* -------------------------------- */}
       {showAddControlModal && (
         <div className="modal-backdrop" onClick={() => setShowAddControlModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Add Security Control to Catalog">
             <div className="modal-header">
               <h3>Add Security Control to Catalog</h3>
-              <button className="modal-close" onClick={() => setShowAddControlModal(false)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setShowAddControlModal(false)} aria-label="Close">×</button>
             </div>
             <div className="modal-body">
               <div className="form-group">
@@ -8810,8 +8857,8 @@ function App() {
               </div>
             </div>
             <div className="modal-footer">
-              <button className="btn-secondary" onClick={() => setShowAddControlModal(false)}>Cancel</button>
-              <button className="btn-primary" onClick={saveNewControl}>Add to Catalog</button>
+              <button type="button" className="btn-secondary" onClick={() => setShowAddControlModal(false)}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={saveNewControl}>Add to Catalog</button>
             </div>
           </div>
         </div>
@@ -8829,7 +8876,13 @@ function App() {
 
         return (
           <div className="modal-backdrop" onClick={() => setViewingRequirement(null)}>
-            <div className="modal-content compliance-detail-modal" onClick={(e) => e.stopPropagation()}>
+            <div
+              className="modal-content compliance-detail-modal"
+              onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Requirement Details — ${req.requirement_id || req.title}`}
+            >
               <div className="modal-header">
                 <div className="compliance-modal-header-info">
                   <div className="compliance-modal-badges">
@@ -8839,7 +8892,7 @@ function App() {
                   </div>
                   <h3>{req.title}</h3>
                 </div>
-                <button className="modal-close" onClick={() => setViewingRequirement(null)}>×</button>
+                <button type="button" className="modal-close" onClick={() => setViewingRequirement(null)} aria-label="Close">×</button>
               </div>
 
               <div className="modal-body compliance-modal-body">
@@ -8992,8 +9045,8 @@ function App() {
               </div>
 
               <div className="modal-footer">
-                <button className="btn-secondary" onClick={() => setViewingRequirement(null)}>Close</button>
-                <button className="btn-primary" onClick={() => openRequirementModal(req)}>Assess Requirement</button>
+                <button type="button" className="btn-secondary" onClick={() => setViewingRequirement(null)}>Close</button>
+                <button type="button" className="btn-primary" onClick={() => openRequirementModal(req)}>Assess Requirement</button>
               </div>
             </div>
           </div>
@@ -9005,10 +9058,16 @@ function App() {
       {/* -------------------------------- */}
       {editingRequirement && (
         <div className="modal-backdrop" onClick={() => setEditingRequirement(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Assess Requirement — ${editingRequirement.requirement_id}`}
+          >
             <div className="modal-header">
               <h3>Assess Requirement — {editingRequirement.requirement_id}</h3>
-              <button className="modal-close" onClick={() => setEditingRequirement(null)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setEditingRequirement(null)} aria-label="Close">×</button>
             </div>
             <div className="modal-body">
               <div className="risk-summary-box">
@@ -9045,8 +9104,8 @@ function App() {
               </div>
             </div>
             <div className="modal-footer">
-              <button className="btn-secondary" onClick={() => setEditingRequirement(null)}>Cancel</button>
-              <button className="btn-primary" onClick={saveRequirementAssessment}>Save Assessment</button>
+              <button type="button" className="btn-secondary" onClick={() => setEditingRequirement(null)}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={saveRequirementAssessment}>Save Assessment</button>
             </div>
           </div>
         </div>
@@ -9057,10 +9116,16 @@ function App() {
       {/* ------------------------------------------------ */}
       {showScheduleModal && (
         <div className="modal-backdrop" onClick={() => setShowScheduleModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={editingSchedule ? `Edit Schedule — #${editingSchedule.id}` : "Configure Automated Scan Schedule"}
+          >
             <div className="modal-header">
               <h3>{editingSchedule ? `Edit Schedule — #${editingSchedule.id}` : "Configure Automated Scan Schedule"}</h3>
-              <button className="modal-close" onClick={() => setShowScheduleModal(false)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setShowScheduleModal(false)} aria-label="Close">×</button>
             </div>
             <form onSubmit={handleSaveSchedule}>
               <div className="modal-body">
@@ -9131,10 +9196,17 @@ function App() {
       {/* -------------------------------- */}
       {reviewingRisk && (
         <div className="modal-backdrop" onClick={() => setReviewingRisk(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "620px" }}>
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: "620px" }}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Submit Governance Risk Review — #${reviewingRisk.id}`}
+          >
             <div className="modal-header">
               <h3>Submit Governance Risk Review — #{reviewingRisk.id}</h3>
-              <button className="modal-close" onClick={() => setReviewingRisk(null)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setReviewingRisk(null)} aria-label="Close">×</button>
             </div>
             <form onSubmit={handleReviewSubmit}>
               <div className="modal-body">
@@ -9267,13 +9339,20 @@ function App() {
       {/* -------------------------------- */}
       {historyRisk && (
         <div className="modal-backdrop" onClick={() => setHistoryRisk(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "680px" }}>
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: "680px" }}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Review History — #${historyRisk.id}`}
+          >
             <div className="modal-header">
               <div>
                 <h3>Review History — #{historyRisk.id}</h3>
                 <div className="sub-text">{historyRisk.title}</div>
               </div>
-              <button className="modal-close" onClick={() => setHistoryRisk(null)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setHistoryRisk(null)} aria-label="Close">×</button>
             </div>
             <div className="modal-body history-modal-body">
               {historyLoading ? (
@@ -9372,7 +9451,7 @@ function App() {
               ) : null}
             </div>
             <div className="modal-footer">
-              <button className="btn-secondary" onClick={() => setHistoryRisk(null)}>
+              <button type="button" className="btn-secondary" onClick={() => setHistoryRisk(null)}>
                 Close
               </button>
             </div>
@@ -9384,7 +9463,13 @@ function App() {
       {/* ------------------------------------------------ */}
       {viewingAuditLog && (
         <div className="modal-backdrop" onClick={() => setViewingAuditLog(null)}>
-          <div className="modal-content modal-audit-inspector" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="modal-content modal-audit-inspector"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Audit Event Inspector — Event #${viewingAuditLog.id}`}
+          >
             <div className="modal-header">
               <div>
                 <h3>Audit Event Inspector — Event #{viewingAuditLog.id}</h3>
@@ -9392,7 +9477,7 @@ function App() {
                   Recorded {formatDateTime(viewingAuditLog.timestamp)} • Source: {viewingAuditLog.source}
                 </div>
               </div>
-              <button className="modal-close" onClick={() => setViewingAuditLog(null)}>×</button>
+              <button type="button" className="modal-close" onClick={() => setViewingAuditLog(null)} aria-label="Close">×</button>
             </div>
 
             <div className="modal-body" style={{ maxHeight: "calc(85vh - 140px)", overflowY: "auto" }}>
@@ -9527,7 +9612,7 @@ function App() {
             </div>
 
             <div className="modal-footer">
-              <button className="btn-secondary" onClick={() => setViewingAuditLog(null)}>
+              <button type="button" className="btn-secondary" onClick={() => setViewingAuditLog(null)}>
                 Close
               </button>
             </div>
@@ -9569,6 +9654,7 @@ function App() {
               className="copilot-drawer"
               onClick={(e) => e.stopPropagation()}
               role="dialog"
+              aria-modal="true"
               aria-label="AI Security and GRC Copilot"
             >
               {/* Drawer Header */}
@@ -9594,6 +9680,7 @@ function App() {
                     className="copilot-close-btn"
                     onClick={() => setShowCopilotDrawer(false)}
                     title="Close Copilot drawer (Escape)"
+                    aria-label="Close"
                   >
                     ✕
                   </button>
