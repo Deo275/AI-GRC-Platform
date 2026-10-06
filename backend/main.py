@@ -6,7 +6,10 @@ from typing import Any, Optional, Dict
 import sys
 import os
 import ipaddress
+import logging
 from dotenv import load_dotenv
+
+logger = logging.getLogger("ai_grc.backend")
 
 _backend_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 _should_override = not bool(os.environ.get("GEMINI_API_KEY", "").strip())
@@ -409,16 +412,45 @@ def recalculate_asset_risks(asset: models.Asset):
 
 app = FastAPI(title="AI-GRC Platform")
 
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+_raw_cors = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+if _raw_cors:
+    parsed_origins = [o.strip() for o in _raw_cors.split(",") if o.strip()]
+    # Safely reject wildcard if present when allow_credentials=True
+    filtered_origins = [o for o in parsed_origins if o != "*"]
+    cors_allowed_origins = filtered_origins if filtered_origins else DEFAULT_CORS_ORIGINS
+else:
+    cors_allowed_origins = DEFAULT_CORS_ORIGINS
+
+CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173"
-    ],
+    allow_origins=cors_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=CORS_ALLOWED_METHODS,
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    # Conditional HSTS: Never emit during normal HTTP development;
+    # only emit when ENABLE_HSTS is explicitly true AND the request is over HTTPS
+    enable_hsts = os.getenv("ENABLE_HSTS", "false").strip().lower() in ("true", "1")
+    if enable_hsts and request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    return response
 
 Base.metadata.create_all(bind=engine)
 
@@ -484,14 +516,16 @@ def scan_network(
     try:
         result = scan_host(str(ip))
     except RuntimeError as err:
+        logger.error(f"Nmap host scan failed for target {ip}: {err}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Nmap scan failed: {str(err)}"
+            detail="Network scan execution failed to complete."
         )
     except Exception as err:
+        logger.error(f"Unexpected scan error for target {ip}: {err}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="Nmap scan encountered an unexpected execution error."
+            detail="Network scan encountered an unexpected execution error."
         )
 
     # Calculate security risk
@@ -866,9 +900,10 @@ def discover_network(
     try:
         hosts = discover_hosts(network)
     except RuntimeError as err:
+        logger.error(f"Host discovery failed for network {network}: {err}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Nmap discovery failed: {str(err)}"
+            detail="Network host discovery failed to complete."
         )
 
     db = SessionLocal()
@@ -1763,9 +1798,10 @@ def trigger_ai_risk_analysis(
         try:
             analysis_data = analyze_risk(risk_id=risk_id, db=db)
         except AIProviderError as e:
+            logger.error(f"AI security intelligence provider error for risk #{risk_id}: {e}", exc_info=True)
             raise HTTPException(
                 status_code=503,
-                detail=f"AI security intelligence provider is currently unavailable: {str(e)}"
+                detail="AI security intelligence service is temporarily unavailable. Please try again later."
             )
 
         db.refresh(risk)
@@ -2567,13 +2603,17 @@ def create_risk_review(
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
     except Exception as err:
+        logger.error(f"Failed to submit risk review for risk #{risk_id}: {err}", exc_info=True)
         err_msg = str(err).lower()
         if "unique" in err_msg or "integrityerror" in err_msg:
             raise HTTPException(
                 status_code=409,
                 detail="A concurrent review submission conflicted with this request. Please refresh and retry."
             )
-        raise HTTPException(status_code=500, detail=f"Failed to submit risk review: {err}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to submit risk review due to an internal server error."
+        )
     finally:
         db.close()
 
