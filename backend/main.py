@@ -456,27 +456,42 @@ def scan_network(
     ):
 
     try:
-        ip = ipaddress.ip_address(target)
+        # Reuse existing target validation logic already used by the monitoring scanner
+        validated_target = validate_target_network(target)
+        ip = ipaddress.ip_address(validated_target)
 
-        if ip.version != 4:
+        # Standalone scanner explicitly permits only private RFC 1918 internal targets.
+        # Explicitly reject loopback (127.0.0.0/8) and link-local (169.254.0.0/16).
+        if ip.is_loopback or ip in ipaddress.ip_network("127.0.0.0/8"):
             raise HTTPException(
                 status_code=400,
-                detail="Only IPv4 addresses are supported for single-host scans."
+                detail="Loopback addresses (127.0.0.0/8) are not permitted for scanning."
             )
-
-    except ValueError:
+        if ip.is_link_local or ip in ipaddress.ip_network("169.254.0.0/16"):
+            raise HTTPException(
+                status_code=400,
+                detail="Link-local addresses (169.254.0.0/16) are not permitted for scanning."
+            )
+    except HTTPException:
+        raise
+    except ValueError as err:
         raise HTTPException(
             status_code=400,
-            detail="Invalid target. Enter a single IPv4 address."
+            detail=f"Invalid scan target: {str(err)}"
         )
 
     # Run Nmap scan
     try:
-        result = scan_host(target)
+        result = scan_host(str(ip))
     except RuntimeError as err:
         raise HTTPException(
             status_code=500,
             detail=f"Nmap scan failed: {str(err)}"
+        )
+    except Exception as err:
+        raise HTTPException(
+            status_code=500,
+            detail="Nmap scan encountered an unexpected execution error."
         )
 
     # Calculate security risk
@@ -1857,6 +1872,16 @@ def create_monitoring_job(
             detail=f"Invalid scan_type '{payload.scan_type}'. Must be one of: {', '.join(valid_scan_types)}",
         )
 
+    # Queue bounds protection: Reject submission early if worker pool is at capacity
+    if not scan_worker_pool.can_accept_job():
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Scan queue is at maximum capacity ({scan_worker_pool.max_pending_jobs} "
+                f"pending/active jobs). Please wait for running scans to complete."
+            ),
+        )
+
     db = SessionLocal()
     try:
         job = models.ScanJob(
@@ -1869,7 +1894,19 @@ def create_monitoring_job(
         db.commit()
         db.refresh(job)
 
-        scan_worker_pool.submit_scan_job(job.id)
+        submitted = scan_worker_pool.submit_scan_job(job.id)
+        if not submitted:
+            job.status = "Failed"
+            job.error_message = "Scan queue limit reached. Job rejected."
+            job.completed_at = datetime.utcnow()
+            db.commit()
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Scan queue is at maximum capacity ({scan_worker_pool.max_pending_jobs} "
+                    f"pending/active jobs). Please wait for running scans to complete."
+                ),
+            )
 
         actor, _ = get_operator_identity(request)
         log_audit_event(
@@ -2303,6 +2340,10 @@ def delete_evidence(
 
     db = SessionLocal()
     try:
+        record = db.query(models.EvidenceRecord).filter(models.EvidenceRecord.id == evidence_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail=f"EvidenceRecord with ID {evidence_id} not found")
+
         success = delete_evidence_record(
             db=db,
             evidence_id=evidence_id,
@@ -2310,7 +2351,10 @@ def delete_evidence(
             ip_address=ip_addr,
         )
         if not success:
-            raise HTTPException(status_code=404, detail=f"EvidenceRecord with ID {evidence_id} not found")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to atomically delete evidence record #{evidence_id}: audit log recording failed.",
+            )
         return {"message": f"Evidence record #{evidence_id} deleted successfully"}
     finally:
         db.close()

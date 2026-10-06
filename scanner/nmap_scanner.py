@@ -13,11 +13,21 @@ def scan_host(target):
         target
     ]
 
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True
-    )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"Nmap host scan timed out after 120 seconds on target {target}"
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "Nmap executable not found on system PATH."
+        )
 
     if result.returncode != 0:
         error_detail = result.stderr.strip()
@@ -154,11 +164,21 @@ def discover_hosts(network):
         network
     ]
 
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True
-    )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"Nmap host discovery timed out after 120 seconds on network {network}"
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "Nmap executable not found on system PATH."
+        )
 
     output = result.stdout
 

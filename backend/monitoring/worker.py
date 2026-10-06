@@ -39,6 +39,7 @@ from .drift_detector import DriftDetector, normalize_ip
 logger = logging.getLogger("ai_grc.monitoring.worker")
 
 MAX_SCAN_WORKERS = 3
+DEFAULT_MAX_PENDING_JOBS = 10
 
 
 def recalculate_asset_grc_risks(asset: models.Asset):
@@ -71,8 +72,10 @@ class ScanWorkerPool:
         self,
         max_workers: int = MAX_SCAN_WORKERS,
         pipeline: Optional[MonitoringScannerPipeline] = None,
+        max_pending_jobs: int = DEFAULT_MAX_PENDING_JOBS,
     ):
         self.max_workers = max_workers
+        self.max_pending_jobs = max_pending_jobs
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.pipeline = pipeline or MonitoringScannerPipeline()
 
@@ -81,36 +84,66 @@ class ScanWorkerPool:
         self._active_processes: Dict[int, subprocess.Popen] = {}
         self._futures: Dict[int, Any] = {}
 
-    def submit_scan_job(self, job_id: int):
-        """Submit a job to the worker pool.
+    def get_pending_job_count(self) -> int:
+        """Return the count of active and queued jobs currently in the worker pool."""
+        with self._lock:
+            done_keys = [jid for jid, f in self._futures.items() if hasattr(f, "done") and f.done()]
+            for jid in done_keys:
+                self._futures.pop(jid, None)
+                self._cancel_events.pop(jid, None)
+            return len(self._futures)
 
-        If all 3 workers are busy, the task remains Queued in the executor queue.
-        Queued jobs do NOT fail due to pool saturation.
+    def can_accept_job(self) -> bool:
+        """Check whether the worker pool has capacity for an additional scan job."""
+        return self.get_pending_job_count() < self.max_pending_jobs
+
+    def submit_scan_job(self, job_id: int) -> bool:
+        """Submit a job to the worker pool if within capacity bounds.
+
+        If the maximum active + queued scan jobs limit is reached, returns False.
         """
         with self._lock:
+            done_keys = [jid for jid, f in self._futures.items() if hasattr(f, "done") and f.done()]
+            for jid in done_keys:
+                self._futures.pop(jid, None)
+                self._cancel_events.pop(jid, None)
+
+            if len(self._futures) >= self.max_pending_jobs:
+                logger.warning(
+                    f"ScanWorkerPool reached maximum capacity ({len(self._futures)}/{self.max_pending_jobs}). "
+                    f"ScanJob #{job_id} cannot be accepted."
+                )
+                return False
             cancel_event = threading.Event()
             self._cancel_events[job_id] = cancel_event
 
-        future = self.executor.submit(self._execute_scan_job, job_id, cancel_event)
-        with self._lock:
+            future = self.executor.submit(self._execute_scan_job, job_id, cancel_event)
             self._futures[job_id] = future
+            return True
 
     def cancel_scan_job(self, job_id: int) -> bool:
         """Cooperatively cancel a scan job.
 
         1. Set cancellation event.
-        2. Terminate active Nmap subprocess if running.
-        3. Wait for process termination.
-        4. Verify it has exited.
+        2. Attempt to cancel future if still queued in executor.
+        3. Terminate active Nmap subprocess if running.
+        4. Wait for process termination.
         5. Mark the job Cancelled in the database.
         Never mark a job Cancelled while its Nmap subprocess is still running.
         """
         with self._lock:
             cancel_event = self._cancel_events.get(job_id)
             active_proc = self._active_processes.get(job_id)
+            future = self._futures.get(job_id)
 
         if cancel_event:
             cancel_event.set()
+
+        # If future is still queued in executor and hasn't started, cancel directly
+        if future and hasattr(future, "cancel") and future.cancel():
+            with self._lock:
+                self._futures.pop(job_id, None)
+                self._cancel_events.pop(job_id, None)
 
         # Terminate active process if running
         if active_proc is not None:

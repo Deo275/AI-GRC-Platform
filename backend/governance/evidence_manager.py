@@ -186,25 +186,36 @@ def delete_evidence_record(
     }
     title = record.title
 
-    db.delete(record)
-    db.commit()
+    try:
+        db.delete(record)
 
-    audit_res = log_audit_event(
-        db=db,
-        source="USER",
-        actor=actor,
-        action="DELETE",
-        entity_type="EvidenceRecord",
-        entity_id=evidence_id,
-        entity_name=title,
-        old_values=old_info,
-        description=f"Deleted evidence record '{title}' (ID #{evidence_id})",
-        ip_address=ip_address,
-        commit=True,
-    )
-    if audit_res is None:
-        logger.warning(
-            f"[AUDIT LOG RECORDING FAILED] EvidenceRecord #{evidence_id} was deleted, "
-            f"but its deletion audit log could not be persisted."
+        audit_res = log_audit_event(
+            db=db,
+            source="USER",
+            actor=actor,
+            action="DELETE",
+            entity_type="EvidenceRecord",
+            entity_id=evidence_id,
+            entity_name=title,
+            old_values=old_info,
+            description=f"Deleted evidence record '{title}' (ID #{evidence_id})",
+            ip_address=ip_address,
+            commit=False,
         )
-    return True
+        if audit_res is None:
+            db.rollback()
+            logger.critical(
+                f"[ATOMIC TRANSACTION ABORTED] Could not record audit log for EvidenceRecord #{evidence_id} deletion. "
+                f"Evidence deletion was rolled back."
+            )
+            return False
+
+        db.commit()
+        return True
+    except Exception as err:
+        db.rollback()
+        logger.error(
+            f"Failed to atomically delete evidence record #{evidence_id}: {err}",
+            exc_info=True,
+        )
+        raise
