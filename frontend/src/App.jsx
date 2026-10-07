@@ -1,8 +1,10 @@
 import { useEffect, useState, useRef, Fragment } from "react";
 import "./App.css";
-
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+import { authFetch, API_BASE } from "./api/client";
+import { AuthProvider } from "./context/AuthContext";
+import { useAuth } from "./context/useAuth";
+import { LoginPage } from "./components/LoginPage";
+import { AuthLoadingScreen } from "./components/AuthLoadingScreen";
 
 const REPORT_TYPES = [
   {
@@ -1022,7 +1024,14 @@ function RecentSecurityActivity({ auditLogs, driftEvents, monitoringJobs, govRev
   );
 }
 
-function App() {
+function AuthenticatedDashboard() {
+  const {
+    user,
+    logout,
+    permissionNotice,
+    clearPermissionNotice,
+    isReviewer,
+  } = useAuth();
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null);
   const [target, setTarget] = useState("192.168.127.1");
@@ -1201,13 +1210,23 @@ function App() {
   // 3. Review Submission Modal State
   const [reviewingRisk, setReviewingRisk] = useState(null);
   const [reviewForm, setReviewForm] = useState({
-    reviewer_name: "Security Analyst",
-    reviewer_role: "GRC Operator",
+    reviewer_name: user?.display_name || user?.username || "Security Analyst",
+    reviewer_role: user?.role || "GRC Operator",
     decision: "APPROVED",
     agreed_treatment: "Mitigate",
     comments: "",
     ai_analysis_acknowledged: false,
   });
+
+  useEffect(() => {
+    if (user) {
+      setReviewForm((prev) => ({
+        ...prev,
+        reviewer_name: user.display_name || user.username || "Security Analyst",
+        reviewer_role: user.role || "GRC Operator",
+      }));
+    }
+  }, [user]);
   const [submittingReview, setSubmittingReview] = useState(false);
   const [reviewSubmitError, setReviewSubmitError] = useState(null);
 
@@ -1235,7 +1254,7 @@ function App() {
 
   const fetchAssets = async () => {
     try {
-      const response = await fetch(`${API_BASE}/assets`);
+      const response = await authFetch(`${API_BASE}/assets`);
       if (response.ok) {
         const data = await response.json();
         setAssets(data.assets || []);
@@ -1247,7 +1266,7 @@ function App() {
 
   const fetchRisks = async () => {
     try {
-      const response = await fetch(`${API_BASE}/risks`);
+      const response = await authFetch(`${API_BASE}/risks`);
       if (response.ok) {
         const data = await response.json();
         setRisks(data.risks || []);
@@ -1259,7 +1278,7 @@ function App() {
 
   const fetchControls = async () => {
     try {
-      const response = await fetch(`${API_BASE}/controls`);
+      const response = await authFetch(`${API_BASE}/controls`);
       if (response.ok) {
         const data = await response.json();
         setControls(data.controls || []);
@@ -1271,7 +1290,7 @@ function App() {
 
   const fetchVulnerabilities = async () => {
     try {
-      const response = await fetch(`${API_BASE}/vulnerabilities`);
+      const response = await authFetch(`${API_BASE}/vulnerabilities`);
       if (response.ok) {
         const data = await response.json();
         setVulnerabilities(data.vulnerabilities || []);
@@ -1283,7 +1302,7 @@ function App() {
 
   const fetchComplianceFrameworks = async () => {
     try {
-      const response = await fetch(`${API_BASE}/compliance/frameworks`);
+      const response = await authFetch(`${API_BASE}/compliance/frameworks`);
       if (response.ok) {
         const data = await response.json();
         setFrameworks(data.frameworks || []);
@@ -1295,7 +1314,7 @@ function App() {
 
   const fetchComplianceSummary = async () => {
     try {
-      const response = await fetch(`${API_BASE}/compliance/summary`);
+      const response = await authFetch(`${API_BASE}/compliance/summary`);
       if (response.ok) {
         const data = await response.json();
         setComplianceSummary(data.summary || []);
@@ -1307,7 +1326,7 @@ function App() {
 
   const fetchComplianceRequirements = async () => {
     try {
-      const response = await fetch(`${API_BASE}/compliance/requirements`);
+      const response = await authFetch(`${API_BASE}/compliance/requirements`);
       if (response.ok) {
         const data = await response.json();
         setRequirements(data.requirements || []);
@@ -1324,7 +1343,7 @@ function App() {
   const fetchMonitoringJobs = async () => {
     setMonitoringJobsLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/monitoring/jobs?limit=50&offset=0`);
+      const response = await authFetch(`${API_BASE}/monitoring/jobs?limit=50&offset=0`);
       if (response.ok) {
         const data = await response.json();
         setMonitoringJobs(data.jobs || []);
@@ -1345,7 +1364,7 @@ function App() {
   const fetchMonitoringSchedules = async () => {
     setMonitoringSchedulesLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/monitoring/schedules`);
+      const response = await authFetch(`${API_BASE}/monitoring/schedules`);
       if (response.ok) {
         const data = await response.json();
         setMonitoringSchedules(data.schedules || []);
@@ -1368,7 +1387,7 @@ function App() {
       if (customSev && customSev !== "All") url += `&severity=${encodeURIComponent(customSev)}`;
       if (customType && customType !== "All") url += `&event_type=${encodeURIComponent(customType)}`;
 
-      const response = await fetch(url);
+      const response = await authFetch(url);
       if (response.ok) {
         const data = await response.json();
         setDriftEvents(data.events || []);
@@ -1392,7 +1411,7 @@ function App() {
   const fetchGovReviews = async () => {
     setGovReviewsLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/governance/reviews/pending?limit=200`);
+      const response = await authFetch(`${API_BASE}/governance/reviews/pending?limit=200`);
       if (response.ok) {
         const data = await response.json();
         setGovReviews(data.risks || []);
@@ -1415,6 +1434,11 @@ function App() {
     customEntity = auditEntityFilter,
     customLimit = auditLimit
   ) => {
+    if (!isReviewer) {
+      setAuditLogs([]);
+      setAuditTotal(0);
+      return;
+    }
     setAuditLoading(true);
     try {
       let url = `${API_BASE}/audit-logs?limit=${customLimit}&offset=${customOffset}`;
@@ -1427,7 +1451,7 @@ function App() {
       if (customEntity && customEntity !== "All") {
         url += `&entity_type=${encodeURIComponent(customEntity)}`;
       }
-      const response = await fetch(url);
+      const response = await authFetch(url);
       if (response.ok) {
         const data = await response.json();
         setAuditLogs(data.logs || []);
@@ -1450,7 +1474,7 @@ function App() {
     setAuditDetailError(null);
     setHashCopied(false);
     try {
-      const response = await fetch(`${API_BASE}/audit-logs/${log.id}`);
+      const response = await authFetch(`${API_BASE}/audit-logs/${log.id}`);
       if (response.ok) {
         const fullLog = await response.json();
         setViewingAuditLog(fullLog);
@@ -1517,7 +1541,7 @@ function App() {
     setSubmittingJob(true);
     setJobActionError(null);
     try {
-      const response = await fetch(`${API_BASE}/monitoring/jobs`, {
+      const response = await authFetch(`${API_BASE}/monitoring/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1543,7 +1567,7 @@ function App() {
     setCancellingJobId(jobId);
     setJobActionError(null);
     try {
-      const response = await fetch(`${API_BASE}/monitoring/jobs/${jobId}/cancel`, {
+      const response = await authFetch(`${API_BASE}/monitoring/jobs/${jobId}/cancel`, {
         method: "POST",
       });
       const data = await response.json().catch(() => null);
@@ -1595,7 +1619,7 @@ function App() {
     try {
       let response;
       if (editingSchedule) {
-        response = await fetch(`${API_BASE}/monitoring/schedules/${editingSchedule.id}`, {
+        response = await authFetch(`${API_BASE}/monitoring/schedules/${editingSchedule.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1605,7 +1629,7 @@ function App() {
           }),
         });
       } else {
-        response = await fetch(`${API_BASE}/monitoring/schedules`, {
+        response = await authFetch(`${API_BASE}/monitoring/schedules`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1633,7 +1657,7 @@ function App() {
 
   const toggleScheduleActive = async (sched) => {
     try {
-      const response = await fetch(`${API_BASE}/monitoring/schedules/${sched.id}`, {
+      const response = await authFetch(`${API_BASE}/monitoring/schedules/${sched.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_active: !sched.is_active }),
@@ -1652,7 +1676,7 @@ function App() {
   const deleteSchedule = async (schedId) => {
     if (!window.confirm("Are you sure you want to delete this automated scan schedule?")) return;
     try {
-      const response = await fetch(`${API_BASE}/monitoring/schedules/${schedId}`, {
+      const response = await authFetch(`${API_BASE}/monitoring/schedules/${schedId}`, {
         method: "DELETE",
       });
       if (response.ok) {
@@ -1754,7 +1778,7 @@ function App() {
 
     const timer = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/monitoring/jobs?limit=50&offset=0`);
+        const res = await authFetch(`${API_BASE}/monitoring/jobs?limit=50&offset=0`);
         if (res.ok) {
           const data = await res.json();
           const newJobs = data.jobs || [];
@@ -1828,7 +1852,7 @@ function App() {
   const runScan = async () => {
     setScanning(true);
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE}/scan?target=${encodeURIComponent(target)}`,
         { method: "POST" }
       );
@@ -1867,7 +1891,7 @@ function App() {
   const saveAsset = async () => {
     if (!editingAsset) return;
     try {
-      const response = await fetch(`${API_BASE}/assets/${editingAsset.id}`, {
+      const response = await authFetch(`${API_BASE}/assets/${editingAsset.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(assetForm)
@@ -1908,7 +1932,7 @@ function App() {
         due_date: riskForm.due_date ? new Date(riskForm.due_date).toISOString() : null
       };
 
-      const response = await fetch(`${API_BASE}/risks/${editingRisk.id}`, {
+      const response = await authFetch(`${API_BASE}/risks/${editingRisk.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -1932,7 +1956,7 @@ function App() {
   const handleAssignControl = async (riskId) => {
     if (!selectedControlId) return;
     try {
-      const response = await fetch(`${API_BASE}/risks/${riskId}/controls/${selectedControlId}`, {
+      const response = await authFetch(`${API_BASE}/risks/${riskId}/controls/${selectedControlId}`, {
         method: "POST"
       });
       if (response.ok) {
@@ -1950,7 +1974,7 @@ function App() {
 
   const handleDetachControl = async (riskId, controlId) => {
     try {
-      const response = await fetch(`${API_BASE}/risks/${riskId}/controls/${controlId}`, {
+      const response = await authFetch(`${API_BASE}/risks/${riskId}/controls/${controlId}`, {
         method: "DELETE"
       });
       if (response.ok) {
@@ -1974,7 +1998,7 @@ function App() {
       return;
     }
     try {
-      const response = await fetch(`${API_BASE}/controls`, {
+      const response = await authFetch(`${API_BASE}/controls`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(controlForm)
@@ -2014,7 +2038,7 @@ function App() {
   const saveRequirementAssessment = async () => {
     if (!editingRequirement) return;
     try {
-      const response = await fetch(`${API_BASE}/compliance/requirements/${editingRequirement.id}`, {
+      const response = await authFetch(`${API_BASE}/compliance/requirements/${editingRequirement.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requirementForm)
@@ -2053,7 +2077,7 @@ function App() {
     setAiLoading(prev => ({ ...prev, [riskId]: true }));
     setAiError(prev => ({ ...prev, [riskId]: null }));
     try {
-      const getRes = await fetch(`${API_BASE}/risks/${riskId}/analysis`);
+      const getRes = await authFetch(`${API_BASE}/risks/${riskId}/analysis`);
       if (getRes.ok) {
         const data = await getRes.json();
         setAiAnalysis(prev => ({ ...prev, [riskId]: data.analysis }));
@@ -2062,7 +2086,7 @@ function App() {
       if (getRes.status === 404) {
         const actorName = reviewForm.reviewer_name?.trim() || "Security Analyst";
         const actorRole = reviewForm.reviewer_role?.trim() || "GRC Operator";
-        const postRes = await fetch(`${API_BASE}/risks/${riskId}/analyze`, {
+        const postRes = await authFetch(`${API_BASE}/risks/${riskId}/analyze`, {
           method: "POST",
           headers: {
             "X-Operator-Name": actorName,
@@ -2095,7 +2119,7 @@ function App() {
     try {
       const actorName = reviewForm.reviewer_name?.trim() || "Security Analyst";
       const actorRole = reviewForm.reviewer_role?.trim() || "GRC Operator";
-      const res = await fetch(`${API_BASE}/risks/${riskId}/analyze`, {
+      const res = await authFetch(`${API_BASE}/risks/${riskId}/analyze`, {
         method: "POST",
         headers: {
           "X-Operator-Name": actorName,
@@ -2203,8 +2227,8 @@ function App() {
   const openSubmitReviewModal = (risk) => {
     setReviewingRisk(risk);
     setReviewForm({
-      reviewer_name: "Security Analyst",
-      reviewer_role: "GRC Operator",
+      reviewer_name: user?.display_name || user?.username || "Security Analyst",
+      reviewer_role: user?.role || "GRC Operator",
       decision: "APPROVED",
       agreed_treatment: risk.treatment || "Mitigate",
       comments: "",
@@ -2228,7 +2252,7 @@ function App() {
       const actorName = reviewForm.reviewer_name.trim() || "Security Analyst";
       const actorRole = reviewForm.reviewer_role.trim() || "GRC Operator";
 
-      const response = await fetch(`${API_BASE}/risks/${reviewingRisk.id}/reviews`, {
+      const response = await authFetch(`${API_BASE}/risks/${reviewingRisk.id}/reviews`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -2267,7 +2291,7 @@ function App() {
     setHistoryError(null);
     setHistoryData(null);
     try {
-      const response = await fetch(`${API_BASE}/risks/${risk.id}/reviews`);
+      const response = await authFetch(`${API_BASE}/risks/${risk.id}/reviews`);
       if (response.ok) {
         const data = await response.json();
         setHistoryData(data);
@@ -2289,7 +2313,7 @@ function App() {
       const actorName = reviewForm.reviewer_name.trim() || "Security Analyst";
       const actorRole = reviewForm.reviewer_role.trim() || "GRC Operator";
 
-      const response = await fetch(`${API_BASE}/reports/${reportType}?format=${format}`, {
+      const response = await authFetch(`${API_BASE}/reports/${reportType}?format=${format}`, {
         headers: {
           "X-Operator-Name": actorName,
           "X-Operator-Role": actorRole,
@@ -2458,6 +2482,37 @@ function App() {
           </button>
         </nav>
         <div className="sidebar-footer">
+          <div className="sidebar-user-card">
+            <div className="sidebar-user-header">
+              <div className="sidebar-user-avatar">
+                {(user?.display_name || user?.username || "U")[0].toUpperCase()}
+              </div>
+              <div className="sidebar-user-info">
+                <div className="sidebar-user-name" title={user?.display_name || user?.username}>
+                  {user?.display_name || user?.username}
+                </div>
+                <div className="sidebar-user-role">
+                  <span className={`role-badge ${
+                    user?.role === "Administrator" ? "role-badge-admin" :
+                    user?.role === "GRC Reviewer" ? "role-badge-reviewer" :
+                    "role-badge-analyst"
+                  }`}>
+                    {user?.role}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: "10px" }}>
+              <button
+                type="button"
+                className="sidebar-logout-btn"
+                onClick={logout}
+                title="Sign out of current session"
+              >
+                <span>🚪 Sign Out</span>
+              </button>
+            </div>
+          </div>
           <div className="sidebar-status">
             <span className="pulse-dot"></span>
             <span>System Online</span>
@@ -2474,7 +2529,18 @@ function App() {
             <h1 className="top-bar-title">{currentPageMeta.title}</h1>
             <p className="top-bar-desc">{currentPageMeta.desc}</p>
           </div>
-          <div className="top-bar-right">
+          <div className="top-bar-right" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div className="top-bar-user-pill">
+              <span style={{ fontSize: "14px" }}>👤</span>
+              <span style={{ fontWeight: 600 }}>{user?.display_name || user?.username}</span>
+              <span className={`role-badge ${
+                user?.role === "Administrator" ? "role-badge-admin" :
+                user?.role === "GRC Reviewer" ? "role-badge-reviewer" :
+                "role-badge-analyst"
+              }`}>
+                {user?.role}
+              </span>
+            </div>
             <button
               type="button"
               className={`ai-copilot-btn ai-copilot-available${showCopilotDrawer ? " ai-copilot-active" : ""}`}
@@ -2494,6 +2560,19 @@ function App() {
         </header>
 
         <div className="page-content">
+        {permissionNotice && (
+          <div className="permission-toast" role="alert">
+            <span>⛔ {permissionNotice}</span>
+            <button
+              type="button"
+              className="permission-toast-close"
+              onClick={clearPermissionNotice}
+              title="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
       {/* -------------------------------- */}
       {/* OVERVIEW PAGE                   */}
@@ -3099,7 +3178,9 @@ function App() {
                   </div>
                   <button
                     className="btn-primary btn-sm"
-                    onClick={openAddScheduleModal}
+                    onClick={() => isReviewer && openAddScheduleModal()}
+                    disabled={!isReviewer}
+                    title={isReviewer ? "Add Scan Schedule" : "GRC Reviewer or Administrator required to add scan schedules"}
                   >
                     + Add Scan Schedule
                   </button>
@@ -3767,8 +3848,9 @@ function App() {
                                 <button
                                   type="button"
                                   className="btn-action"
-                                  onClick={() => openAssetModal(asset)}
-                                  title="Edit Asset Intelligence"
+                                  onClick={() => isReviewer && openAssetModal(asset)}
+                                  disabled={!isReviewer}
+                                  title={isReviewer ? "Edit Asset Intelligence" : "GRC Reviewer or Administrator required to edit assets"}
                                 >
                                   Edit
                                 </button>
@@ -4808,7 +4890,9 @@ function App() {
                     <button
                       type="button"
                       className="btn-primary"
-                      onClick={() => setShowAddControlModal(true)}
+                      onClick={() => isReviewer && setShowAddControlModal(true)}
+                      disabled={!isReviewer}
+                      title={isReviewer ? "Add Control" : "GRC Reviewer or Administrator required to add controls"}
                     >
                       + Add Control
                     </button>
@@ -7006,6 +7090,17 @@ function App() {
       {/* PHASE 9: AUDIT TRAIL WORKSPACE                  */}
       {/* ------------------------------------------------ */}
       {activePage === "audit" && (() => {
+        if (!isReviewer) {
+          return (
+            <div className="gov-panel" style={{ textAlign: "center", padding: "48px 24px" }}>
+              <div style={{ fontSize: "40px", marginBottom: "16px" }}>🔒</div>
+              <h3 style={{ color: "#ffffff", marginBottom: "8px" }}>Audit Trail Access Restricted</h3>
+              <p style={{ color: "#94a3b8", maxWidth: "480px", margin: "0 auto" }}>
+                Access to the immutable audit trail requires GRC Reviewer or Administrator privileges. Your current role is <strong>{user?.role}</strong>.
+              </p>
+            </div>
+          );
+        }
         // Client-side search on currently loaded page records (Clarification 2)
         const filteredLogs = auditLogs.filter((log) => {
           if (!auditSearchQuery.trim()) return true;
@@ -7408,8 +7503,8 @@ function App() {
       {/* REPORTS PANEL                                   */}
       {/* ------------------------------------------------ */}
       {activePage === "reports" && (() => {
-        const activeOperatorName = reviewForm.reviewer_name.trim() || "Security Analyst";
-        const activeOperatorRole = reviewForm.reviewer_role.trim() || "GRC Operator";
+        const activeOperatorName = user?.display_name || user?.username || reviewForm.reviewer_name;
+        const activeOperatorRole = user?.role || reviewForm.reviewer_role;
 
         const categories = [
           { key: "ALL", label: "All Suites" },
@@ -7458,7 +7553,7 @@ function App() {
                   <strong>{activeOperatorName}</strong>
                 </div>
                 <div className="reports-operator-badge-role">{activeOperatorRole}</div>
-                <div className="reports-operator-badge-meta">Attributed via X-Operator HTTP headers</div>
+                <div className="reports-operator-badge-meta">Authenticated JWT Session • {activeOperatorRole}</div>
               </div>
             </div>
 
@@ -9243,20 +9338,20 @@ function App() {
                       <label>Reviewer Name</label>
                       <input
                         type="text"
-                        value={reviewForm.reviewer_name}
-                        onChange={(e) => setReviewForm({ ...reviewForm, reviewer_name: e.target.value })}
-                        placeholder="e.g. Security Analyst"
-                        required
+                        value={user?.display_name || user?.username || reviewForm.reviewer_name}
+                        disabled
+                        style={{ opacity: 0.7, cursor: "not-allowed" }}
+                        title="Attributed to your authenticated account session"
                       />
                     </div>
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label>Reviewer Role</label>
                       <input
                         type="text"
-                        value={reviewForm.reviewer_role}
-                        onChange={(e) => setReviewForm({ ...reviewForm, reviewer_role: e.target.value })}
-                        placeholder="e.g. GRC Operator"
-                        required
+                        value={user?.role || reviewForm.reviewer_role}
+                        disabled
+                        style={{ opacity: 0.7, cursor: "not-allowed" }}
+                        title="Attributed to your authenticated account session"
                       />
                     </div>
                   </div>
@@ -10073,6 +10168,28 @@ function App() {
         );
       })()}
     </div>
+  );
+}
+
+function AppShell() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <AuthLoadingScreen />;
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
+  return <AuthenticatedDashboard />;
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <AppShell />
+    </AuthProvider>
   );
 }
 
