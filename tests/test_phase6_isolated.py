@@ -560,7 +560,7 @@ class TestGovernanceApiEndpoints(BasePhase6IsolatedTestCase):
         data = resp.json()
         self.assertEqual(data["title"], "API Test Evidence")
         self.assertIsNotNone(data["checksum_sha256"])
-        self.assertEqual(data["collector"], "AuditorAlice")
+        self.assertEqual(data["collector"], "Test Admin")
         self.assertEqual(data["linked_risk_ids"], [self.risk.id])
 
     def test_post_evidence_api_rejects_oversized_content(self):
@@ -637,7 +637,8 @@ class TestGovernanceApiEndpoints(BasePhase6IsolatedTestCase):
             .first()
         )
         self.assertIsNotNone(audit_entry)
-        self.assertEqual(audit_entry.actor, "LeadAuditorX")
+        # Stage 13D.4: Audit attribution is strictly bound to the authenticated User (test_admin), ignoring spoofed headers
+        self.assertEqual(audit_entry.actor, "test_admin")
 
 
 class TestGovernanceAuditInstrumentation(BasePhase6IsolatedTestCase):
@@ -673,7 +674,7 @@ class TestGovernanceAuditInstrumentation(BasePhase6IsolatedTestCase):
             .first()
         )
         self.assertIsNotNone(log)
-        self.assertEqual(log.actor, "AssetManagerBob")
+        self.assertEqual(log.actor, "test_admin")
         self.assertEqual(log.action, "UPDATE")
 
     def test_patch_risk_emits_audit_event(self):
@@ -691,7 +692,7 @@ class TestGovernanceAuditInstrumentation(BasePhase6IsolatedTestCase):
             .first()
         )
         self.assertIsNotNone(log)
-        self.assertEqual(log.actor, "RiskOfficerCarol")
+        self.assertEqual(log.actor, "test_admin")
         self.assertEqual(log.action, "UPDATE")
 
     def test_control_crud_emits_audit_events(self):
@@ -710,7 +711,7 @@ class TestGovernanceAuditInstrumentation(BasePhase6IsolatedTestCase):
             .first()
         )
         self.assertIsNotNone(create_log)
-        self.assertEqual(create_log.actor, "SecOpsDan")
+        self.assertEqual(create_log.actor, "test_admin")
 
         # Update control
         resp_up = self.client.patch(
@@ -748,7 +749,7 @@ class TestGovernanceAuditInstrumentation(BasePhase6IsolatedTestCase):
             .first()
         )
         self.assertIsNotNone(assign_log)
-        self.assertEqual(assign_log.actor, "AssignerEve")
+        self.assertEqual(assign_log.actor, "test_admin")
 
         # Detach
         resp_detach = self.client.delete(
@@ -778,7 +779,7 @@ class TestGovernanceAuditInstrumentation(BasePhase6IsolatedTestCase):
             .first()
         )
         self.assertIsNotNone(log)
-        self.assertEqual(log.actor, "AuditorFrank")
+        self.assertEqual(log.actor, "test_admin")
         self.assertEqual(log.action, "UPDATE")
 
 

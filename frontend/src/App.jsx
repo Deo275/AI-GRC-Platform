@@ -2084,14 +2084,8 @@ function AuthenticatedDashboard() {
         return;
       }
       if (getRes.status === 404) {
-        const actorName = reviewForm.reviewer_name?.trim() || "Security Analyst";
-        const actorRole = reviewForm.reviewer_role?.trim() || "GRC Operator";
         const postRes = await authFetch(`${API_BASE}/risks/${riskId}/analyze`, {
           method: "POST",
-          headers: {
-            "X-Operator-Name": actorName,
-            "X-Operator-Role": actorRole,
-          },
         });
         const postData = await postRes.json().catch(() => null);
         if (!postRes.ok) {
@@ -2117,14 +2111,8 @@ function AuthenticatedDashboard() {
     setAiError(prev => ({ ...prev, [riskId]: null }));
     setAiAnalysis(prev => { const n = { ...prev }; delete n[riskId]; return n; });
     try {
-      const actorName = reviewForm.reviewer_name?.trim() || "Security Analyst";
-      const actorRole = reviewForm.reviewer_role?.trim() || "GRC Operator";
       const res = await authFetch(`${API_BASE}/risks/${riskId}/analyze`, {
         method: "POST",
-        headers: {
-          "X-Operator-Name": actorName,
-          "X-Operator-Role": actorRole,
-        },
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -2249,23 +2237,16 @@ function AuthenticatedDashboard() {
     setSubmittingReview(true);
     setReviewSubmitError(null);
     try {
-      const actorName = reviewForm.reviewer_name.trim() || "Security Analyst";
-      const actorRole = reviewForm.reviewer_role.trim() || "GRC Operator";
-
       const response = await authFetch(`${API_BASE}/risks/${reviewingRisk.id}/reviews`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Operator-Name": actorName,
-          "X-Operator-Role": actorRole,
         },
         body: JSON.stringify({
           decision: reviewForm.decision,
           agreed_treatment: reviewForm.agreed_treatment,
           comments: reviewForm.comments.trim(),
           ai_analysis_acknowledged: Boolean(reviewForm.ai_analysis_acknowledged),
-          reviewer_name: actorName,
-          reviewer_role: actorRole,
         }),
       });
 
@@ -2310,15 +2291,7 @@ function AuthenticatedDashboard() {
     setDownloadingReport({ type: reportType, format });
     setReportDownloadError(null);
     try {
-      const actorName = reviewForm.reviewer_name.trim() || "Security Analyst";
-      const actorRole = reviewForm.reviewer_role.trim() || "GRC Operator";
-
-      const response = await authFetch(`${API_BASE}/reports/${reportType}?format=${format}`, {
-        headers: {
-          "X-Operator-Name": actorName,
-          "X-Operator-Role": actorRole,
-        },
-      });
+      const response = await authFetch(`${API_BASE}/reports/${reportType}?format=${format}`);
 
       if (!response.ok) {
         const err = await response.json().catch(() => null);
@@ -9327,11 +9300,11 @@ function AuthenticatedDashboard() {
                   </div>
                 </div>
 
-                {/* Reviewer Attribution (Prototype) */}
+                {/* Reviewer Attribution */}
                 <div style={{ marginTop: "14px" }}>
-                  <div className="card-label" style={{ marginBottom: "4px" }}>Reviewer Attribution (Prototype)</div>
+                  <div className="card-label" style={{ marginBottom: "4px" }}>Reviewer Attribution</div>
                   <div className="attribution-prototype-note">
-                    ℹ️ Attribution metadata only — authentication is not enabled in this prototype.
+                    🔒 Authoritative governance identity derived from your authenticated account session.
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                     <div className="form-group" style={{ marginBottom: 0 }}>

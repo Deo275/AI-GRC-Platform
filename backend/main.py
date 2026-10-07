@@ -219,19 +219,20 @@ class RiskReviewCreate(BaseModel):
     agreed_treatment: str = Field(..., description="Mitigate, Accept, Transfer, or Avoid")
     comments: str = Field(..., min_length=5, description="Mandatory justification comments")
     ai_analysis_acknowledged: bool = Field(False, description="Acknowledgement that AI advisory intelligence was reviewed")
-    reviewer_name: Optional[str] = Field(None, description="Optional override; defaults to X-Operator-Name")
-    reviewer_role: Optional[str] = Field(None, description="Optional override; defaults to X-Operator-Role")
+    reviewer_name: Optional[str] = Field(None, description="Legacy/ignored; derived authoritatively from authenticated User")
+    reviewer_role: Optional[str] = Field(None, description="Legacy/ignored; derived authoritatively from authenticated User")
 
 
 def get_operator_identity(request: Request = None) -> tuple[str, str]:
-    """Extract attributed human reviewer/operator metadata from request headers.
+    """DEPRECATED / NON-AUTHORITATIVE LEGACY HELPER.
 
-    DISCLAIMER: X-Operator-Name and X-Operator-Role provide attribution metadata only
-    and do not constitute authentication or authorization.
+    Retained strictly for backward compatibility with unauthenticated or legacy callers.
+    Must NEVER be used for authentication, authorization, or authoritative audit actor identity.
+    Authoritative operator identity MUST be derived from authenticated User records.
     """
-    if not request:
-        return "Security Analyst", "Operator"
-    actor = request.headers.get("X-Operator-Name", "Security Analyst").strip() or "Security Analyst"
+    if not request or not hasattr(request, "headers"):
+        return "Legacy Anonymous", "Operator"
+    actor = request.headers.get("X-Operator-Name", "Legacy Anonymous").strip() or "Legacy Anonymous"
     role = request.headers.get("X-Operator-Role", "Operator").strip() or "Operator"
     return actor, role
 
@@ -1192,7 +1193,7 @@ def update_asset(
         db.commit()
         db.refresh(asset)
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="USER",
@@ -1298,7 +1299,7 @@ def update_risk(
         db.commit()
         db.refresh(risk)
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="USER",
@@ -1376,7 +1377,7 @@ def create_control(
         db.commit()
         db.refresh(control)
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="USER",
@@ -1471,7 +1472,7 @@ def update_control(
         db.commit()
         db.refresh(control)
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="USER",
@@ -1525,7 +1526,7 @@ def delete_control(
 
         db.commit()
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="USER",
@@ -1575,7 +1576,7 @@ def assign_control_to_risk(
         db.commit()
         db.refresh(risk)
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="USER",
@@ -1633,7 +1634,7 @@ def detach_control_from_risk(
         db.commit()
         db.refresh(risk)
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="USER",
@@ -1867,7 +1868,7 @@ def update_compliance_requirement(
         db.commit()
         db.refresh(req)
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="USER",
@@ -1947,18 +1948,15 @@ class AIRateLimiter:
 ai_rate_limiter = AIRateLimiter(max_requests=5, window_seconds=60)
 
 
-def get_ai_client_identity(request: Request = None) -> str:
+def get_ai_client_identity(request: Request = None, user: Optional[models.User] = None) -> str:
     """Derive client identity for operational rate limiting of AI requests.
 
-    Prefers operator metadata headers; falls back to client IP address.
+    Prefers authenticated user identity; falls back to client IP address.
+    Client-controlled headers (e.g. X-Operator-*) are not used.
     """
-    if not request:
-        return "system:default"
-    actor = request.headers.get("X-Operator-Name", "").strip() if request.headers else ""
-    role = request.headers.get("X-Operator-Role", "").strip() if request.headers else ""
-    if actor or role:
-        return f"operator:{actor or 'Unknown'}:{role or 'Unknown'}"
-    if request.client and request.client.host:
+    if user and getattr(user, "username", None):
+        return f"user:{user.username}"
+    if request and request.client and request.client.host:
         return f"ip:{request.client.host}"
     return "ip:unknown"
 
@@ -1981,7 +1979,7 @@ def trigger_ai_risk_analysis(
     - CRITICAL INVARIANT: Official rule-based risk scores remain strictly immutable.
     """
     # 1. Operational rate limiting check
-    client_identity = get_ai_client_identity(request)
+    client_identity = get_ai_client_identity(request, user=current_user)
     allowed, retry_after = ai_rate_limiter.check_rate_limit(client_identity)
     if not allowed:
         raise HTTPException(
@@ -2008,7 +2006,7 @@ def trigger_ai_risk_analysis(
         db.refresh(risk)
 
         is_reused = bool(analysis_data.get("is_reused", False))
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="AI",
@@ -2158,7 +2156,7 @@ def create_monitoring_job(
                 ),
             )
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="SCANNER",
@@ -2243,7 +2241,7 @@ def cancel_monitoring_job(
 
         scan_worker_pool.cancel_scan_job(job_id)
 
-        actor, _ = get_operator_identity(request)
+        actor = current_user.username
         log_audit_event(
             db=db,
             source="SCANNER",
@@ -2546,7 +2544,8 @@ def create_evidence(
     current_user: models.User = Depends(require_reviewer),
 ):
     """Register a new tamper-evident evidence artifact with M2M governance linkages."""
-    actor, _ = get_operator_identity(request)
+    actor = current_user.username
+    collector = payload.collector or current_user.display_name or current_user.username
     ip_addr = request.client.host if request.client else None
 
     db = SessionLocal()
@@ -2559,7 +2558,7 @@ def create_evidence(
             content_text=payload.content_text,
             reference_url=payload.reference_url,
             source_system=payload.source_system or "AI-GRC Platform",
-            collector=payload.collector or actor,
+            collector=collector,
             collected_at=payload.collected_at,
             asset_id=payload.asset_id,
             scan_job_id=payload.scan_job_id,
@@ -2599,7 +2598,7 @@ def delete_evidence(
     current_user: models.User = Depends(require_admin),
 ):
     """Delete an evidence record and emit a corresponding audit log."""
-    actor, _ = get_operator_identity(request)
+    actor = current_user.username
     ip_addr = request.client.host if request.client else None
 
     db = SessionLocal()
@@ -2634,8 +2633,9 @@ def _handle_report_response(
     db: Any,
     request: Request,
     filters: Optional[dict] = None,
+    current_user: Optional[models.User] = None,
 ) -> Response:
-    actor, _ = get_operator_identity(request)
+    actor = current_user.username if current_user else "system"
     ip_addr = request.client.host if request.client else None
 
     try:
@@ -2681,7 +2681,7 @@ def get_executive_summary_report(
         filters = {}
         if risk_level:
             filters["risk_level"] = risk_level
-        return _handle_report_response("executive_summary", format, db, request, filters)
+        return _handle_report_response("executive_summary", format, db, request, filters, current_user=current_user)
     finally:
         db.close()
 
@@ -2705,7 +2705,7 @@ def get_technical_vulnerabilities_report(
             filters["severity"] = severity
         if status:
             filters["status"] = status
-        return _handle_report_response("technical_vulnerabilities", format, db, request, filters)
+        return _handle_report_response("technical_vulnerabilities", format, db, request, filters, current_user=current_user)
     finally:
         db.close()
 
@@ -2726,7 +2726,7 @@ def get_compliance_gap_report(
             filters["framework_id"] = framework_id
         if status:
             filters["status"] = status
-        return _handle_report_response("compliance_gap", format, db, request, filters)
+        return _handle_report_response("compliance_gap", format, db, request, filters, current_user=current_user)
     finally:
         db.close()
 
@@ -2750,7 +2750,7 @@ def get_risk_register_report(
             filters["treatment"] = treatment
         if owner:
             filters["owner"] = owner
-        return _handle_report_response("risk_register", format, db, request, filters)
+        return _handle_report_response("risk_register", format, db, request, filters, current_user=current_user)
     finally:
         db.close()
 
@@ -2777,7 +2777,7 @@ def get_governance_audit_report(
             filters["start_time"] = start_time
         if end_time:
             filters["end_time"] = end_time
-        return _handle_report_response("governance_audit", format, db, request, filters)
+        return _handle_report_response("governance_audit", format, db, request, filters, current_user=current_user)
     finally:
         db.close()
 
@@ -2792,7 +2792,7 @@ def get_generic_report(
     """Unified report export endpoint supporting JSON, CSV, and HTML formats."""
     db = SessionLocal()
     try:
-        return _handle_report_response(report_type, format, db, request, filters=None)
+        return _handle_report_response(report_type, format, db, request, filters=None, current_user=current_user)
     finally:
         db.close()
 
@@ -2813,12 +2813,12 @@ def create_risk_review(
     Guarantees:
     - AI output is advisory decision support only; human reviewer explicitly decides.
     - Exactly one active review per risk enforced at the database level.
-    - Attributed reviewer metadata captured from headers (X-Operator-Name, X-Operator-Role).
+    - Authoritative reviewer metadata derived strictly from authenticated user session.
     - Material treatment overrides and review submissions are permanently audited.
     """
-    actor, role = get_operator_identity(request)
-    reviewer_name = payload.reviewer_name or actor
-    reviewer_role = payload.reviewer_role or role
+    actor = current_user.username
+    reviewer_name = current_user.display_name or current_user.username
+    reviewer_role = current_user.role
     ip_addr = request.client.host if request.client else None
 
     db = SessionLocal()
@@ -2833,6 +2833,7 @@ def create_risk_review(
             reviewer_name=reviewer_name,
             reviewer_role=reviewer_role,
             ip_address=ip_addr,
+            actor=actor,
         )
         return format_risk_review(review, is_stale=False, stale_reasons=[])
     except ValueError as err:

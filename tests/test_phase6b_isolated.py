@@ -479,7 +479,8 @@ class TestReportingApiEndpoints(BasePhase6bIsolatedTestCase):
             .first()
         )
         self.assertIsNotNone(audit_entry)
-        self.assertEqual(audit_entry.actor, "AuditorBob")
+        # Stage 13D.4: Audit attribution is bound to authenticated User (test_admin), ignoring spoofed headers
+        self.assertEqual(audit_entry.actor, "test_admin")
         self.assertIn("CSV", audit_entry.description)
 
     def test_api_oversized_export_rejection(self):

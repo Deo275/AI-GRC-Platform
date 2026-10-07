@@ -758,8 +758,9 @@ class TestRiskReviewApiEndpoints(BasePhase6CIsolatedTestCase):
         self.assertEqual(resp.status_code, 201)
         data = resp.json()
         self.assertEqual(data["decision"], "APPROVED")
-        self.assertEqual(data["reviewer_name"], "AuditorDave")
-        self.assertEqual(data["reviewer_role"], "GRC Auditor")
+        # Stage 13D.4: Reviewer identity is authoritatively derived from authenticated User session
+        self.assertEqual(data["reviewer_name"], "Test Admin")
+        self.assertEqual(data["reviewer_role"], "Administrator")
         self.assertTrue(data["is_current"])
 
         # GET reviews

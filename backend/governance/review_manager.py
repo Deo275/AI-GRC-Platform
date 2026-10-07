@@ -3,8 +3,9 @@
 Core Guarantees:
 - Enforces human-in-the-loop governance: AI models and background workers cannot create or approve reviews.
 - Exactly one current active review per risk (enforced by DB partial unique index and transaction).
-- Attributed human reviewer/operator: X-Operator-Name and X-Operator-Role provide attribution metadata
-  only and do not constitute authentication or authorization.
+- Attributed human reviewer/operator: Authoritative operator identity is derived
+  strictly from authenticated User sessions. Client headers (X-Operator-*) do not
+  determine authentication, authorization, or audit attribution.
 - Authoritative snapshot_vulnerability_hash: SHA-256 over ONLY vulnerability findings relevant to the
   specific Risk being reviewed, preventing unrelated vulnerabilities on the same asset from causing false staleness.
 - Risk-relevant drift correlation: evaluates port and CVE relevance before invalidating reviews.
@@ -247,6 +248,7 @@ def submit_risk_review(
     reviewer_name: str = "Security Analyst",
     reviewer_role: str = "Operator",
     ip_address: Optional[str] = None,
+    actor: Optional[str] = None,
 ) -> models.RiskReview:
     """Submits a formal human governance review for a Risk.
 
@@ -341,6 +343,8 @@ def submit_risk_review(
     db.add(new_review)
     db.flush()
 
+    effective_actor = (actor.strip() if actor else None) or (reviewer_name.strip() if reviewer_name else "Security Analyst")
+
     # Update risk governance review_status
     if clean_decision == "APPROVED":
         risk.review_status = "Approved"
@@ -352,7 +356,7 @@ def submit_risk_review(
             log_audit_event(
                 db=db,
                 source="USER",
-                actor=reviewer_name,
+                actor=effective_actor,
                 action="TREATMENT_OVERRIDDEN",
                 entity_type="Risk",
                 entity_id=risk.id,
@@ -382,7 +386,7 @@ def submit_risk_review(
     log_audit_event(
         db=db,
         source="USER",
-        actor=reviewer_name,
+        actor=effective_actor,
         action="RISK_REVIEW_SUBMITTED",
         entity_type="RiskReview",
         entity_id=new_review.id,

@@ -6,7 +6,7 @@
  * - Centralized HTTP 401 session expiration handling
  * - Centralized HTTP 403 permission error handling
  * - Single-source API base URL configuration
- * - Backward-compatible operator identity attribution from authenticated profile
+ * - Authoritative Bearer JWT authentication for server-side operator attribution
  */
 
 export const API_BASE =
@@ -16,7 +16,6 @@ export const AUTH_TOKEN_KEY = "ai_grc_access_token";
 
 let onUnauthorizedCallback = null;
 let onForbiddenCallback = null;
-let currentUserGetter = null;
 
 export const setUnauthorizedHandler = (fn) => {
   onUnauthorizedCallback = fn;
@@ -26,9 +25,8 @@ export const setForbiddenHandler = (fn) => {
   onForbiddenCallback = fn;
 };
 
-export const setCurrentUserGetter = (fn) => {
-  currentUserGetter = fn;
-};
+// Retained as no-op for backward compatibility with AuthContext
+export const setCurrentUserGetter = () => {};
 
 export const getStoredToken = () => {
   try {
@@ -74,19 +72,6 @@ export const authFetch = async (url, options = {}) => {
   const token = getStoredToken();
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
-  }
-
-  // Provide operator headers derived strictly from authenticated user profile for backward compatibility
-  if (currentUserGetter) {
-    const user = currentUserGetter();
-    if (user) {
-      if (!headers.has("X-Operator-Name")) {
-        headers.set("X-Operator-Name", user.display_name || user.username || "Authenticated User");
-      }
-      if (!headers.has("X-Operator-Role")) {
-        headers.set("X-Operator-Role", user.role || "Security Analyst");
-      }
-    }
   }
 
   let response;
