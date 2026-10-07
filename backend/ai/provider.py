@@ -561,6 +561,7 @@ class GeminiAIProvider(AIProvider):
                 "response_mime_type": "application/json",
                 "response_schema": AIAnalysisResult,
                 "temperature": 0.2,
+                "max_output_tokens": 1500,
             }
             if http_options is not None:
                 config_kwargs["http_options"] = http_options
@@ -642,6 +643,7 @@ class ExternalLLMProvider(AIProvider):
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.2,
+            "max_tokens": 1500,
             "response_format": {"type": "json_object"}
         }
 
@@ -778,6 +780,7 @@ class _OpenAICompatibleProvider(AIProvider):
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.2,
+            "max_tokens": 1500,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -829,6 +832,7 @@ class _OpenAICompatibleProvider(AIProvider):
                 "Do NOT echo the input context keys. Output ONLY the analysis JSON structure above."
             )
             payload["response_format"] = {"type": "json_object"}
+            payload["max_tokens"] = 1500
             payload["messages"] = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt + fallback_instruction},
@@ -941,10 +945,21 @@ class ProviderChain(AIProvider):
     - Implements AIProvider — injectable into analyze_risk(provider=chain) for tests.
     """
 
-    def __init__(self, providers: List[AIProvider]):
+    DEFAULT_EXTERNAL_DEADLINE_SECONDS: float = 12.0
+
+    def __init__(
+        self,
+        providers: List[AIProvider],
+        external_deadline_seconds: Optional[float] = None,
+    ):
         if not providers:
             raise ValueError("ProviderChain requires at least one provider.")
         self._providers = list(providers)
+        self._external_deadline_seconds = (
+            external_deadline_seconds
+            if external_deadline_seconds is not None
+            else self.DEFAULT_EXTERNAL_DEADLINE_SECONDS
+        )
         self._attempts: List[ProviderAttempt] = []
 
     @property
@@ -960,8 +975,37 @@ class ProviderChain(AIProvider):
         return "chain"
 
     def analyze_finding(self, context: NormalizedSecurityContext) -> AIAnalysisResult:
+        import time
         self._attempts = []
+        chain_start_time = time.time()
         for provider in self._providers:
+            is_rule_assisted = isinstance(provider, RuleAssistedAIProvider)
+            elapsed = time.time() - chain_start_time
+
+            # If aggregate external provider deadline is exceeded, skip remaining external providers
+            # and immediately proceed to deterministic local RuleAssisted fallback
+            if not is_rule_assisted and elapsed >= self._external_deadline_seconds:
+                provider_label = getattr(provider, "provider_name", type(provider).__name__)
+                model_label = getattr(
+                    provider,
+                    "model_name",
+                    getattr(provider, "MODEL_NAME", provider_label),
+                )
+                logger.warning(
+                    f"ProviderChain: aggregate external deadline reached ({elapsed:.2f}s >= {self._external_deadline_seconds}s). "
+                    f"Skipping {provider_label} to engage deterministic RuleAssisted fallback."
+                )
+                self._attempts.append(
+                    ProviderAttempt(
+                        provider_name=provider_label,
+                        model_name=model_label,
+                        succeeded=False,
+                        error_type="AggregateDeadlineExceeded",
+                        error_message=f"Skipped: chain elapsed time {elapsed:.2f}s exceeded deadline {self._external_deadline_seconds}s",
+                    )
+                )
+                continue
+
             provider_label = getattr(provider, "provider_name", type(provider).__name__)
             model_label = getattr(
                 provider,

@@ -2,11 +2,13 @@ from fastapi import FastAPI, Query, HTTPException, Path, Body, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, List, Tuple
 import sys
 import os
 import ipaddress
 import logging
+import time
+import threading
 from dotenv import load_dotenv
 
 logger = logging.getLogger("ai_grc.backend")
@@ -1777,9 +1779,78 @@ def update_compliance_requirement(
 # Phase 4: AI-Assisted Security & Risk Intelligence Endpoints
 # ---------------------------------------------------------------------------
 
+class AIRateLimiter:
+    """Lightweight in-memory sliding-window rate limiter for AI analysis endpoints.
+
+    DISCLAIMER: This is an operational abuse-control layer to prevent quota exhaustion
+    and resource starvation; it does not constitute authentication or authorization.
+    """
+    def __init__(self, max_requests: int = 5, window_seconds: int = 60, max_tracked_clients: int = 1000):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.max_tracked_clients = max_tracked_clients
+        self._history: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
+        self._last_cleanup = time.time()
+
+    def check_rate_limit(self, client_key: str) -> Tuple[bool, int]:
+        now = time.time()
+        with self._lock:
+            # Clean expired entries periodically or when tracking map gets large
+            if now - self._last_cleanup > 60 or len(self._history) > self.max_tracked_clients:
+                self._cleanup(now)
+
+            timestamps = self._history.get(client_key, [])
+            cutoff = now - self.window_seconds
+            timestamps = [t for t in timestamps if t > cutoff]
+
+            if len(timestamps) >= self.max_requests:
+                earliest = timestamps[0]
+                retry_after = max(1, int(self.window_seconds - (now - earliest)))
+                self._history[client_key] = timestamps
+                return False, retry_after
+
+            timestamps.append(now)
+            self._history[client_key] = timestamps
+            return True, 0
+
+    def _cleanup(self, now: float):
+        cutoff = now - self.window_seconds
+        keys_to_remove = []
+        for k, ts in list(self._history.items()):
+            valid = [t for t in ts if t > cutoff]
+            if not valid:
+                keys_to_remove.append(k)
+            else:
+                self._history[k] = valid
+        for k in keys_to_remove:
+            self._history.pop(k, None)
+        self._last_cleanup = now
+
+
+ai_rate_limiter = AIRateLimiter(max_requests=5, window_seconds=60)
+
+
+def get_ai_client_identity(request: Request = None) -> str:
+    """Derive client identity for operational rate limiting of AI requests.
+
+    Prefers operator metadata headers; falls back to client IP address.
+    """
+    if not request:
+        return "system:default"
+    actor = request.headers.get("X-Operator-Name", "").strip() if request.headers else ""
+    role = request.headers.get("X-Operator-Role", "").strip() if request.headers else ""
+    if actor or role:
+        return f"operator:{actor or 'Unknown'}:{role or 'Unknown'}"
+    if request.client and request.client.host:
+        return f"ip:{request.client.host}"
+    return "ip:unknown"
+
+
 @app.post("/risks/{risk_id}/analyze")
 def trigger_ai_risk_analysis(
     risk_id: int = Path(..., description="The ID of the risk to analyze with AI intelligence"),
+    force_refresh: bool = Query(False, description="Perform new analysis even if a fresh unchanged analysis exists"),
     request: Request = None,
 ):
     """Analyze a security finding/risk using AI-assisted security intelligence.
@@ -1787,8 +1858,21 @@ def trigger_ai_risk_analysis(
     Extracts normalized context, invokes the configured AI intelligence provider,
     persists the auditable analysis record, and returns structured intelligence.
 
-    CRITICAL INVARIANT: Official rule-based risk scores remain strictly immutable.
+    Operational protections:
+    - In-memory rate limiting (max 5 requests/minute per client identity).
+    - Freshness reuse: Reuses existing unchanged analysis within 60 minutes unless force_refresh=True.
+    - CRITICAL INVARIANT: Official rule-based risk scores remain strictly immutable.
     """
+    # 1. Operational rate limiting check
+    client_identity = get_ai_client_identity(request)
+    allowed, retry_after = ai_rate_limiter.check_rate_limit(client_identity)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"AI analysis rate limit exceeded (maximum 5 requests per minute). Please retry after {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     db = SessionLocal()
     try:
         risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
@@ -1796,7 +1880,7 @@ def trigger_ai_risk_analysis(
             raise HTTPException(status_code=404, detail=f"Risk with ID {risk_id} not found")
 
         try:
-            analysis_data = analyze_risk(risk_id=risk_id, db=db)
+            analysis_data = analyze_risk(risk_id=risk_id, db=db, force_refresh=force_refresh)
         except AIProviderError as e:
             logger.error(f"AI security intelligence provider error for risk #{risk_id}: {e}", exc_info=True)
             raise HTTPException(
@@ -1806,12 +1890,13 @@ def trigger_ai_risk_analysis(
 
         db.refresh(risk)
 
+        is_reused = bool(analysis_data.get("is_reused", False))
         actor, _ = get_operator_identity(request)
         log_audit_event(
             db=db,
             source="AI",
             actor=actor,
-            action="AI_ANALYSIS_RUN",
+            action="AI_ANALYSIS_REUSE" if is_reused else "AI_ANALYSIS_RUN",
             entity_type="Risk",
             entity_id=risk_id,
             entity_name=risk.title,
@@ -1820,15 +1905,25 @@ def trigger_ai_risk_analysis(
                 "priority": analysis_data.get("priority"),
                 "confidence": analysis_data.get("confidence"),
                 "human_review_required": analysis_data.get("human_review_required"),
+                "is_reused": is_reused,
             },
-            description=f"Generated AI risk intelligence analysis for risk #{risk_id} using {analysis_data.get('model_name')}",
+            description=(
+                f"Retrieved fresh cached AI risk intelligence for risk #{risk_id}"
+                if is_reused
+                else f"Generated AI risk intelligence analysis for risk #{risk_id} using {analysis_data.get('model_name')}"
+            ),
             ip_address=request.client.host if request and request.client else None,
             commit=True,
         )
 
         return {
-            "message": "AI security intelligence analysis generated successfully",
+            "message": (
+                "AI security intelligence analysis retrieved from cache"
+                if is_reused
+                else "AI security intelligence analysis generated successfully"
+            ),
             "risk_id": risk_id,
+            "reused": is_reused,
             "official_risk_scores": {
                 "inherent_risk_score": risk.inherent_risk_score,
                 "inherent_risk_level": risk.inherent_risk_level,

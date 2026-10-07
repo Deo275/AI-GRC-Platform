@@ -195,7 +195,12 @@ function AIAnalysisPanel({ loading, error, analysis, onReanalyze }) {
             </div>
             <span className={`ai-conf-pct ai-conf-pct-${confClass}`}>{confidencePct}%</span>
           </div>
-          <button className="btn-ai-reanalyze" onClick={onReanalyze}>
+          <button
+            type="button"
+            className="btn-ai-reanalyze"
+            disabled={loading}
+            onClick={onReanalyze}
+          >
             ↺ Re-analyze
           </button>
         </div>
@@ -2033,6 +2038,7 @@ function App() {
   // ----------------------------------------
 
   const handleAnalyzeRisk = async (riskId, skipToggle = false) => {
+    if (aiLoading[riskId]) return;
     setCopilotSelectedRiskId(riskId);
     // Toggle panel closed if already open for this risk (unless skipToggle is true)
     if (!skipToggle && expandedAiPanel === riskId) {
@@ -2081,6 +2087,7 @@ function App() {
   };
 
   const handleReanalyzeRisk = async (riskId) => {
+    if (aiLoading[riskId]) return;
     // Always force a fresh POST, replacing any cached analysis
     setAiLoading(prev => ({ ...prev, [riskId]: true }));
     setAiError(prev => ({ ...prev, [riskId]: null }));
