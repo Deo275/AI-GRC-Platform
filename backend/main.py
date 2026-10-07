@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, HTTPException, Path, Body, Request, Response
+from fastapi import FastAPI, Query, HTTPException, Path, Body, Request, Response, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
@@ -97,11 +97,33 @@ except ImportError:
         REPORT_GENERATORS,
     )
 
+try:
+    from auth import (
+        hash_password,
+        verify_password,
+        create_access_token,
+        get_current_user,
+        run_dev_bootstrap,
+    )
+except ImportError:
+    from backend.auth import (
+        hash_password,
+        verify_password,
+        create_access_token,
+        get_current_user,
+        run_dev_bootstrap,
+    )
+
 
 
 # ---------------------------------------------------------------------------
 # Pydantic Schemas for Request Validation
 # ---------------------------------------------------------------------------
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., description="Username or email address")
+    password: str = Field(..., description="Account password")
+
 
 class AssetUpdate(BaseModel):
     criticality: str | None = None
@@ -468,6 +490,8 @@ monitoring_scheduler = MonitoringScheduler(worker_pool=scan_worker_pool, poll_in
 @app.on_event("startup")
 def on_startup():
     monitoring_scheduler.start()
+    run_dev_bootstrap()
+
 
 
 @app.on_event("shutdown")
@@ -482,6 +506,70 @@ def home():
         "message": "AI-GRC Platform Backend is Running",
         "database": "Connected Successfully"
     }
+
+
+# ---------------------------------------------------------------------------
+# Stage 13D.1 Authentication Foundation Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/login")
+def login(payload: LoginRequest):
+    username_input = payload.username.strip()
+    password_input = payload.password
+
+    db = SessionLocal()
+    try:
+        user = (
+            db.query(models.User)
+            .filter((models.User.username == username_input) | (models.User.email == username_input))
+            .first()
+        )
+
+        if not user or not verify_password(password_input, user.password_hash) or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        user.last_login_at = datetime.utcnow()
+        db.commit()
+        db.refresh(user)
+
+        token = create_access_token(
+            subject=user.id,
+            username=user.username,
+            role=user.role,
+        )
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "display_name": user.display_name,
+                "role": user.role,
+                "is_active": user.is_active,
+            },
+        }
+    finally:
+        db.close()
+
+
+@app.get("/auth/me")
+def get_auth_me(current_user: models.User = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "display_name": current_user.display_name,
+        "role": current_user.role,
+        "is_active": current_user.is_active,
+    }
+
 
 
 @app.post("/scan")

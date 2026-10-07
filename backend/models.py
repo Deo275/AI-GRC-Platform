@@ -442,3 +442,24 @@ class AuditLog(Base):
     new_values = Column(Text, nullable=True)                     # JSON string
     description = Column(String(1000), nullable=True)
     integrity_hash = Column(String(64), nullable=True, index=True)  # Deterministic SHA-256 over canonical immutable event fields
+
+
+# ---------------------------------------------------------------------------
+# Stage 13D.1 Authentication: User Model
+# ---------------------------------------------------------------------------
+
+ALLOWED_ROLES = ("Security Analyst", "GRC Reviewer", "Administrator")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    display_name = Column(String(100), nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(50), nullable=False, default="Security Analyst")
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = Column(DateTime, nullable=True)
