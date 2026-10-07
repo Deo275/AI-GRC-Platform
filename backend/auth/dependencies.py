@@ -99,3 +99,31 @@ def get_current_user(
         )
 
     return user
+
+
+def require_roles(*allowed_roles: str):
+    """
+    Dependency factory returning a callable dependency that validates the authenticated
+    user possesses one of the allowed roles.
+
+    Hierarchy & Behavior:
+    - If unauthenticated, expired, or invalid token -> HTTP 401 Unauthorized (via get_current_user)
+    - If user account is inactive -> HTTP 401 Unauthorized (via get_current_user)
+    - If user role is not in allowed_roles -> HTTP 403 Forbidden
+    - If user role matches -> returns authenticated models.User instance
+    """
+    def role_checker(current_user: models.User = Depends(get_current_user)) -> models.User:
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted: insufficient privileges",
+            )
+        return current_user
+
+    return role_checker
+
+
+# Canonical hierarchical RBAC role dependencies
+require_analyst = require_roles("Security Analyst", "GRC Reviewer", "Administrator")
+require_reviewer = require_roles("GRC Reviewer", "Administrator")
+require_admin = require_roles("Administrator")

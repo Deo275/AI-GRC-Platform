@@ -704,6 +704,8 @@ class TestPhase5MonitoringAPI(unittest.TestCase):
 
         self.session_patcher = patch("main.SessionLocal", side_effect=self.TestingSessionLocal)
         self.session_patcher.start()
+        self.auth_session_patcher = patch("auth.dependencies.SessionLocal", side_effect=self.TestingSessionLocal)
+        self.auth_session_patcher.start()
 
         # Patch worker execution so real scans aren't run
         self.submit_patcher = patch.object(self.scan_worker_pool, "submit_scan_job")
@@ -711,10 +713,17 @@ class TestPhase5MonitoringAPI(unittest.TestCase):
 
         from fastapi.testclient import TestClient
         self.client = TestClient(self.app)
+        from tests.auth_test_utils import create_test_auth_headers
+        db = self.TestingSessionLocal()
+        try:
+            self.client.headers.update(create_test_auth_headers(db, role="Administrator"))
+        finally:
+            db.close()
 
     def tearDown(self):
         self.submit_patcher.stop()
         self.session_patcher.stop()
+        self.auth_session_patcher.stop()
         models.Base.metadata.drop_all(bind=self.engine)
 
     def test_api_post_job_returns_202(self):

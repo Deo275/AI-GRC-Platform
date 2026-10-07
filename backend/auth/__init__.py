@@ -7,7 +7,14 @@ from .security import (
     JWT_ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
 )
-from .dependencies import get_current_user, get_db
+from .dependencies import (
+    get_current_user,
+    get_db,
+    require_roles,
+    require_analyst,
+    require_reviewer,
+    require_admin,
+)
 from .bootstrap import run_dev_bootstrap
 
 __all__ = [
@@ -20,5 +27,9 @@ __all__ = [
     "ACCESS_TOKEN_EXPIRE_MINUTES",
     "get_current_user",
     "get_db",
+    "require_roles",
+    "require_analyst",
+    "require_reviewer",
+    "require_admin",
     "run_dev_bootstrap",
 ]

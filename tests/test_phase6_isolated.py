@@ -466,10 +466,15 @@ class TestGovernanceApiEndpoints(BasePhase6IsolatedTestCase):
         # Patch SessionLocal in main to use our in-memory SQLite session
         self.session_patcher = unittest.mock.patch("main.SessionLocal", side_effect=lambda: self.SessionLocal())
         self.session_patcher.start()
+        self.auth_patcher = unittest.mock.patch("auth.dependencies.SessionLocal", side_effect=lambda: self.SessionLocal())
+        self.auth_patcher.start()
         self.client = TestClient(main.app)
+        from tests.auth_test_utils import create_test_auth_headers
+        self.client.headers.update(create_test_auth_headers(self.db, role="Administrator"))
 
     def tearDown(self):
         self.session_patcher.stop()
+        self.auth_patcher.stop()
         super().tearDown()
 
     def test_get_audit_logs_pagination_and_total(self):
@@ -642,10 +647,15 @@ class TestGovernanceAuditInstrumentation(BasePhase6IsolatedTestCase):
         super().setUp()
         self.session_patcher = unittest.mock.patch("main.SessionLocal", side_effect=lambda: self.SessionLocal())
         self.session_patcher.start()
+        self.auth_patcher = unittest.mock.patch("auth.dependencies.SessionLocal", side_effect=lambda: self.SessionLocal())
+        self.auth_patcher.start()
         self.client = TestClient(main.app)
+        from tests.auth_test_utils import create_test_auth_headers
+        self.client.headers.update(create_test_auth_headers(self.db, role="Administrator"))
 
     def tearDown(self):
         self.session_patcher.stop()
+        self.auth_patcher.stop()
         super().tearDown()
 
     def test_patch_asset_emits_audit_event(self):

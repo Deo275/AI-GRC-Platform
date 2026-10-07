@@ -103,6 +103,10 @@ try:
         verify_password,
         create_access_token,
         get_current_user,
+        require_roles,
+        require_analyst,
+        require_reviewer,
+        require_admin,
         run_dev_bootstrap,
     )
 except ImportError:
@@ -111,6 +115,10 @@ except ImportError:
         verify_password,
         create_access_token,
         get_current_user,
+        require_roles,
+        require_analyst,
+        require_reviewer,
+        require_admin,
         run_dev_bootstrap,
     )
 
@@ -574,8 +582,9 @@ def get_auth_me(current_user: models.User = Depends(get_current_user)):
 
 @app.post("/scan")
 def scan_network(
-    target: str = Query("192.168.127.1")
-    ):
+    target: str = Query("192.168.127.1"),
+    current_user: models.User = Depends(require_analyst),
+):
 
     try:
         # Reuse existing target validation logic already used by the monitoring scanner
@@ -951,7 +960,8 @@ def scan_network(
 
 @app.post("/discover")
 def discover_network(
-    network: str = Query("192.168.127.0/24")
+    network: str = Query("192.168.127.0/24"),
+    current_user: models.User = Depends(require_analyst),
 ):
 
     if not isinstance(network, str) or "/" not in network:
@@ -1093,7 +1103,7 @@ def discover_network(
 # ---------------------------------------------------------------------------
 
 @app.get("/assets")
-def get_assets():
+def get_assets(current_user: models.User = Depends(require_analyst)):
     db = SessionLocal()
     try:
         assets = db.query(models.Asset).order_by(models.Asset.id).all()
@@ -1106,7 +1116,10 @@ def get_assets():
 
 
 @app.get("/assets/{asset_id}")
-def get_asset(asset_id: int = Path(..., description="The ID of the asset")):
+def get_asset(
+    asset_id: int = Path(..., description="The ID of the asset"),
+    current_user: models.User = Depends(require_analyst),
+):
     db = SessionLocal()
     try:
         asset = db.query(models.Asset).filter(models.Asset.id == asset_id).first()
@@ -1122,6 +1135,7 @@ def update_asset(
     asset_id: int = Path(..., description="The ID of the asset"),
     payload: AssetUpdate = Body(...),
     request: Request = None,
+    current_user: models.User = Depends(require_reviewer),
 ):
     db = SessionLocal()
     try:
@@ -1213,7 +1227,7 @@ def update_asset(
 # ---------------------------------------------------------------------------
 
 @app.get("/risks")
-def get_risks():
+def get_risks(current_user: models.User = Depends(require_analyst)):
     db = SessionLocal()
     try:
         risks = db.query(models.Risk).order_by(models.Risk.id).all()
@@ -1226,7 +1240,10 @@ def get_risks():
 
 
 @app.get("/risks/{risk_id}")
-def get_risk(risk_id: int = Path(..., description="The ID of the risk")):
+def get_risk(
+    risk_id: int = Path(..., description="The ID of the risk"),
+    current_user: models.User = Depends(require_analyst),
+):
     db = SessionLocal()
     try:
         risk = db.query(models.Risk).filter(models.Risk.id == risk_id).first()
@@ -1242,6 +1259,7 @@ def update_risk(
     risk_id: int = Path(..., description="The ID of the risk"),
     payload: RiskUpdate = Body(...),
     request: Request = None,
+    current_user: models.User = Depends(require_reviewer),
 ):
     db = SessionLocal()
     try:
@@ -1314,7 +1332,7 @@ def update_risk(
 # ---------------------------------------------------------------------------
 
 @app.get("/controls")
-def get_controls():
+def get_controls(current_user: models.User = Depends(require_analyst)):
     db = SessionLocal()
     try:
         controls = db.query(models.Control).order_by(models.Control.id).all()
@@ -1330,6 +1348,7 @@ def get_controls():
 def create_control(
     payload: ControlCreate = Body(...),
     request: Request = None,
+    current_user: models.User = Depends(require_reviewer),
 ):
     db = SessionLocal()
     try:
@@ -1381,7 +1400,10 @@ def create_control(
 
 
 @app.get("/controls/{control_id}")
-def get_control(control_id: int = Path(..., description="The ID of the control")):
+def get_control(
+    control_id: int = Path(..., description="The ID of the control"),
+    current_user: models.User = Depends(require_analyst),
+):
     db = SessionLocal()
     try:
         control = db.query(models.Control).filter(models.Control.id == control_id).first()
@@ -1397,6 +1419,7 @@ def update_control(
     control_id: int = Path(..., description="The ID of the control"),
     payload: ControlUpdate = Body(...),
     request: Request = None,
+    current_user: models.User = Depends(require_reviewer),
 ):
     db = SessionLocal()
     try:
@@ -1476,6 +1499,7 @@ def update_control(
 def delete_control(
     control_id: int = Path(..., description="The ID of the control"),
     request: Request = None,
+    current_user: models.User = Depends(require_reviewer),
 ):
     db = SessionLocal()
     try:
@@ -1526,6 +1550,7 @@ def assign_control_to_risk(
     risk_id: int = Path(..., description="The ID of the risk"),
     control_id: int = Path(..., description="The ID of the control"),
     request: Request = None,
+    current_user: models.User = Depends(require_reviewer),
 ):
     db = SessionLocal()
     try:
@@ -1583,6 +1608,7 @@ def detach_control_from_risk(
     risk_id: int = Path(..., description="The ID of the risk"),
     control_id: int = Path(..., description="The ID of the control"),
     request: Request = None,
+    current_user: models.User = Depends(require_reviewer),
 ):
     db = SessionLocal()
     try:
@@ -1640,7 +1666,7 @@ def detach_control_from_risk(
 # ---------------------------------------------------------------------------
 
 @app.get("/vulnerabilities")
-def get_vulnerabilities():
+def get_vulnerabilities(current_user: models.User = Depends(require_analyst)):
     db = SessionLocal()
 
     try:
@@ -1685,7 +1711,7 @@ def get_vulnerabilities():
 # ---------------------------------------------------------------------------
 
 @app.get("/compliance/frameworks")
-def get_compliance_frameworks():
+def get_compliance_frameworks(current_user: models.User = Depends(require_analyst)):
     """Retrieve all supported compliance frameworks."""
     db = SessionLocal()
     try:
@@ -1703,7 +1729,8 @@ def get_compliance_requirements(
     framework: str | None = Query(None, description="Filter by framework name (e.g. 'NIST CSF', 'ISO/IEC 27001') or ID"),
     status: str | None = Query(None, description="Filter by assessment status"),
     function: str | None = Query(None, description="Filter by function/theme (e.g. 'Protect', 'Technological')"),
-    category: str | None = Query(None, description="Filter by category")
+    category: str | None = Query(None, description="Filter by category"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Retrieve compliance requirements with optional filtering by framework, status, function, or category."""
     db = SessionLocal()
@@ -1737,7 +1764,7 @@ def get_compliance_requirements(
 
 
 @app.get("/compliance/mappings")
-def get_compliance_mappings():
+def get_compliance_mappings(current_user: models.User = Depends(require_analyst)):
     """Retrieve all control-to-compliance requirement mappings."""
     db = SessionLocal()
     try:
@@ -1751,7 +1778,7 @@ def get_compliance_mappings():
 
 
 @app.get("/compliance/summary")
-def get_compliance_summary():
+def get_compliance_summary(current_user: models.User = Depends(require_analyst)):
     """Calculate implementation coverage metrics per compliance framework."""
     db = SessionLocal()
     try:
@@ -1803,6 +1830,7 @@ def update_compliance_requirement(
     requirement_id: int = Path(..., description="The ID of the compliance requirement"),
     payload: RequirementUpdate = Body(...),
     request: Request = None,
+    current_user: models.User = Depends(require_reviewer),
 ):
     """Update requirement compliance status and auditor/review notes."""
     db = SessionLocal()
@@ -1940,6 +1968,7 @@ def trigger_ai_risk_analysis(
     risk_id: int = Path(..., description="The ID of the risk to analyze with AI intelligence"),
     force_refresh: bool = Query(False, description="Perform new analysis even if a fresh unchanged analysis exists"),
     request: Request = None,
+    current_user: models.User = Depends(require_analyst),
 ):
     """Analyze a security finding/risk using AI-assisted security intelligence.
 
@@ -2034,7 +2063,8 @@ def trigger_ai_risk_analysis(
 
 @app.get("/risks/{risk_id}/analysis")
 def get_risk_ai_analysis(
-    risk_id: int = Path(..., description="The ID of the risk")
+    risk_id: int = Path(..., description="The ID of the risk"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Retrieve the latest auditable AI security intelligence analysis for a risk."""
     db = SessionLocal()
@@ -2074,6 +2104,7 @@ def get_risk_ai_analysis(
 def create_monitoring_job(
     payload: ScanJobCreate = Body(...),
     request: Request = None,
+    current_user: models.User = Depends(require_analyst),
 ):
     """Submit an asynchronous network scan job (single host or RFC 1918 /24 subnet).
 
@@ -2152,6 +2183,7 @@ def list_monitoring_jobs(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     status: str | None = Query(None),
+    current_user: models.User = Depends(require_analyst),
 ):
     """List recent scan jobs with optional status filtering and pagination."""
     db = SessionLocal()
@@ -2173,7 +2205,8 @@ def list_monitoring_jobs(
 
 @app.get("/monitoring/jobs/{job_id}")
 def get_monitoring_job(
-    job_id: int = Path(..., description="The ID of the scan job")
+    job_id: int = Path(..., description="The ID of the scan job"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Retrieve execution status, metrics, and progress for a specific scan job."""
     db = SessionLocal()
@@ -2190,6 +2223,7 @@ def get_monitoring_job(
 def cancel_monitoring_job(
     job_id: int = Path(..., description="The ID of the scan job to cancel"),
     request: Request = None,
+    current_user: models.User = Depends(require_analyst),
 ):
     """Request cooperative cancellation of a queued or running scan job.
 
@@ -2232,7 +2266,7 @@ def cancel_monitoring_job(
 
 
 @app.get("/monitoring/schedules")
-def list_monitoring_schedules():
+def list_monitoring_schedules(current_user: models.User = Depends(require_analyst)):
     """List all configured continuous monitoring scan schedules."""
     db = SessionLocal()
     try:
@@ -2247,7 +2281,8 @@ def list_monitoring_schedules():
 
 @app.post("/monitoring/schedules", status_code=201)
 def create_monitoring_schedule(
-    payload: ScanScheduleCreate = Body(...)
+    payload: ScanScheduleCreate = Body(...),
+    current_user: models.User = Depends(require_reviewer),
 ):
     """Create a new automated continuous monitoring scan schedule.
 
@@ -2284,7 +2319,8 @@ def create_monitoring_schedule(
 
 @app.get("/monitoring/schedules/{schedule_id}")
 def get_monitoring_schedule(
-    schedule_id: int = Path(..., description="The ID of the scan schedule to retrieve")
+    schedule_id: int = Path(..., description="The ID of the scan schedule to retrieve"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Retrieve details for a specific continuous monitoring scan schedule."""
     db = SessionLocal()
@@ -2301,6 +2337,7 @@ def get_monitoring_schedule(
 def update_monitoring_schedule(
     schedule_id: int = Path(..., description="The ID of the scan schedule to update"),
     payload: ScanScheduleUpdate = Body(...),
+    current_user: models.User = Depends(require_reviewer),
 ):
     """Update name, target, interval, or active state of an existing scan schedule."""
     db = SessionLocal()
@@ -2341,7 +2378,8 @@ def update_monitoring_schedule(
 
 @app.delete("/monitoring/schedules/{schedule_id}")
 def delete_monitoring_schedule(
-    schedule_id: int = Path(..., description="The ID of the scan schedule to delete")
+    schedule_id: int = Path(..., description="The ID of the scan schedule to delete"),
+    current_user: models.User = Depends(require_reviewer),
 ):
     """Delete an automated continuous monitoring schedule."""
     db = SessionLocal()
@@ -2364,6 +2402,7 @@ def list_drift_events(
     severity: str | None = Query(None),
     event_type: str | None = Query(None),
     asset_id: int | None = Query(None),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Query network attack surface drift events feed, sorted newest first."""
     db = SessionLocal()
@@ -2401,6 +2440,7 @@ def list_audit_logs(
     action: str | None = Query(None),
     entity_type: str | None = Query(None),
     entity_id: int | None = Query(None),
+    current_user: models.User = Depends(require_reviewer),
 ):
     """Query append-only governance audit trail with multi-attribute filtering.
 
@@ -2438,7 +2478,8 @@ def list_audit_logs(
 
 @app.get("/audit-logs/{log_id}")
 def get_audit_log(
-    log_id: int = Path(..., description="The ID of the audit log record")
+    log_id: int = Path(..., description="The ID of the audit log record"),
+    current_user: models.User = Depends(require_reviewer),
 ):
     """Retrieve full details for a specific audit log record including state diffs."""
     db = SessionLocal()
@@ -2461,6 +2502,7 @@ def list_evidence(
     risk_id: int | None = Query(None),
     control_id: int | None = Query(None),
     requirement_id: int | None = Query(None),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Retrieve evidence records with filtering by technical or governance linkages."""
     db = SessionLocal()
@@ -2501,6 +2543,7 @@ def list_evidence(
 def create_evidence(
     request: Request,
     payload: EvidenceCreate = Body(...),
+    current_user: models.User = Depends(require_reviewer),
 ):
     """Register a new tamper-evident evidence artifact with M2M governance linkages."""
     actor, _ = get_operator_identity(request)
@@ -2535,7 +2578,8 @@ def create_evidence(
 
 @app.get("/evidence/{evidence_id}")
 def get_evidence_detail(
-    evidence_id: int = Path(..., description="The ID of the evidence record")
+    evidence_id: int = Path(..., description="The ID of the evidence record"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Retrieve full details of an evidence record including SHA-256 and linkages."""
     db = SessionLocal()
@@ -2552,6 +2596,7 @@ def get_evidence_detail(
 def delete_evidence(
     request: Request,
     evidence_id: int = Path(..., description="The ID of the evidence record to delete"),
+    current_user: models.User = Depends(require_admin),
 ):
     """Delete an evidence record and emit a corresponding audit log."""
     actor, _ = get_operator_identity(request)
@@ -2628,6 +2673,7 @@ def get_executive_summary_report(
     request: Request,
     format: str = Query("json", description="Export format: json, csv, or html"),
     risk_level: Optional[str] = Query(None, description="Filter by residual risk level: Low, Medium, High, Critical"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Generate executive risk and posture summary in JSON, CSV, or HTML format."""
     db = SessionLocal()
@@ -2647,6 +2693,7 @@ def get_technical_vulnerabilities_report(
     asset_id: Optional[int] = Query(None, description="Filter by asset ID"),
     severity: Optional[str] = Query(None, description="Filter by severity: Low, Medium, High, Critical"),
     status: Optional[str] = Query(None, description="Filter by status: Open, Resolved"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Generate technical vulnerability & attack surface inventory in JSON, CSV, or HTML format."""
     db = SessionLocal()
@@ -2669,6 +2716,7 @@ def get_compliance_gap_report(
     format: str = Query("json", description="Export format: json, csv, or html"),
     framework_id: Optional[int] = Query(None, description="Filter by framework ID"),
     status: Optional[str] = Query(None, description="Filter by requirement status"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Generate compliance framework readiness and gap analysis in JSON, CSV, or HTML format."""
     db = SessionLocal()
@@ -2690,6 +2738,7 @@ def get_risk_register_report(
     status: Optional[str] = Query(None, description="Filter by status: Open, Mitigated, Accepted, Closed"),
     treatment: Optional[str] = Query(None, description="Filter by treatment: Mitigate, Accept, Transfer, Avoid"),
     owner: Optional[str] = Query(None, description="Filter by risk owner"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Generate complete enterprise risk register in JSON, CSV, or HTML format."""
     db = SessionLocal()
@@ -2714,6 +2763,7 @@ def get_governance_audit_report(
     actor: Optional[str] = Query(None, description="Filter by actor name"),
     start_time: Optional[datetime] = Query(None, description="Filter by start timestamp"),
     end_time: Optional[datetime] = Query(None, description="Filter by end timestamp"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Generate governance audit trail and evidence report in JSON, CSV, or HTML format."""
     db = SessionLocal()
@@ -2737,6 +2787,7 @@ def get_generic_report(
     request: Request,
     report_type: str = Path(..., description="One of: executive_summary, technical_vulnerabilities, compliance_gap, risk_register, governance_audit"),
     format: str = Query("json", description="Export format: json, csv, or html"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Unified report export endpoint supporting JSON, CSV, and HTML formats."""
     db = SessionLocal()
@@ -2755,6 +2806,7 @@ def create_risk_review(
     request: Request,
     risk_id: int = Path(..., description="The ID of the risk being reviewed"),
     payload: RiskReviewCreate = Body(...),
+    current_user: models.User = Depends(require_reviewer),
 ):
     """Submit formal human governance sign-off and treatment review for a risk.
 
@@ -2804,6 +2856,7 @@ def create_risk_review(
 @app.get("/risks/{risk_id}/reviews")
 def list_risk_reviews(
     risk_id: int = Path(..., description="The ID of the risk"),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Retrieve review history for a risk, dynamically evaluating staleness in real-time.
 
@@ -2839,6 +2892,7 @@ def list_pending_risk_reviews(
     asset_id: Optional[int] = Query(None, description="Filter by asset ID"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    current_user: models.User = Depends(require_analyst),
 ):
     """Query risks requiring human governance review or re-evaluation.
 
@@ -2885,6 +2939,7 @@ def list_pending_risk_reviews(
 def evaluate_stale_reviews_batch(
     risk_id: Optional[int] = Query(None, description="Optional target risk ID"),
     asset_id: Optional[int] = Query(None, description="Optional target asset ID"),
+    current_user: models.User = Depends(require_reviewer),
 ):
     """On-demand bulk reconciliation to evaluate and update stale review statuses.
 
