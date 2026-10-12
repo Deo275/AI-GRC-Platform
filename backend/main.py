@@ -102,6 +102,7 @@ try:
         hash_password,
         verify_password,
         create_access_token,
+        get_jwt_secret_key,
         get_current_user,
         require_roles,
         require_analyst,
@@ -114,6 +115,7 @@ except ImportError:
         hash_password,
         verify_password,
         create_access_token,
+        get_jwt_secret_key,
         get_current_user,
         require_roles,
         require_analyst,
@@ -498,6 +500,9 @@ monitoring_scheduler = MonitoringScheduler(worker_pool=scan_worker_pool, poll_in
 
 @app.on_event("startup")
 def on_startup():
+    env_name = os.environ.get("ENV", os.environ.get("ENVIRONMENT", "")).strip().lower()
+    if env_name in ("production", "prod"):
+        get_jwt_secret_key()
     monitoring_scheduler.start()
     run_dev_bootstrap()
 
@@ -515,6 +520,46 @@ def home():
         "message": "AI-GRC Platform Backend is Running",
         "database": "Connected Successfully"
     }
+
+
+# ---------------------------------------------------------------------------
+# Stage 14B: Runtime Health & Readiness Probes
+# ---------------------------------------------------------------------------
+
+@app.get("/health/live", tags=["Health"], status_code=status.HTTP_200_OK)
+def health_live():
+    """Liveness probe: reports that the API process is running without depending on PostgreSQL."""
+    return {
+        "status": "healthy"
+    }
+
+
+@app.get("/health/ready", tags=["Health"], status_code=status.HTTP_200_OK)
+def health_ready():
+    """Readiness probe: checks that PostgreSQL is reachable using a lightweight database query.
+    Returns HTTP 503 when the database is unavailable. Never leaks credentials, hostnames, or stack traces."""
+    db = None
+    try:
+        from sqlalchemy import text
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        return {
+            "status": "ready",
+            "database": "connected"
+        }
+    except Exception as exc:
+        logger.warning("Readiness probe database check failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable",
+        )
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
 
 
 # ---------------------------------------------------------------------------

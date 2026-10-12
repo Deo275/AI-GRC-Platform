@@ -522,11 +522,79 @@ backend\venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
 
 ---
 
+---
+
+## Docker Deployment Baseline (Stage 14B)
+
+A minimal, reproducible Docker Compose configuration is provided for deploying the PostgreSQL database, FastAPI backend API, and Nginx-served static React frontend.
+
+### 1. Configure Secrets and Environment
+
+Never commit real secrets or copy them into source repositories. Create a `.env` file from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Generate a cryptographically random 32-byte secret for `JWT_SECRET_KEY`:
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Update your `.env` file with:
+- `JWT_SECRET_KEY`: The generated 64-character hex string.
+- `POSTGRES_PASSWORD`: A strong random password for the database.
+- `AI_PROVIDER`: Desired AI provider (`chain`, `gemini`, `openai`, `groq`, or `local`).
+- `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`: API keys for enabled providers (optional if using `local`).
+- `VITE_API_BASE_URL`: Defaults to `http://localhost:8000` (browser requests to backend).
+
+### 2. Launch the Application
+
+```bash
+docker compose up -d
+```
+
+Compose manages the container lifecycle and startup dependencies:
+1. `db` (PostgreSQL 15 Alpine) initializes with persistent storage on the `db_data` volume and begins health checks (`pg_isready`).
+2. `backend` waits for `db` to become healthy before starting Uvicorn on port 8000.
+3. `frontend` builds the production React bundle and serves it via Nginx on port 5173, waiting for `backend` to pass its readiness probe.
+
+### 3. Service Ports & Network Architecture
+
+| Service | Container Port | Host Port | Purpose |
+|---|---|---|---|
+| `frontend` | `80` (Nginx) | `5173` | Production React SPA UI |
+| `backend` | `8000` (FastAPI) | `8000` | GRC Platform REST API & Scheduler |
+| `db` | `5432` (PostgreSQL) | *Internal only* | Persistent database (not exposed to host) |
+
+*Note: The database port is not exposed on the host to avoid port collisions with existing local PostgreSQL instances. Containers communicate across the internal Docker bridge network.*
+
+### 4. Health & Readiness Probes
+
+The backend exposes unauthenticated health endpoints for orchestrator probes:
+- `GET /health/live`: Liveness probe indicating that the FastAPI process is active. Does not query PostgreSQL.
+- `GET /health/ready`: Readiness probe verifying PostgreSQL connectivity with a lightweight query. Returns `503 Service Unavailable` with a safe generic error if unreachable.
+
+Verify health via curl:
+```bash
+curl -i http://localhost:8000/health/live
+curl -i http://localhost:8000/health/ready
+```
+
+### 5. Deployment Constraints & Limitations
+
+- **Single-Instance Application & Scheduler**: The continuous monitoring scheduler (`MonitoringScheduler`) runs in-process inside the backend container. It is not distributed and does not use distributed locking. Multi-replica deployments (e.g., `replicas: > 1`) will cause duplicate scan job executions. Keep backend deployment at a single instance.
+- **Scanner Capabilities & Least Privilege**: The backend image runs as an unprivileged user (`appuser`, uid 1000) for least-privilege security. To enable Nmap OS fingerprinting (`-O`) and raw SYN scans without granting full root/privileged container access, Docker Compose assigns minimal POSIX capabilities (`NET_RAW`, `NET_ADMIN`). In container environments where capabilities cannot be granted, basic host discovery functions continue, but advanced OS fingerprinting is unavailable.
+
+---
+
 ## API Reference
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/` | Health check & database connection status |
+| `GET` | `/` | Home status endpoint |
+| `GET` | `/health/live` | **(Stage 14B)** Liveness probe: reports API process is running (no DB dependency) |
+| `GET` | `/health/ready` | **(Stage 14B)** Readiness probe: verifies PostgreSQL connectivity (HTTP 503 if unreachable) |
 | `POST` | `/scan?target=...` | Scan single IPv4 host, enrich findings, register GRC risks (synchronous legacy) |
 | `POST` | `/discover?network=...` | Discover hosts on private CIDR subnet (max `/24`) |
 | `GET` | `/assets` | Retrieve all tracked assets with asset intelligence |
@@ -569,3 +637,4 @@ backend\venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
 | `POST` | `/risks/{id}/reviews` | **(Phase 6C)** Submit formal human sign-off review (APPROVED, REJECTED, CHANGES_REQUESTED) |
 | `POST` | `/governance/reviews/evaluate-stale` | **(Phase 6C)** Trigger on-demand staleness evaluation across all current reviews |
 | `GET` | `/governance/kpis` | **(Phase 6D)** Retrieve governance metrics (Pending, Stale, Changes Requested, Approved) |
+

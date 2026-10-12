@@ -36,10 +36,20 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+INSECURE_PLACEHOLDER_SECRETS = {
+    "replace-with-a-long-random-secret",
+    "your_jwt_secret_key_here",
+    "secret",
+    "changeme",
+    "password",
+}
+
+
 def get_jwt_secret_key() -> str:
     """
     Retrieves the JWT secret key from the environment.
-    Fails safely if missing when authentication operations are performed.
+    Fails safely if missing or set to an insecure placeholder when authentication
+    operations are performed.
     """
     secret = os.environ.get("JWT_SECRET_KEY", "").strip()
     if not secret:
@@ -47,7 +57,14 @@ def get_jwt_secret_key() -> str:
             "JWT_SECRET_KEY environment variable is not configured. "
             "Authentication operations require a valid JWT_SECRET_KEY."
         )
+    if secret in INSECURE_PLACEHOLDER_SECRETS:
+        raise RuntimeError(
+            "JWT_SECRET_KEY is configured with an insecure placeholder value. "
+            "Generate a cryptographically random secret using: "
+            'python -c "import secrets; print(secrets.token_hex(32))"'
+        )
     return secret
+
 
 
 def create_access_token(

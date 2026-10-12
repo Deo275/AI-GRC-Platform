@@ -1,0 +1,89 @@
+# =============================================================================
+# Stage 14B: AI-GRC Platform Docker Compose Deployment Baseline
+# =============================================================================
+services:
+  # ---------------------------------------------------------------------------
+  # Database: PostgreSQL with Persistent Storage & Health Check
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_grc}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_pass}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_grc}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    # Intentionally do not expose port 5432 to host to prevent host port conflicts
+    # Internal communication occurs across default docker bridge network
+
+  # ---------------------------------------------------------------------------
+  # Backend API: FastAPI + Process-Local Scheduler + Nmap Scanner
+  # Single replica only: MonitoringScheduler runs in-process and cannot be duplicated.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_secure_pass}@db:5432/${POSTGRES_DB:-ai_grc}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      ENV: ${ENV:-production}
+      AI_PROVIDER: ${AI_PROVIDER:-chain}
+      AI_PROVIDER_CHAIN: ${AI_PROVIDER_CHAIN:-gemini,openai,groq}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      AI_FALLBACK_TO_LOCAL: ${AI_FALLBACK_TO_LOCAL:-true}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      ENABLE_HSTS: ${ENABLE_HSTS:-false}
+      AUTH_BOOTSTRAP_ENABLED: ${AUTH_BOOTSTRAP_ENABLED:-false}
+      AUTH_BOOTSTRAP_ANALYST_PASSWORD: ${AUTH_BOOTSTRAP_ANALYST_PASSWORD:-}
+      AUTH_BOOTSTRAP_REVIEWER_PASSWORD: ${AUTH_BOOTSTRAP_REVIEWER_PASSWORD:-}
+      AUTH_BOOTSTRAP_ADMIN_PASSWORD: ${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
+    # Minimal POSIX capabilities for unprivileged Nmap OS detection & raw sockets.
+    # Note: Backend container runs as unprivileged appuser (uid 1000).
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Frontend: Production Static Build served via Nginx (SPA)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Browser requests originate from user's host browser to backend host port
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+
+volumes:
+  db_data:
