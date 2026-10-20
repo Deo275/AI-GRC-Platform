@@ -569,7 +569,61 @@ Compose manages the container lifecycle and startup dependencies:
 
 *Note: The database port is not exposed on the host to avoid port collisions with existing local PostgreSQL instances. Containers communicate across the internal Docker bridge network.*
 
-### 4. Health & Readiness Probes
+### 4. Daily Development: Start, Stop & Restart
+
+After completing the initial Docker setup and configuring the root `.env` file, use the following commands for routine development.
+
+**Start the application**
+
+Run PowerShell from the project root directory:
+
+```powershell
+docker compose up -d
+```
+
+**Verify container status**
+
+```powershell
+docker compose ps
+```
+
+**Access the application**
+
+- Frontend Dashboard: http://localhost:5173
+- Backend API: http://localhost:8000
+- Interactive API Documentation: http://localhost:8000/docs
+
+**View application logs**
+
+```powershell
+docker compose logs --tail=100
+```
+
+To view logs for a specific service:
+
+```powershell
+docker compose logs --tail=100 backend
+docker compose logs --tail=100 frontend
+docker compose logs --tail=100 db
+```
+
+**Stop the application safely**
+
+```powershell
+docker compose stop
+```
+
+**Start previously created containers again**
+
+```powershell
+docker compose start
+```
+
+**Important:** Run Docker Compose commands from the project root directory containing `docker-compose.yml`. The PostgreSQL database uses the persistent `db_data` volume. Avoid `docker compose down -v` during routine operations because it can delete persistent database data.
+
+The root `.env` file contains local configuration and credentials. Keep it private and never commit it to version control.
+
+### 5. Health & Readiness Probes
 
 The backend exposes unauthenticated health endpoints for orchestrator probes:
 - `GET /health/live`: Liveness probe indicating that the FastAPI process is active. Does not query PostgreSQL.
@@ -581,7 +635,7 @@ curl -i http://localhost:8000/health/live
 curl -i http://localhost:8000/health/ready
 ```
 
-### 5. Deployment Constraints & Limitations
+### 6. Deployment Constraints & Limitations
 
 - **Single-Instance Application & Scheduler**: The continuous monitoring scheduler (`MonitoringScheduler`) runs in-process inside the backend container. It is not distributed and does not use distributed locking. Multi-replica deployments (e.g., `replicas: > 1`) will cause duplicate scan job executions. Keep backend deployment at a single instance.
 - **Scanner Capabilities & Least Privilege**: The backend image runs as an unprivileged user (`appuser`, uid 1000) for least-privilege security. To enable Nmap OS fingerprinting (`-O`) and raw SYN scans without granting full root/privileged container access, Docker Compose assigns minimal POSIX capabilities (`NET_RAW`, `NET_ADMIN`). In container environments where capabilities cannot be granted, basic host discovery functions continue, but advanced OS fingerprinting is unavailable.
