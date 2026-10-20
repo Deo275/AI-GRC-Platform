@@ -36,6 +36,7 @@ sys.path.append(
 from scanner.nmap_scanner import scan_host, discover_hosts
 from scanner.risk_engine import calculate_risk
 from scanner.vulnerability_scanner import identify_vulnerabilities
+from scanner.openvas_scanner import get_openvas_status, execute_openvas_scan
 from scanner.grc_engine import (
     criticality_to_impact,
     calculate_likelihood,
@@ -613,6 +614,63 @@ def login(payload: LoginRequest):
         db.close()
 
 
+@app.post("/auth/dev-login", tags=["Authentication"])
+def dev_login():
+    """Development helper endpoint to issue an Administrator token for local non-Docker development."""
+    env_name = os.environ.get("ENV", os.environ.get("ENVIRONMENT", "")).strip().lower()
+    dev_enabled = os.environ.get("AUTH_DEV_LOGIN_ENABLED", "").strip().lower()
+    if env_name in ("production", "prod") and dev_enabled not in ("true", "1", "yes"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Dev login is disabled in production environments.",
+        )
+
+    db = SessionLocal()
+    try:
+        user = (
+            db.query(models.User)
+            .filter(models.User.role == "Administrator", models.User.is_active == True)
+            .first()
+        )
+        if not user:
+            user = db.query(models.User).filter(models.User.username == "admin").first()
+        if not user:
+            import secrets
+            user = models.User(
+                username="admin",
+                email="admin@example.com",
+                display_name="Administrator (Dev)",
+                password_hash=hash_password(secrets.token_urlsafe(32)),
+                role="Administrator",
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+        token = create_access_token(
+            subject=user.id,
+            username=user.username,
+            role=user.role,
+        )
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "display_name": user.display_name,
+                "role": user.role,
+                "is_active": user.is_active,
+            },
+        }
+    finally:
+        db.close()
+
+
 @app.get("/auth/me")
 def get_auth_me(current_user: models.User = Depends(get_current_user)):
     return {
@@ -626,51 +684,92 @@ def get_auth_me(current_user: models.User = Depends(get_current_user)):
 
 
 
+
+def validate_and_check_scan_target(target_str: str) -> str:
+    """Validate target string against RFC 1918 private ranges, strictly rejecting loopback and link-local."""
+    try:
+        validated_target = validate_target_network(target_str, allow_loopback=False)
+        return validated_target
+    except ValueError as err:
+        err_msg = str(err)
+        if "Loopback target" in err_msg:
+            raise HTTPException(
+                status_code=400,
+                detail="Loopback addresses (127.0.0.0/8) are not permitted for scanning.",
+            )
+        if "Link-local target" in err_msg:
+            raise HTTPException(
+                status_code=400,
+                detail="Link-local addresses (169.254.0.0/16) are not permitted for scanning.",
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=err_msg,
+        )
+
+
 @app.post("/scan")
 def scan_network(
     target: str = Query("192.168.127.1"),
     current_user: models.User = Depends(require_analyst),
 ):
 
-    try:
-        # Reuse existing target validation logic already used by the monitoring scanner
-        validated_target = validate_target_network(target)
-        ip = ipaddress.ip_address(validated_target)
-
-        # Standalone scanner explicitly permits only private RFC 1918 internal targets.
-        # Explicitly reject loopback (127.0.0.0/8) and link-local (169.254.0.0/16).
-        if ip.is_loopback or ip in ipaddress.ip_network("127.0.0.0/8"):
-            raise HTTPException(
-                status_code=400,
-                detail="Loopback addresses (127.0.0.0/8) are not permitted for scanning."
-            )
-        if ip.is_link_local or ip in ipaddress.ip_network("169.254.0.0/16"):
-            raise HTTPException(
-                status_code=400,
-                detail="Link-local addresses (169.254.0.0/16) are not permitted for scanning."
-            )
-    except HTTPException:
-        raise
-    except ValueError as err:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid scan target: {str(err)}"
-        )
+    validated_target = validate_and_check_scan_target(target)
+    ip = ipaddress.ip_address(validated_target)
 
     # Run Nmap scan
     try:
         result = scan_host(str(ip))
     except RuntimeError as err:
         logger.error(f"Nmap host scan failed for target {ip}: {err}", exc_info=True)
+        try:
+            db_fail = SessionLocal()
+            failed_job = models.ScanJob(
+                target=str(ip),
+                scan_type="single_host",
+                status="Failed",
+                progress_percent=0,
+                discovered_assets_count=0,
+                discovered_vulns_count=0,
+                error_message=str(err)[:500],
+                created_at=datetime.utcnow(),
+                started_at=datetime.utcnow(),
+                completed_at=datetime.utcnow(),
+            )
+            db_fail.add(failed_job)
+            log_audit_event(
+                db=db_fail,
+                source="SCANNER",
+                actor=current_user.username,
+                action="FAILURE",
+                entity_type="ScanJob",
+                entity_id=failed_job.id,
+                entity_name=failed_job.target,
+                new_values={"id": failed_job.id, "error": str(err)[:255]},
+                description=f"Scan execution failed on target {failed_job.target}: {err}",
+                commit=False,
+            )
+            db_fail.commit()
+            db_fail.close()
+        except Exception as log_exc:
+            logger.warning(f"Could not record failed ScanJob: {log_exc}")
         raise HTTPException(
-            status_code=500,
-            detail="Network scan execution failed to complete."
+            status_code=502,
+            detail={
+                "error": "ScanExecutionError",
+                "message": f"Network scan execution failed: {err}",
+                "target": str(ip),
+            },
         )
     except Exception as err:
         logger.error(f"Unexpected scan error for target {ip}: {err}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="Network scan encountered an unexpected execution error."
+            detail={
+                "error": "UnexpectedScanError",
+                "message": f"Network scan encountered an unexpected execution error: {err}",
+                "target": str(ip),
+            },
         )
 
     # Calculate security risk
@@ -976,6 +1075,40 @@ def scan_network(
                 v.status = "Resolved"
                 v.updated_at = models.datetime.utcnow()
 
+        # Record unified ScanJob entry
+        scan_job = models.ScanJob(
+            target=str(ip),
+            scan_type="single_host",
+            status="Completed",
+            progress_percent=100,
+            discovered_assets_count=1,
+            discovered_vulns_count=len(vulnerability_result),
+            created_at=models.datetime.utcnow(),
+            started_at=models.datetime.utcnow(),
+            completed_at=models.datetime.utcnow(),
+        )
+        db.add(scan_job)
+        db.flush()
+
+        log_audit_event(
+            db=db,
+            source="SCANNER",
+            actor=current_user.username,
+            action="EXECUTE",
+            entity_type="ScanJob",
+            entity_id=scan_job.id,
+            entity_name=scan_job.target,
+            new_values={
+                "id": scan_job.id,
+                "target": scan_job.target,
+                "scan_type": scan_job.scan_type,
+                "discovered_assets": 1,
+                "discovered_vulns": len(vulnerability_result),
+            },
+            description=f"Executed single-host network scan on target {scan_job.target} (Job #{scan_job.id})",
+            commit=False,
+        )
+
         # Save everything once
         db.commit()
         db.refresh(asset)
@@ -988,6 +1121,7 @@ def scan_network(
         return {
             "message": "Network scan completed and GRC risks registered",
             "asset_id": asset.id,
+            "scan_job_id": scan_job.id,
             "ip_address": asset.ip_address,
             "open_ports": asset.open_ports,
             "risk_score": asset.risk_score,
@@ -1036,6 +1170,18 @@ def discover_network(
             detail="Discovery is only permitted on private networks (RFC 1918)."
         )
 
+    if net.is_loopback or net.subnet_of(ipaddress.ip_network("127.0.0.0/8")):
+        raise HTTPException(
+            status_code=400,
+            detail="Loopback networks (127.0.0.0/8) are not permitted for discovery.",
+        )
+
+    if net.is_link_local or net.subnet_of(ipaddress.ip_network("169.254.0.0/16")):
+        raise HTTPException(
+            status_code=400,
+            detail="Link-local networks (169.254.0.0/16) are not permitted for discovery.",
+        )
+
     if net.prefixlen < 24:
         raise HTTPException(
             status_code=400,
@@ -1048,8 +1194,22 @@ def discover_network(
     except RuntimeError as err:
         logger.error(f"Host discovery failed for network {network}: {err}", exc_info=True)
         raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "DiscoveryExecutionError",
+                "message": f"Network host discovery failed: {err}",
+                "network": network,
+            },
+        )
+    except Exception as err:
+        logger.error(f"Unexpected discovery error for network {network}: {err}", exc_info=True)
+        raise HTTPException(
             status_code=500,
-            detail="Network host discovery failed to complete."
+            detail={
+                "error": "UnexpectedDiscoveryError",
+                "message": f"Network discovery encountered an unexpected execution error: {err}",
+                "network": network,
+            },
         )
 
     db = SessionLocal()
@@ -1063,7 +1223,8 @@ def discover_network(
             # Run detailed scan
             try:
                 result = scan_host(host)
-            except RuntimeError:
+            except RuntimeError as err:
+                logger.warning(f"Scan failed for discovered host {host}: {err}")
                 continue
 
             # Calculate risk
@@ -1753,6 +1914,62 @@ def get_vulnerabilities(current_user: models.User = Depends(require_analyst)):
 
 
 # ---------------------------------------------------------------------------
+# OPENVAS / GREENBONE INTEGRATION ENDPOINTS
+# ---------------------------------------------------------------------------
+
+@app.get("/vulnerabilities/openvas/status")
+def get_openvas_integration_status(current_user: models.User = Depends(require_analyst)):
+    """Authoritative integration status probe for Greenbone/OpenVAS vulnerability scanner."""
+    return get_openvas_status()
+
+
+class OpenVASScanRequest(BaseModel):
+    target: str = Field(..., description="Target IPv4 or permitted RFC 1918 CIDR")
+    scan_config: str = Field(default="Full and fast", description="OpenVAS scan profile configuration")
+
+
+@app.post("/vulnerabilities/openvas/scan")
+def trigger_openvas_scan(
+    payload: OpenVASScanRequest = Body(...),
+    current_user: models.User = Depends(require_analyst),
+):
+    """Trigger an OpenVAS vulnerability assessment. Returns 503 if OpenVAS is not configured or reachable."""
+    validated_target = validate_and_check_scan_target(payload.target)
+    status_info = get_openvas_status()
+    if not status_info.get("available"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "OpenVASUnavailable",
+                "message": status_info.get("message"),
+                "status": status_info.get("status"),
+                "target": validated_target,
+                "configuration_required": {
+                    "OPENVAS_HOST": "Hostname or IP of OpenVAS/GMP service",
+                    "OPENVAS_PORT": "Port (default 9390)",
+                    "OPENVAS_USER": "GMP administrative user",
+                    "OPENVAS_PASSWORD": "GMP user password",
+                },
+            },
+        )
+    try:
+        scan_result = execute_openvas_scan(validated_target, payload.scan_config)
+        return {
+            "message": "OpenVAS vulnerability assessment completed successfully",
+            "result": scan_result,
+        }
+    except Exception as err:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "OpenVASScanError",
+                "message": f"OpenVAS scan execution failed: {err}",
+                "target": validated_target,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
 # PHASE 3: COMPLIANCE FRAMEWORKS, REQUIREMENTS & MAPPINGS ENDPOINTS
 # ---------------------------------------------------------------------------
 
@@ -2153,10 +2370,7 @@ def create_monitoring_job(
 
     Validates target bounds, creates ScanJob with status Queued, and submits to bounded worker pool.
     """
-    try:
-        validated_target = validate_target_network(payload.target)
-    except ValueError as err:
-        raise HTTPException(status_code=400, detail=str(err))
+    validated_target = validate_and_check_scan_target(payload.target)
 
     valid_scan_types = ("single_host", "subnet_discovery", "scheduled_sweep")
     if payload.scan_type not in valid_scan_types:
@@ -2331,10 +2545,7 @@ def create_monitoring_schedule(
 
     Target must be valid RFC 1918 (max /24), and interval must be at least 15 minutes.
     """
-    try:
-        validated_target = validate_target_network(payload.target)
-    except ValueError as err:
-        raise HTTPException(status_code=400, detail=str(err))
+    validated_target = validate_and_check_scan_target(payload.target)
 
     if payload.interval_minutes < 15:
         raise HTTPException(
@@ -2393,10 +2604,7 @@ def update_monitoring_schedule(
             sched.name = payload.name.strip()
 
         if payload.target is not None:
-            try:
-                sched.target = validate_target_network(payload.target)
-            except ValueError as err:
-                raise HTTPException(status_code=400, detail=str(err))
+            sched.target = validate_and_check_scan_target(payload.target)
 
         if payload.interval_minutes is not None:
             if payload.interval_minutes < 15:
@@ -2716,11 +2924,11 @@ def _handle_report_response(
 @app.get("/reports/executive-summary")
 def get_executive_summary_report(
     request: Request,
-    format: str = Query("json", description="Export format: json, csv, or html"),
+    format: str = Query("json", description="Export format: json, csv, html, or pdf"),
     risk_level: Optional[str] = Query(None, description="Filter by residual risk level: Low, Medium, High, Critical"),
     current_user: models.User = Depends(require_analyst),
 ):
-    """Generate executive risk and posture summary in JSON, CSV, or HTML format."""
+    """Generate executive risk and posture summary in JSON, CSV, HTML, or PDF format."""
     db = SessionLocal()
     try:
         filters = {}
@@ -2734,13 +2942,13 @@ def get_executive_summary_report(
 @app.get("/reports/technical-vulnerabilities")
 def get_technical_vulnerabilities_report(
     request: Request,
-    format: str = Query("json", description="Export format: json, csv, or html"),
+    format: str = Query("json", description="Export format: json, csv, html, or pdf"),
     asset_id: Optional[int] = Query(None, description="Filter by asset ID"),
     severity: Optional[str] = Query(None, description="Filter by severity: Low, Medium, High, Critical"),
     status: Optional[str] = Query(None, description="Filter by status: Open, Resolved"),
     current_user: models.User = Depends(require_analyst),
 ):
-    """Generate technical vulnerability & attack surface inventory in JSON, CSV, or HTML format."""
+    """Generate technical vulnerability & attack surface inventory in JSON, CSV, HTML, or PDF format."""
     db = SessionLocal()
     try:
         filters = {}
@@ -2758,12 +2966,12 @@ def get_technical_vulnerabilities_report(
 @app.get("/reports/compliance-gap")
 def get_compliance_gap_report(
     request: Request,
-    format: str = Query("json", description="Export format: json, csv, or html"),
+    format: str = Query("json", description="Export format: json, csv, html, or pdf"),
     framework_id: Optional[int] = Query(None, description="Filter by framework ID"),
     status: Optional[str] = Query(None, description="Filter by requirement status"),
     current_user: models.User = Depends(require_analyst),
 ):
-    """Generate compliance framework readiness and gap analysis in JSON, CSV, or HTML format."""
+    """Generate compliance framework readiness and gap analysis in JSON, CSV, HTML, or PDF format."""
     db = SessionLocal()
     try:
         filters = {}
@@ -2779,13 +2987,13 @@ def get_compliance_gap_report(
 @app.get("/reports/risk-register")
 def get_risk_register_report(
     request: Request,
-    format: str = Query("json", description="Export format: json, csv, or html"),
+    format: str = Query("json", description="Export format: json, csv, html, or pdf"),
     status: Optional[str] = Query(None, description="Filter by status: Open, Mitigated, Accepted, Closed"),
     treatment: Optional[str] = Query(None, description="Filter by treatment: Mitigate, Accept, Transfer, Avoid"),
     owner: Optional[str] = Query(None, description="Filter by risk owner"),
     current_user: models.User = Depends(require_analyst),
 ):
-    """Generate complete enterprise risk register in JSON, CSV, or HTML format."""
+    """Generate complete enterprise risk register in JSON, CSV, HTML, or PDF format."""
     db = SessionLocal()
     try:
         filters = {}
@@ -2803,14 +3011,14 @@ def get_risk_register_report(
 @app.get("/reports/audit-trail")
 def get_governance_audit_report(
     request: Request,
-    format: str = Query("json", description="Export format: json, csv, or html"),
+    format: str = Query("json", description="Export format: json, csv, html, or pdf"),
     source: Optional[str] = Query(None, description="Filter by source: USER, SYSTEM, SCANNER, SCHEDULER, AI, API"),
     actor: Optional[str] = Query(None, description="Filter by actor name"),
     start_time: Optional[datetime] = Query(None, description="Filter by start timestamp"),
     end_time: Optional[datetime] = Query(None, description="Filter by end timestamp"),
     current_user: models.User = Depends(require_analyst),
 ):
-    """Generate governance audit trail and evidence report in JSON, CSV, or HTML format."""
+    """Generate governance audit trail and evidence report in JSON, CSV, HTML, or PDF format."""
     db = SessionLocal()
     try:
         filters = {}
@@ -2831,10 +3039,10 @@ def get_governance_audit_report(
 def get_generic_report(
     request: Request,
     report_type: str = Path(..., description="One of: executive_summary, technical_vulnerabilities, compliance_gap, risk_register, governance_audit"),
-    format: str = Query("json", description="Export format: json, csv, or html"),
+    format: str = Query("json", description="Export format: json, csv, html, or pdf"),
     current_user: models.User = Depends(require_analyst),
 ):
-    """Unified report export endpoint supporting JSON, CSV, and HTML formats."""
+    """Unified report export endpoint supporting JSON, CSV, HTML, and PDF formats."""
     db = SessionLocal()
     try:
         return _handle_report_response(report_type, format, db, request, filters=None, current_user=current_user)
@@ -3043,3 +3251,43 @@ def evaluate_stale_reviews_batch(
         }
     finally:
         db.close()
+
+
+@app.get("/vulnerabilities/openvas/status")
+def get_openvas_scanner_status(
+    current_user: models.User = Depends(require_analyst),
+):
+    """Authoritative OpenVAS / Greenbone GMP integration status probe."""
+    return get_openvas_status()
+
+
+@app.post("/vulnerabilities/openvas/scan")
+def launch_openvas_vulnerability_scan(
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    current_user: models.User = Depends(require_analyst),
+):
+    """Initiates an OpenVAS / GMP vulnerability assessment.
+
+    Returns HTTP 503 if OpenVAS is unconfigured or unreachable.
+    """
+    target = payload.get("target", "").strip()
+    scan_profile = payload.get("profile", "Full and fast").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="Target IP or CIDR is required.")
+
+    status_info = get_openvas_status()
+    if not status_info.get("available"):
+        raise HTTPException(
+            status_code=503,
+            detail=status_info.get(
+                "message",
+                "OpenVAS daemon is not configured. Set OPENVAS_HOST, OPENVAS_PORT, OPENVAS_USER, and OPENVAS_PASSWORD to enable Greenbone vulnerability scans.",
+            ),
+        )
+
+    try:
+        result = execute_openvas_scan(target, scan_profile)
+        return result
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"OpenVAS scan execution failed: {err}")

@@ -24,9 +24,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create unprivileged user (uid 1000) for least-privilege runtime security
 RUN useradd -m -u 1000 -s /bin/bash appuser
 
-# Copy application and scanner source code
+# Copy application, scanner, and management scripts source code
 COPY backend/ ./backend/
 COPY scanner/ ./scanner/
+COPY scripts/ ./scripts/
 
 # Set ownership to unprivileged user
 RUN chown -R appuser:appuser /app

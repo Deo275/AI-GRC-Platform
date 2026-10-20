@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, Fragment } from "react";
 import "./App.css";
-import { authFetch, API_BASE } from "./api/client";
+import { authFetch, API_BASE, formatApiError } from "./api/client";
 import { AuthProvider } from "./context/AuthContext";
 import { useAuth } from "./context/useAuth";
 import { LoginPage } from "./components/LoginPage";
@@ -13,7 +13,7 @@ const REPORT_TYPES = [
     category: "EXECUTIVE POSTURE",
     categoryKey: "EXECUTIVE",
     desc: "C-suite strategic overview of organization-wide risk posture, Inherent vs. Residual risk scores, top critical risks, and compliance coverage.",
-    formats: ["json", "csv", "html"],
+    formats: ["json", "csv", "html", "pdf"],
     dataPoints: ["Monitored Assets", "Inherent / Residual Scores", "Critical Risk Ratio", "Compliance Readiness %", "AI Advisory Context"],
     targetAudience: "Board of Directors, CISO, Executive Leadership",
   },
@@ -23,7 +23,7 @@ const REPORT_TYPES = [
     category: "ATTACK SURFACE",
     categoryKey: "TECHNICAL",
     desc: "Complete technical inventory of hosts, open ports, correlated CVE findings, CVSS v3.1 scores, and automated vulnerability intelligence.",
-    formats: ["json", "csv", "html"],
+    formats: ["json", "csv", "html", "pdf"],
     dataPoints: ["Active IP Inventory", "Open Port Mappings", "CVE Identifiers", "CVSS v3.1 Base Scores", "Remediation Steps"],
     targetAudience: "Security Engineering, SOC Analysts, System Administrators",
   },
@@ -33,7 +33,7 @@ const REPORT_TYPES = [
     category: "REGULATORY COMPLIANCE",
     categoryKey: "COMPLIANCE",
     desc: "Readiness assessment mapped against NIST CSF 2.0 and ISO/IEC 27001:2022, detailing control coverage, implemented safeguards, and open gaps.",
-    formats: ["json", "csv", "html"],
+    formats: ["json", "csv", "html", "pdf"],
     dataPoints: ["NIST CSF 2.0 Controls", "ISO/IEC 27001:2022 Controls", "Implementation State", "Identified Gaps", "Evidence References"],
     targetAudience: "Compliance Officers, Internal/External Auditors, GRC Teams",
   },
@@ -43,7 +43,7 @@ const REPORT_TYPES = [
     category: "RISK MANAGEMENT",
     categoryKey: "RISK",
     desc: "Comprehensive GRC risk register with Likelihood × Impact matrix coordinates, assigned mitigating controls, treatments, and governance review sign-offs.",
-    formats: ["json", "csv", "html"],
+    formats: ["json", "csv", "html", "pdf"],
     dataPoints: ["Likelihood × Impact Coordinates", "Mitigating Controls", "Treatment Strategy", "Assigned Owners", "Governance Sign-offs"],
     targetAudience: "Enterprise Risk Committees, Risk Owners, Security Officers",
   },
@@ -53,7 +53,7 @@ const REPORT_TYPES = [
     category: "AUDIT & EVIDENCE",
     categoryKey: "AUDIT",
     desc: "Append-only chronological audit log of all administrative actions, human risk reviews, state transitions, and deterministic SHA-256 integrity hashes.",
-    formats: ["json", "csv", "html"],
+    formats: ["json", "csv", "html", "pdf"],
     dataPoints: ["Chronological Milestones", "Actor Attribution", "Source Channels", "State Transitions", "SHA-256 Integrity Hashes"],
     targetAudience: "Forensic Investigators, External Regulators, Compliance Auditors",
   },
@@ -1087,6 +1087,14 @@ function AuthenticatedDashboard() {
   const [vulnStatusFilter, setVulnStatusFilter] = useState("All");
   const [viewingVuln, setViewingVuln] = useState(null);
 
+  // OpenVAS / Greenbone GMP Integration State
+  const [openvasStatus, setOpenvasStatus] = useState(null);
+  const [openvasLoading, setOpenvasLoading] = useState(false);
+  const [showOpenvasModal, setShowOpenvasModal] = useState(false);
+  const [openvasScanTarget, setOpenvasScanTarget] = useState("192.168.127.1");
+  const [openvasScanLoading, setOpenvasScanLoading] = useState(false);
+  const [openvasScanFeedback, setOpenvasScanFeedback] = useState(null);
+
   // Phase 5: Risk Management Sub-tabs, Filters, Search, Heatmap & Details Modal
   const [riskSubTab, setRiskSubTab] = useState("register"); // "register" | "heatmap" | "controls"
   const [riskSearchQuery, setRiskSearchQuery] = useState("");
@@ -1300,6 +1308,54 @@ function AuthenticatedDashboard() {
     }
   };
 
+  const fetchOpenvasStatus = async () => {
+    setOpenvasLoading(true);
+    try {
+      const response = await authFetch(`${API_BASE}/vulnerabilities/openvas/status`);
+      if (response.ok) {
+        const data = await response.json();
+        setOpenvasStatus(data);
+      }
+    } catch (err) {
+      console.warn("Unable to probe OpenVAS integration status:", err);
+    } finally {
+      setOpenvasLoading(false);
+    }
+  };
+
+  const handleTriggerOpenvasScan = async () => {
+    setOpenvasScanLoading(true);
+    setOpenvasScanFeedback(null);
+    try {
+      const response = await authFetch(`${API_BASE}/vulnerabilities/openvas/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: openvasScanTarget, scan_config: "Full and fast" }),
+      });
+      const data = await response.json().catch(() => null);
+      if (response.ok) {
+        setOpenvasScanFeedback({
+          type: "success",
+          message: data?.message || "OpenVAS scan completed successfully.",
+        });
+        await fetchVulnerabilities();
+      } else {
+        setOpenvasScanFeedback({
+          type: "warning",
+          message: formatApiError(data?.detail, "OpenVAS scan could not be executed"),
+          detail: data?.detail,
+        });
+      }
+    } catch (err) {
+      setOpenvasScanFeedback({
+        type: "error",
+        message: err?.message || "Failed to communicate with OpenVAS scanning service.",
+      });
+    } finally {
+      setOpenvasScanLoading(false);
+    }
+  };
+
   const fetchComplianceFrameworks = async () => {
     try {
       const response = await authFetch(`${API_BASE}/compliance/frameworks`);
@@ -1351,7 +1407,7 @@ function AuthenticatedDashboard() {
         return data.jobs || [];
       } else {
         const err = await response.json().catch(() => null);
-        setMonitoringJobsError(err?.detail || "Failed to load scan jobs");
+        setMonitoringJobsError(formatApiError(err?.detail, "Failed to load scan jobs"));
       }
     } catch {
       setMonitoringJobsError("Unable to connect to monitoring service");
@@ -1371,7 +1427,7 @@ function AuthenticatedDashboard() {
         setMonitoringSchedulesError(null);
       } else {
         const err = await response.json().catch(() => null);
-        setMonitoringSchedulesError(err?.detail || "Failed to load scan schedules");
+        setMonitoringSchedulesError(formatApiError(err?.detail, "Failed to load scan schedules"));
       }
     } catch {
       setMonitoringSchedulesError("Unable to connect to schedules service");
@@ -1395,7 +1451,7 @@ function AuthenticatedDashboard() {
         setDriftEventsError(null);
       } else {
         const err = await response.json().catch(() => null);
-        setDriftEventsError(err?.detail || "Failed to load drift events");
+        setDriftEventsError(formatApiError(err?.detail, "Failed to load drift events"));
       }
     } catch {
       setDriftEventsError("Unable to connect to drift feed service");
@@ -1418,7 +1474,7 @@ function AuthenticatedDashboard() {
         setGovReviewsError(null);
       } else {
         const err = await response.json().catch(() => null);
-        setGovReviewsError(err?.detail || "Failed to load governance review queue");
+        setGovReviewsError(formatApiError(err?.detail, "Failed to load governance review queue"));
       }
     } catch {
       setGovReviewsError("Unable to connect to governance review service");
@@ -1459,7 +1515,7 @@ function AuthenticatedDashboard() {
         setAuditError(null);
       } else {
         const err = await response.json().catch(() => null);
-        setAuditError(err?.detail || "Failed to load audit logs");
+        setAuditError(formatApiError(err?.detail, "Failed to load audit logs"));
       }
     } catch {
       setAuditError("Unable to connect to audit logging service");
@@ -1480,7 +1536,7 @@ function AuthenticatedDashboard() {
         setViewingAuditLog(fullLog);
       } else {
         const err = await response.json().catch(() => null);
-        setAuditDetailError(err?.detail || `Failed to fetch complete event details (Status ${response.status})`);
+        setAuditDetailError(formatApiError(err?.detail, `Failed to fetch complete event details (Status ${response.status})`));
       }
     } catch (err) {
       setAuditDetailError(err.message || "Network error loading audit event details");
@@ -1504,6 +1560,7 @@ function AuthenticatedDashboard() {
     const handleKeyDown = (e) => {
       if (e.key === "Escape") {
         if (showCopilotDrawer) { setShowCopilotDrawer(false); return; }
+        if (showOpenvasModal) { setShowOpenvasModal(false); return; }
         if (viewingAuditLog) { setViewingAuditLog(null); return; }
         if (historyRisk) { setHistoryRisk(null); return; }
         if (reviewingRisk) { setReviewingRisk(null); return; }
@@ -1534,6 +1591,7 @@ function AuthenticatedDashboard() {
     viewingRisk,
     viewingVuln,
     viewingAsset,
+    showOpenvasModal,
   ]);
 
   const submitNewJob = async (e) => {
@@ -1551,7 +1609,7 @@ function AuthenticatedDashboard() {
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setJobActionError(data?.detail || "Failed to queue scan job");
+        setJobActionError(formatApiError(data?.detail, "Failed to queue scan job"));
         return;
       }
       setMonitoringJobs((prev) => [data, ...prev.filter((j) => j.id !== data.id)]);
@@ -1572,7 +1630,7 @@ function AuthenticatedDashboard() {
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setJobActionError(data?.detail || `Failed to cancel job #${jobId}`);
+        setJobActionError(formatApiError(data?.detail, `Failed to cancel job #${jobId}`));
         return;
       }
       await fetchMonitoringJobs();
@@ -1642,7 +1700,7 @@ function AuthenticatedDashboard() {
 
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setScheduleActionError(data?.detail || "Failed to save scan schedule");
+        setScheduleActionError(formatApiError(data?.detail, "Failed to save scan schedule"));
         return;
       }
 
@@ -1666,7 +1724,7 @@ function AuthenticatedDashboard() {
         await fetchMonitoringSchedules();
       } else {
         const err = await response.json().catch(() => null);
-        alert(err?.detail || "Failed to update schedule status");
+        alert(formatApiError(err?.detail, "Failed to update schedule status"));
       }
     } catch (error) {
       alert("Error updating schedule: " + error.message);
@@ -1683,7 +1741,7 @@ function AuthenticatedDashboard() {
         await fetchMonitoringSchedules();
       } else {
         const err = await response.json().catch(() => null);
-        alert(err?.detail || "Failed to delete schedule");
+        alert(formatApiError(err?.detail, "Failed to delete schedule"));
       }
     } catch (error) {
       alert("Error deleting schedule: " + error.message);
@@ -1747,6 +1805,7 @@ function AuthenticatedDashboard() {
       fetchRisks(),
       fetchControls(),
       fetchVulnerabilities(),
+      fetchOpenvasStatus(),
       fetchComplianceFrameworks(),
       fetchComplianceSummary(),
       fetchComplianceRequirements(),
@@ -1783,9 +1842,9 @@ function AuthenticatedDashboard() {
           const data = await res.json();
           const newJobs = data.jobs || [];
 
-          // Deterministically sort completed jobs by completed_at descending, with job ID tie-breaker
-          const completedJobs = newJobs
-            .filter((j) => j.status === "Completed")
+          // Deterministically sort terminal jobs by completed_at descending, with job ID tie-breaker
+          const terminalJobs = newJobs
+            .filter((j) => j.status === "Completed" || j.status === "Failed" || j.status === "Cancelled")
             .sort((a, b) => {
               const timeA = a.completed_at ? new Date(a.completed_at).getTime() : 0;
               const timeB = b.completed_at ? new Date(b.completed_at).getTime() : 0;
@@ -1795,9 +1854,9 @@ function AuthenticatedDashboard() {
               return (b.id || 0) - (a.id || 0);
             });
 
-          const latestCompleted = completedJobs[0] || null;
-          const terminalSig = latestCompleted
-            ? `Completed-${latestCompleted.id}-${latestCompleted.completed_at || ""}`
+          const latestTerminal = terminalJobs[0] || null;
+          const terminalSig = latestTerminal
+            ? `${latestTerminal.status}-${latestTerminal.id}-${latestTerminal.completed_at || ""}`
             : null;
 
           const needsStateRefresh =
@@ -1815,6 +1874,9 @@ function AuthenticatedDashboard() {
             fetchAssets();
             fetchVulnerabilities();
             fetchRisks();
+            fetchComplianceSummary();
+            fetchComplianceRequirements();
+            fetchGovReviews();
             fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
             fetchMonitoringSchedules();
           }
@@ -1828,12 +1890,15 @@ function AuthenticatedDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monitoringJobs, driftOffset, driftSeverityFilter, driftTypeFilter]);
 
-  // Refresh assets, risks, and drift events when tab becomes visible
+  // Refresh assets, vulnerabilities, risks, compliance metrics, and drift events when tab becomes visible
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         fetchAssets();
+        fetchVulnerabilities();
         fetchRisks();
+        fetchComplianceSummary();
+        fetchComplianceRequirements();
         fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter);
       }
     };
@@ -1859,7 +1924,7 @@ function AuthenticatedDashboard() {
       const data = await response.json().catch(() => null);
 
       if (!response.ok) {
-        const errorMessage = data?.detail || `Scan failed with status ${response.status}`;
+        const errorMessage = formatApiError(data?.detail, `Scan failed with status ${response.status}`);
         alert(errorMessage);
         return;
       }
@@ -1900,8 +1965,8 @@ function AuthenticatedDashboard() {
         setEditingAsset(null);
         await refreshAll();
       } else {
-        const err = await response.json();
-        alert(`Error updating asset: ${err?.detail || "Unknown error"}`);
+        const err = await response.json().catch(() => null);
+        alert(`Error updating asset: ${formatApiError(err?.detail, "Unknown error")}`);
       }
     } catch (error) {
       alert("Failed to update asset: " + error.message);
@@ -1941,8 +2006,8 @@ function AuthenticatedDashboard() {
         setEditingRisk(null);
         await refreshAll();
       } else {
-        const err = await response.json();
-        alert(`Error updating risk: ${err?.detail || "Unknown error"}`);
+        const err = await response.json().catch(() => null);
+        alert(`Error updating risk: ${formatApiError(err?.detail, "Unknown error")}`);
       }
     } catch (error) {
       alert("Failed to update risk: " + error.message);
@@ -1964,8 +2029,8 @@ function AuthenticatedDashboard() {
         setSelectedControlId("");
         await refreshAll();
       } else {
-        const err = await response.json();
-        alert(`Error assigning control: ${err?.detail || "Unknown error"}`);
+        const err = await response.json().catch(() => null);
+        alert(`Error assigning control: ${formatApiError(err?.detail, "Unknown error")}`);
       }
     } catch (error) {
       alert("Failed to assign control: " + error.message);
@@ -1980,8 +2045,8 @@ function AuthenticatedDashboard() {
       if (response.ok) {
         await refreshAll();
       } else {
-        const err = await response.json();
-        alert(`Error detaching control: ${err?.detail || "Unknown error"}`);
+        const err = await response.json().catch(() => null);
+        alert(`Error detaching control: ${formatApiError(err?.detail, "Unknown error")}`);
       }
     } catch (error) {
       alert("Failed to detach control: " + error.message);
@@ -2015,8 +2080,8 @@ function AuthenticatedDashboard() {
         });
         await refreshAll();
       } else {
-        const err = await response.json();
-        alert(`Error creating control: ${err?.detail || "Unknown error"}`);
+        const err = await response.json().catch(() => null);
+        alert(`Error creating control: ${formatApiError(err?.detail, "Unknown error")}`);
       }
     } catch (error) {
       alert("Failed to create control: " + error.message);
@@ -2047,8 +2112,8 @@ function AuthenticatedDashboard() {
         setEditingRequirement(null);
         await Promise.all([fetchComplianceSummary(), fetchComplianceRequirements()]);
       } else {
-        const err = await response.json();
-        alert(`Error updating requirement: ${err?.detail || "Unknown error"}`);
+        const err = await response.json().catch(() => null);
+        alert(`Error updating requirement: ${formatApiError(err?.detail, "Unknown error")}`);
       }
     } catch (error) {
       alert("Failed to update requirement assessment: " + error.message);
@@ -2089,13 +2154,13 @@ function AuthenticatedDashboard() {
         });
         const postData = await postRes.json().catch(() => null);
         if (!postRes.ok) {
-          setAiError(prev => ({ ...prev, [riskId]: postData?.detail || `Analysis failed (${postRes.status})` }));
+          setAiError(prev => ({ ...prev, [riskId]: formatApiError(postData?.detail, `Analysis failed (${postRes.status})`) }));
         } else {
           setAiAnalysis(prev => ({ ...prev, [riskId]: postData.analysis }));
         }
       } else {
         const errData = await getRes.json().catch(() => null);
-        setAiError(prev => ({ ...prev, [riskId]: errData?.detail || "Failed to load analysis" }));
+        setAiError(prev => ({ ...prev, [riskId]: formatApiError(errData?.detail, "Failed to load analysis") }));
       }
     } catch (err) {
       setAiError(prev => ({ ...prev, [riskId]: "Network error: " + (err?.message || String(err)) }));
@@ -2116,7 +2181,7 @@ function AuthenticatedDashboard() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setAiError(prev => ({ ...prev, [riskId]: data?.detail || `Analysis failed (${res.status})` }));
+        setAiError(prev => ({ ...prev, [riskId]: formatApiError(data?.detail, `Analysis failed (${res.status})`) }));
       } else {
         setAiAnalysis(prev => ({ ...prev, [riskId]: data.analysis }));
       }
@@ -2252,7 +2317,7 @@ function AuthenticatedDashboard() {
 
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setReviewSubmitError(data?.detail || `Review submission failed (${response.status})`);
+        setReviewSubmitError(formatApiError(data?.detail, `Review submission failed (${response.status})`));
         return;
       }
 
@@ -2278,7 +2343,7 @@ function AuthenticatedDashboard() {
         setHistoryData(data);
       } else {
         const err = await response.json().catch(() => null);
-        setHistoryError(err?.detail || `Failed to load review history (${response.status})`);
+        setHistoryError(formatApiError(err?.detail, `Failed to load review history (${response.status})`));
       }
     } catch (error) {
       setHistoryError(error.message || "Network error loading review history");
@@ -3068,6 +3133,11 @@ function AuthenticatedDashboard() {
                               </td>
                               <td>
                                 {getJobStatusBadge(job.status)}
+                                {job.status === "Completed" && (job.discovered_assets_count ?? 0) === 0 && (
+                                  <div className="job-info-hint text-xs text-slate" title="Scan completed successfully; no responsive hosts detected on probed ports in scope">
+                                    0 hosts responsive
+                                  </div>
+                                )}
                                 {job.error_message && (
                                   <div className="job-error-msg" title={job.error_message}>
                                     ⚠ {job.error_message}
@@ -3090,7 +3160,7 @@ function AuthenticatedDashboard() {
                               </td>
                               <td>
                                 <div className="job-metrics-stack">
-                                  <span className="metric-pill" title="Discovered hosts">
+                                  <span className="metric-pill" title={job.discovered_assets_count === 0 ? "No active hosts responded to TCP discovery probes in scope" : "Discovered hosts"}>
                                     {job.discovered_assets_count ?? 0} host{job.discovered_assets_count !== 1 ? "s" : ""}
                                   </span>
                                   <span className="metric-pill" title="Discovered vulnerabilities">
@@ -6324,6 +6394,67 @@ function AuthenticatedDashboard() {
               )}
             </div>
 
+            {/* 2B. OPENVAS INTEGRATION STATUS BANNER */}
+            <div className="openvas-banner-card" style={{
+              background: "linear-gradient(135deg, rgba(15, 23, 42, 0.85) 0%, rgba(11, 19, 41, 0.95) 100%)",
+              border: "1px solid rgba(56, 189, 248, 0.2)",
+              borderRadius: "10px",
+              padding: "16px 20px",
+              marginBottom: "18px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <span style={{ fontSize: "22px" }}>🛡️</span>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: "14px", color: "#f8fafc" }}>
+                      OpenVAS / Greenbone GMP Vulnerability Assessment Engine
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                      Integrated Greenbone Management Protocol interface for network vulnerability scans, NVTs, and remediation ingestion.
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span className={`badge ${openvasStatus?.available ? "badge-low" : "badge-neutral"}`} style={{ fontSize: "11px", padding: "4px 8px" }}>
+                    Status: {openvasStatus?.status || (openvasLoading ? "Probing..." : "Not Configured")}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={fetchOpenvasStatus}
+                    disabled={openvasLoading}
+                    title="Probe OpenVAS daemon connection"
+                  >
+                    {openvasLoading ? "Probing..." : "↻ Verify Status"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary btn-sm"
+                    onClick={() => {
+                      setShowOpenvasModal(true);
+                      setOpenvasScanFeedback(null);
+                    }}
+                    title="Configure and trigger OpenVAS vulnerability scan"
+                  >
+                    OpenVAS Assessment
+                  </button>
+                </div>
+              </div>
+              <div style={{
+                fontSize: "12px",
+                color: "#cbd5e1",
+                background: "rgba(2, 6, 23, 0.7)",
+                padding: "8px 12px",
+                borderRadius: "6px",
+                borderLeft: openvasStatus?.available ? "3px solid #10b981" : "3px solid #f59e0b",
+              }}>
+                <strong>Integration Status:</strong> {openvasStatus?.message || "OpenVAS integration is probed dynamically. If unconfigured or unavailable, the platform transparently reports status and utilizes Nmap and official NVD CVE feeds."}
+              </div>
+            </div>
+
             {/* 3. VULNERABILITY INVENTORY TABLE */}
             <section className="panel">
               <div className="panel-header">
@@ -7544,8 +7675,8 @@ function AuthenticatedDashboard() {
                 <div className="capability-icon">📁</div>
                 <div className="capability-content">
                   <div className="capability-title">Supported Formats</div>
-                  <div className="capability-val">JSON • CSV • HTML</div>
-                  <div className="capability-desc">Structured API data, spreadsheets, and styled executive docs</div>
+                  <div className="capability-val">JSON • CSV • HTML • PDF</div>
+                  <div className="capability-desc">Structured API data, spreadsheets, executive HTML, and official PDF documents</div>
                 </div>
               </div>
               <div className="reports-capability-card">
@@ -8298,6 +8429,158 @@ function AuthenticatedDashboard() {
           </div>
         );
       })()}
+
+        {/* OPENVAS ASSESSMENT & INTEGRATION MODAL */}
+        {showOpenvasModal && (
+          <div className="modal-overlay" onClick={() => setShowOpenvasModal(false)}>
+            <div className="modal-content" style={{ maxWidth: "620px" }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "22px" }}>🛡️</span>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: "16px", color: "#f8fafc" }}>
+                      OpenVAS / Greenbone Assessment Workspace
+                    </h3>
+                    <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                      GMP-v22.4 Vulnerability Assessment & Compliance Probe
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="modal-close"
+                  onClick={() => setShowOpenvasModal(false)}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "16px", padding: "20px" }}>
+                {/* Integration Status Box */}
+                <div style={{
+                  background: "#09101f",
+                  border: "1px solid #1e293b",
+                  borderRadius: "8px",
+                  padding: "14px 16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "12px", fontWeight: 700, color: "#38bdf8", textTransform: "uppercase" }}>
+                      Integration Status Probe
+                    </span>
+                    <span className={`badge ${openvasStatus?.available ? "badge-low" : "badge-neutral"}`}>
+                      {openvasStatus?.status || "Not Configured"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "12.5px", color: "#e2e8f0", lineHeight: 1.5 }}>
+                    {openvasStatus?.message || "OpenVAS GMP daemon is not configured in this environment. Platform falls back to Nmap service scanning and authoritative NVD CVE correlation."}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                    Checked: {formatDateTime(openvasStatus?.checked_at)} • Host: {openvasStatus?.host || "Unconfigured"} (Port {openvasStatus?.port || 9390})
+                  </div>
+                </div>
+
+                {/* Target & Execution Form */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "#94a3b8" }}>
+                    Target Host (RFC 1918 Private IPv4 Scope):
+                  </label>
+                  <input
+                    type="text"
+                    value={openvasScanTarget}
+                    onChange={(e) => setOpenvasScanTarget(e.target.value)}
+                    placeholder="e.g. 192.168.127.1"
+                    className="launcher-field"
+                    style={{
+                      background: "#020617",
+                      border: "1px solid #334155",
+                      borderRadius: "6px",
+                      padding: "8px 12px",
+                      color: "#f8fafc",
+                      fontSize: "13px",
+                    }}
+                  />
+                  <div style={{ fontSize: "11px", color: "#64748b" }}>
+                    Scans are restricted to permitted private networks and authorized targets only.
+                  </div>
+                </div>
+
+                {/* Feedback Banner */}
+                {openvasScanFeedback && (
+                  <div style={{
+                    padding: "12px 14px",
+                    borderRadius: "6px",
+                    fontSize: "12.5px",
+                    lineHeight: 1.5,
+                    background: openvasScanFeedback.type === "success"
+                      ? "rgba(16, 185, 129, 0.15)"
+                      : (openvasScanFeedback.type === "warning" ? "rgba(245, 158, 11, 0.15)" : "rgba(239, 68, 68, 0.15)"),
+                    border: `1px solid ${openvasScanFeedback.type === "success" ? "#10b981" : (openvasScanFeedback.type === "warning" ? "#f59e0b" : "#ef4444")}`,
+                    color: openvasScanFeedback.type === "success" ? "#a7f3d0" : (openvasScanFeedback.type === "warning" ? "#fde68a" : "#fca5a5"),
+                  }}>
+                    <strong>{openvasScanFeedback.type === "success" ? "✓" : "⚠"} {openvasScanFeedback.message}</strong>
+                    {openvasScanFeedback.detail?.configuration_required && (
+                      <div style={{ marginTop: "8px", fontSize: "11px", color: "#e2e8f0" }}>
+                        <div style={{ fontWeight: 600, marginBottom: "4px" }}>Required Environment Variables:</div>
+                        {Object.entries(openvasScanFeedback.detail.configuration_required).map(([k, v]) => (
+                          <div key={k} style={{ fontFamily: "monospace" }}>
+                            • <code>{k}</code>: {v}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Supported Features Grid */}
+                <div style={{
+                  background: "#020617",
+                  border: "1px solid #1e293b",
+                  borderRadius: "6px",
+                  padding: "10px 14px",
+                }}>
+                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: "6px" }}>
+                    Supported GMP Vulnerability Features
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "11.5px", color: "#94a3b8" }}>
+                    <li>Network Vulnerability Tests (NVTs) & CVE / CVSS correlation</li>
+                    <li>Detection of confirmed vulnerabilities vs. unverified service exposure</li>
+                    <li>Duplicate detection and finding lifecycle tracking (Open, Recurring, Resolved)</li>
+                    <li>Remediation guidance ingestion and compliance control alignment</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setShowOpenvasModal(false)}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={fetchOpenvasStatus}
+                  disabled={openvasLoading}
+                >
+                  {openvasLoading ? "Probing..." : "↻ Refresh Status"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleTriggerOpenvasScan}
+                  disabled={openvasScanLoading}
+                >
+                  {openvasScanLoading ? "Executing Assessment..." : "Execute Scan"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* -------------------------------- */}
       {/* MODAL: VIEW RISK DETAILS         */}
@@ -10146,12 +10429,15 @@ function AuthenticatedDashboard() {
 
 function AppShell() {
   const { isAuthenticated, isLoading } = useAuth();
+  const isDocker = import.meta.env.VITE_IS_DOCKER === "true";
 
   if (isLoading) {
     return <AuthLoadingScreen />;
   }
 
-  if (!isAuthenticated) {
+  // Docker mode enforces the LoginPage when unauthenticated.
+  // Non-Docker mode bypasses login directly to the AuthenticatedDashboard.
+  if (isDocker && !isAuthenticated) {
     return <LoginPage />;
   }
 

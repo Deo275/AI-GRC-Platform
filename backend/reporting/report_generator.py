@@ -30,6 +30,8 @@ except ImportError:
 
 from .csv_export import build_csv_report, MAX_REPORT_ROWS, STANDARD_DISCLAIMER
 from .html_export import build_html_report
+from .pdf_export import build_pdf_report
+
 
 
 def _validate_row_limit(count: int, report_name: str) -> None:
@@ -476,9 +478,9 @@ def generate_report(
             f"{', '.join(REPORT_GENERATORS.keys())}"
         )
 
-    if clean_format not in ("json", "csv", "html"):
+    if clean_format not in ("json", "csv", "html", "pdf"):
         raise ValueError(
-            f"Unsupported format '{format_type}'. Supported export formats: 'json', 'csv', 'html'."
+            f"Unsupported format '{format_type}'. Supported export formats: 'json', 'csv', 'html', 'pdf'."
         )
 
     generator_func = REPORT_GENERATORS[clean_report]
@@ -515,6 +517,19 @@ def generate_report(
             disclaimer=report_data["metadata"].get("disclaimer", STANDARD_DISCLAIMER),
         )
         return content, "text/csv; charset=utf-8", safe_filename
+
+    elif clean_format == "pdf":
+        content = build_pdf_report(
+            title=report_data["title"],
+            subtitle=report_data["subtitle"],
+            summary_cards=report_data["summary_cards"],
+            table_headers=report_data["table_headers"],
+            table_rows=report_data["table_rows"],
+            ai_advisories=report_data.get("ai_advisories"),
+            generated_by=operator,
+            disclaimer=report_data["metadata"].get("disclaimer", STANDARD_DISCLAIMER),
+        )
+        return content, "application/pdf", safe_filename
 
     else:  # html
         content = build_html_report(

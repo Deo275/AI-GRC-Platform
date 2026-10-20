@@ -1,17 +1,32 @@
+import os
+import logging
 import subprocess
 import re
+import ipaddress
 import xml.etree.ElementTree as ET
 
-def scan_host(target):
+logger = logging.getLogger("ai_grc.scanner.nmap")
+
+def scan_host(target: str, enable_os_detection: bool = None):
+
+    if enable_os_detection is None:
+        enable_os_detection = os.getenv("ENABLE_OS_DETECTION", "false").strip().lower() in ("true", "1", "yes")
 
     command = [
         "nmap",
+        "-Pn",
+        "-sT",
         "-sV",
-        "-O",
+    ]
+
+    if enable_os_detection:
+        command.append("-O")
+
+    command.extend([
         "-oX",
         "-",
         target
-    ]
+    ])
 
     try:
         result = subprocess.run(
@@ -35,10 +50,39 @@ def scan_host(target):
         if not error_detail:
             error_detail = "Unknown error"
 
-        raise RuntimeError(
-            f"Nmap scan failed (exit code "
-            f"{result.returncode}): {error_detail}"
-        )
+        # Check if failure is due to OS detection requiring root privileges
+        if enable_os_detection and "-O" in command and "root privileges" in error_detail.lower():
+            logger.warning(
+                "Nmap OS detection (-O) requires root privileges; scan failed on target %s. "
+                "Retrying scan without OS detection.",
+                target,
+            )
+            fallback_command = [arg for arg in command if arg != "-O"]
+            try:
+                result = subprocess.run(
+                    fallback_command,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    f"Nmap host scan timed out after 120 seconds on target {target}"
+                )
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "Nmap executable not found on system PATH."
+                )
+            if result.returncode != 0:
+                fallback_error = result.stderr.strip() or "Unknown error"
+                raise RuntimeError(
+                    f"Nmap scan failed (exit code {result.returncode}): {fallback_error}"
+                )
+        else:
+            raise RuntimeError(
+                f"Nmap scan failed (exit code "
+                f"{result.returncode}): {error_detail}"
+            )
 
     output = result.stdout
 
@@ -47,7 +91,12 @@ def scan_host(target):
             "Nmap did not return any scan output."
         )
 
-    root = ET.fromstring(output)
+    try:
+        root = ET.fromstring(output)
+    except ET.ParseError as pe:
+        raise RuntimeError(
+            f"Failed to parse Nmap XML output: {pe}"
+        )
 
     hostname = None
     mac_address = None
@@ -161,6 +210,9 @@ def discover_hosts(network):
     command = [
         "nmap",
         "-sn",
+        "-PS22,80,135,443,445,3389,8000,8080",
+        "--max-retries",
+        "1",
         network
     ]
 
@@ -169,20 +221,30 @@ def discover_hosts(network):
             command,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=180,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(
-            f"Nmap host discovery timed out after 120 seconds on network {network}"
+            f"Nmap host discovery timed out after 180 seconds on network {network}"
         )
     except FileNotFoundError:
         raise RuntimeError(
             "Nmap executable not found on system PATH."
         )
 
+    if result.returncode != 0:
+        error_detail = result.stderr.strip() or "Unknown error"
+        raise RuntimeError(
+            f"Nmap host discovery failed (exit code {result.returncode}): {error_detail}"
+        )
+
     output = result.stdout
 
     hosts = []
+    try:
+        target_net = ipaddress.ip_network(network, strict=False) if "/" in str(network) else None
+    except Exception:
+        target_net = None
 
     for line in output.splitlines():
 
@@ -193,6 +255,13 @@ def discover_hosts(network):
 
         if match:
             ip_address = match.group(1)
+            if target_net:
+                try:
+                    ip_obj = ipaddress.ip_address(ip_address)
+                    if ip_obj == target_net.network_address or ip_obj == target_net.broadcast_address:
+                        continue
+                except ValueError:
+                    pass
 
             if ip_address not in hosts:
                 hosts.append(ip_address)

@@ -17,6 +17,9 @@ COPY . .
 ARG VITE_API_BASE_URL=http://localhost:8000
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 
+ARG VITE_IS_DOCKER=true
+ENV VITE_IS_DOCKER=$VITE_IS_DOCKER
+
 RUN npm run build
 
 # Stage 2: Production static web server (Nginx)

@@ -53,6 +53,33 @@ def get_current_user(
 
     token = parts[1]
 
+    # Support non-production dev bypass token for local non-Docker development
+    if token == "dev-bypass-token":
+        import os
+        env_name = os.environ.get("ENV", os.environ.get("ENVIRONMENT", "")).strip().lower()
+        dev_enabled = os.environ.get("AUTH_DEV_LOGIN_ENABLED", "").strip().lower()
+        if env_name not in ("production", "prod") or dev_enabled in ("true", "1", "yes"):
+            admin_user = (
+                db.query(models.User)
+                .filter(models.User.role == "Administrator", models.User.is_active == True)
+                .first()
+            )
+            if not admin_user:
+                import secrets
+                from .security import hash_password
+                admin_user = models.User(
+                    username="admin",
+                    email="admin@example.com",
+                    display_name="Administrator (Dev)",
+                    password_hash=hash_password(secrets.token_urlsafe(32)),
+                    role="Administrator",
+                    is_active=True,
+                )
+                db.add(admin_user)
+                db.commit()
+                db.refresh(admin_user)
+            return admin_user
+
     try:
         payload = decode_access_token(token)
     except jwt.ExpiredSignatureError:

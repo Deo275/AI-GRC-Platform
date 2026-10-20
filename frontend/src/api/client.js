@@ -14,6 +14,33 @@ export const API_BASE =
 
 export const AUTH_TOKEN_KEY = "ai_grc_access_token";
 
+export const DEV_ADMIN_USER = {
+  id: 1,
+  username: "admin",
+  email: "admin@example.com",
+  display_name: "Administrator (Dev)",
+  role: "Administrator",
+  is_active: true,
+};
+
+/**
+ * Converts string, object, or array API error details into safe, readable strings.
+ * Prevents React rendering crashes from non-string error payloads.
+ */
+export const formatApiError = (detail, fallback = "An unexpected error occurred") => {
+  if (!detail) return fallback;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => (typeof item === "string" ? item : item?.msg || JSON.stringify(item)))
+      .join("; ");
+  }
+  if (typeof detail === "object") {
+    return detail.message || detail.error || JSON.stringify(detail);
+  }
+  return String(detail);
+};
+
 let onUnauthorizedCallback = null;
 let onForbiddenCallback = null;
 
@@ -109,9 +136,35 @@ export const authFetch = async (url, options = {}) => {
   return response;
 };
 
+export const isDockerEnv = () => {
+  return import.meta.env.VITE_IS_DOCKER === "true";
+};
+
 /**
  * Authentication API helpers
  */
+export const apiDevLogin = async () => {
+  let response;
+  try {
+    response = await fetch(`${API_BASE}/auth/dev-login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  } catch (err) {
+    const error = new Error("Unable to connect to backend for dev login: " + (err?.message || ""));
+    error.isNetworkError = true;
+    throw error;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Dev login request failed with status ${response.status}`);
+  }
+
+  return await response.json();
+};
+
 export const apiLogin = async (username, password) => {
   let response;
   try {

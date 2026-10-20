@@ -4143,6 +4143,18 @@ header p {
   box-shadow: 0 0 12px rgba(245, 158, 11, 0.25);
 }
 
+.reports-btn-fmt.fmt-pdf .fmt-icon-badge {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+.reports-btn-fmt.fmt-pdf:hover:not(:disabled) {
+  border-color: #ef4444;
+  color: #f87171;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.25);
+}
+
+
 .reports-btn-fmt.btn-generating {
   background: rgba(56, 189, 248, 0.15);
   border-color: #38bdf8;

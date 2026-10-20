@@ -36,20 +36,21 @@ ALLOWED_PRIVATE_NETWORKS = [
 ]
 
 
-def validate_target_network(target_str: str) -> str:
+def validate_target_network(target_str: str, allow_loopback: bool = True) -> str:
     """Validate target string against RFC 1918 private ranges and max /24 subnet size.
 
     Allowed:
     - 10.0.0.0/8 subnets (with prefixlen >= 24)
     - 172.16.0.0/12 subnets (with prefixlen >= 24)
     - 192.168.0.0/16 subnets (with prefixlen >= 24)
-    - 127.0.0.1/32 or 127.0.0.0/8 subnets (with prefixlen >= 24)
+    - 127.0.0.1/32 or 127.0.0.0/8 subnets (with prefixlen >= 24) if allow_loopback=True
     - Single IPv4 addresses within those ranges
 
     Rejects:
     - Public IP addresses (e.g. 8.8.8.8)
     - Wide CIDRs with prefixlen < 24 (e.g. /16, /8)
     - IPv6 addresses
+    - Loopback or link-local if allow_loopback=False
     - Malformed IP or CIDR strings
 
     Returns normalized string (e.g. '192.168.1.1' or '192.168.1.0/24').
@@ -64,13 +65,17 @@ def validate_target_network(target_str: str) -> str:
         ip = ipaddress.ip_address(target_clean)
         if ip.version != 4:
             raise ValueError("Only IPv4 targets are supported.")
+        if not allow_loopback and (ip.is_loopback or ip in ipaddress.ip_network("127.0.0.0/8")):
+            raise ValueError(f"Loopback target '{target_clean}' is not permitted.")
+        if ip.is_link_local or ip in ipaddress.ip_network("169.254.0.0/16"):
+            raise ValueError(f"Link-local target '{target_clean}' is not permitted.")
         # Check against allowed private networks
         if not any(ip in net for net in ALLOWED_PRIVATE_NETWORKS):
             raise ValueError(f"Target IP '{target_clean}' is not an allowed RFC 1918 private address or loopback.")
         return str(ip)
     except ValueError as ip_err:
         if "does not appear to be an IPv4 or IPv6 address" not in str(ip_err):
-            if "Only IPv4" in str(ip_err) or "not an allowed" in str(ip_err):
+            if "Only IPv4" in str(ip_err) or "not an allowed" in str(ip_err) or "not permitted" in str(ip_err):
                 raise ip_err
 
     # Try parsing as network CIDR
@@ -78,6 +83,10 @@ def validate_target_network(target_str: str) -> str:
         net = ipaddress.ip_network(target_clean, strict=False)
         if net.version != 4:
             raise ValueError("Only IPv4 targets are supported.")
+        if not allow_loopback and (net.is_loopback or net.subnet_of(ipaddress.ip_network("127.0.0.0/8"))):
+            raise ValueError(f"Loopback target '{target_clean}' is not permitted.")
+        if net.is_link_local or net.subnet_of(ipaddress.ip_network("169.254.0.0/16")):
+            raise ValueError(f"Link-local target '{target_clean}' is not permitted.")
         if net.prefixlen < 24:
             raise ValueError(
                 f"Subnet size '/{net.prefixlen}' exceeds maximum allowed scope. Maximum allowed subnet size is /24 (256 hosts)."
@@ -86,7 +95,7 @@ def validate_target_network(target_str: str) -> str:
             raise ValueError(f"Target network '{target_clean}' is not within RFC 1918 private address ranges or loopback.")
         return str(net)
     except ValueError as net_err:
-        if "Subnet size" in str(net_err) or "Only IPv4" in str(net_err) or "not within RFC 1918" in str(net_err):
+        if "Subnet size" in str(net_err) or "Only IPv4" in str(net_err) or "not within RFC 1918" in str(net_err) or "not permitted" in str(net_err):
             raise net_err
         raise ValueError(f"Invalid target '{target_clean}'. Must be a valid RFC 1918 IPv4 address or /24-/32 CIDR.")
 
@@ -97,16 +106,23 @@ class MonitoringScannerPipeline:
     def __init__(
         self,
         enable_os_detection: Optional[bool] = None,
-        ping_timeout_seconds: int = 60,
-        host_scan_timeout_seconds: int = 120,
+        ping_timeout_seconds: Optional[int] = None,
+        host_scan_timeout_seconds: Optional[int] = None,
     ):
         if enable_os_detection is None:
             self.enable_os_detection = os.getenv("ENABLE_OS_DETECTION", "false").strip().lower() in ("true", "1", "yes")
         else:
             self.enable_os_detection = bool(enable_os_detection)
 
-        self.ping_timeout = ping_timeout_seconds
-        self.host_scan_timeout = host_scan_timeout_seconds
+        if ping_timeout_seconds is None:
+            self.ping_timeout = int(os.getenv("PING_TIMEOUT_SECONDS", "180"))
+        else:
+            self.ping_timeout = int(ping_timeout_seconds)
+
+        if host_scan_timeout_seconds is None:
+            self.host_scan_timeout = int(os.getenv("HOST_SCAN_TIMEOUT_SECONDS", "180"))
+        else:
+            self.host_scan_timeout = int(host_scan_timeout_seconds)
 
     def discover_live_hosts(
         self,
@@ -114,7 +130,7 @@ class MonitoringScannerPipeline:
         process_callback=None,
         cancellation_check=None,
     ) -> List[str]:
-        """Stage 1: Fast ping sweep (nmap -sn) to identify live hosts."""
+        """Stage 1: Fast ping sweep with TCP SYN discovery probes to identify live hosts."""
         normalized_target = validate_target_network(target)
 
         # If target is a single IP, return it directly for port scanning
@@ -122,7 +138,15 @@ class MonitoringScannerPipeline:
             single_ip = normalized_target.split("/")[0]
             return [single_ip]
 
-        command = ["nmap", "-sn", normalized_target]
+        # TCP SYN discovery probes to common Windows/Linux/service ports for unprivileged scanning
+        command = [
+            "nmap",
+            "-sn",
+            "-PS22,80,135,443,445,3389,8000,8080",
+            "--max-retries",
+            "1",
+            normalized_target,
+        ]
         logger.info(f"Stage 1 Host Discovery command: {' '.join(command)}")
 
         proc = subprocess.Popen(
@@ -146,11 +170,16 @@ class MonitoringScannerPipeline:
         if cancellation_check and cancellation_check():
             return []
 
-        if proc.returncode != 0 and not stdout:
-            err = stderr.strip() or f"Exit code {proc.returncode}"
+        if proc.returncode != 0:
+            err = stderr.strip() or stdout.strip() or f"Exit code {proc.returncode}"
             raise RuntimeError(f"Nmap ping sweep failed: {err}")
 
         hosts: List[str] = []
+        try:
+            target_net = ipaddress.ip_network(normalized_target, strict=False) if "/" in normalized_target else None
+        except Exception:
+            target_net = None
+
         for line in stdout.splitlines():
             match = re.search(
                 r"Nmap scan report for (?:[^\s(]+ \()?([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)?",
@@ -158,6 +187,13 @@ class MonitoringScannerPipeline:
             )
             if match:
                 ip = match.group(1)
+                if target_net:
+                    try:
+                        ip_obj = ipaddress.ip_address(ip)
+                        if ip_obj == target_net.network_address or ip_obj == target_net.broadcast_address:
+                            continue
+                    except ValueError:
+                        pass
                 if ip not in hosts:
                     hosts.append(ip)
 
@@ -170,10 +206,11 @@ class MonitoringScannerPipeline:
         process_callback=None,
         cancellation_check=None,
     ) -> Dict[str, Any]:
-        """Stage 2: Targeted port scan (--top-ports 100 -sV [-O]) on an active host."""
+        """Stage 2: Targeted port scan (-Pn -sT --top-ports 100 -sV [-O]) on an active host."""
         ip = validate_target_network(host_ip)
 
-        command = ["nmap", "--top-ports", "100", "-sV", "-oX", "-"]
+        # -Pn ensures unprivileged Nmap does not drop the host if pre-scan ping to 80/443 fails
+        command = ["nmap", "-Pn", "-sT", "--top-ports", "100", "-sV", "-oX", "-"]
         if self.enable_os_detection:
             command.append("-O")
         command.append(ip)
@@ -201,9 +238,34 @@ class MonitoringScannerPipeline:
         if cancellation_check and cancellation_check():
             return {}
 
-        if proc.returncode != 0 and not stdout:
-            err = stderr.strip() or f"Exit code {proc.returncode}"
-            raise RuntimeError(f"Nmap host scan failed for {ip}: {err}")
+        if proc.returncode != 0:
+            err = stderr.strip() or stdout.strip() or f"Exit code {proc.returncode}"
+            if "-O" in command and "root privileges" in err.lower():
+                logger.warning(
+                    f"Stage 2 host scan on {ip} failed due to root privilege requirement for -O. "
+                    "Retrying scan without OS detection."
+                )
+                fallback_cmd = [arg for arg in command if arg != "-O"]
+                fallback_proc = subprocess.Popen(
+                    fallback_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    shell=False,
+                )
+                if process_callback:
+                    process_callback(fallback_proc)
+                try:
+                    stdout, stderr = fallback_proc.communicate(timeout=self.host_scan_timeout)
+                except subprocess.TimeoutExpired:
+                    fallback_proc.kill()
+                    fallback_proc.communicate()
+                    raise TimeoutError(f"Stage 2 host scan timed out after {self.host_scan_timeout}s for {ip}")
+                if fallback_proc.returncode != 0:
+                    err = stderr.strip() or stdout.strip() or f"Exit code {fallback_proc.returncode}"
+                    raise RuntimeError(f"Nmap host scan failed for {ip}: {err}")
+            else:
+                raise RuntimeError(f"Nmap host scan failed for {ip}: {err}")
 
         parsed_data = self._parse_nmap_xml(stdout, ip)
 

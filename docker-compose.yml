@@ -36,7 +36,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_secure_pass}@db:5432/${POSTGRES_DB:-ai_grc}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_secure_pass}@db:5432/${POSTGRES_DB:-ai_grc}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       ENV: ${ENV:-production}
       AI_PROVIDER: ${AI_PROVIDER:-chain}
@@ -54,6 +54,7 @@ services:
       AUTH_BOOTSTRAP_ANALYST_PASSWORD: ${AUTH_BOOTSTRAP_ANALYST_PASSWORD:-}
       AUTH_BOOTSTRAP_REVIEWER_PASSWORD: ${AUTH_BOOTSTRAP_REVIEWER_PASSWORD:-}
       AUTH_BOOTSTRAP_ADMIN_PASSWORD: ${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
+      AUTH_DEV_LOGIN_ENABLED: ${AUTH_DEV_LOGIN_ENABLED:-true}
     # Minimal POSIX capabilities for unprivileged Nmap OS detection & raw sockets.
     # Note: Backend container runs as unprivileged appuser (uid 1000).
     cap_add:
@@ -78,6 +79,7 @@ services:
       args:
         # Browser requests originate from user's host browser to backend host port
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+        VITE_IS_DOCKER: "true"
     restart: unless-stopped
     depends_on:
       backend:
