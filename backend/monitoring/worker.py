@@ -27,6 +27,9 @@ except ImportError:
     from backend.database import SessionLocal
     import backend.models as models
 
+import ipaddress
+import os
+
 from scanner.grc_engine import (
     criticality_to_impact,
     calculate_likelihood,
@@ -35,11 +38,52 @@ from scanner.grc_engine import (
 )
 from .scanner_pipeline import MonitoringScannerPipeline, validate_target_network
 from .drift_detector import DriftDetector, normalize_ip
+from .drift_detector import DriftDetector, normalize_ip
+from .remote_agent import NmapAgentClient, NmapAgentError
+from .asset_identity import (
+    find_existing_asset,
+    upsert_discovered_asset,
+    record_asset_address,
+    normalize_mac,
+)
+try:
+    from scanner.vulnerability_scanner import identify_vulnerabilities
+    from scanner.risk_engine import calculate_risk
+    from scanner.os_identifier import identify_os_and_device
+    from scanner.router_dhcp import get_authorized_dhcp_info, AUTHORIZED_ROUTER_DHCP_CLIENTS
+except ImportError:
+    import sys
+    from pathlib import Path
+    base_dir = Path(__file__).resolve().parent.parent.parent
+    if str(base_dir) not in sys.path:
+        sys.path.insert(0, str(base_dir))
+    from scanner.vulnerability_scanner import identify_vulnerabilities
+    from scanner.risk_engine import calculate_risk
+    from scanner.os_identifier import identify_os_and_device
+    from scanner.router_dhcp import get_authorized_dhcp_info, AUTHORIZED_ROUTER_DHCP_CLIENTS
 
 logger = logging.getLogger("ai_grc.monitoring.worker")
 
 MAX_SCAN_WORKERS = 3
 DEFAULT_MAX_PENDING_JOBS = 10
+
+
+def is_special_or_boundary_ip(ip_str: str, target_cidr: Optional[str] = None) -> bool:
+    """Check if IP is a broadcast, network, loopback, or multicast address."""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        if addr.is_multicast or addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+            return True
+        if target_cidr and "/" in target_cidr:
+            net = ipaddress.ip_network(target_cidr, strict=False)
+            if addr == net.network_address or addr == net.broadcast_address:
+                return True
+        parts = ip_str.split(".")
+        if len(parts) == 4 and (parts[3] == "0" or parts[3] == "255"):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def recalculate_asset_grc_risks(asset: models.Asset):
@@ -82,6 +126,7 @@ class ScanWorkerPool:
         self._lock = threading.Lock()
         self._cancel_events: Dict[int, threading.Event] = {}
         self._active_processes: Dict[int, subprocess.Popen] = {}
+        self._active_agent_jobs: Dict[int, str] = {}
         self._futures: Dict[int, Any] = {}
 
     def get_pending_job_count(self) -> int:
@@ -91,6 +136,7 @@ class ScanWorkerPool:
             for jid in done_keys:
                 self._futures.pop(jid, None)
                 self._cancel_events.pop(jid, None)
+                self._active_agent_jobs.pop(jid, None)
             return len(self._futures)
 
     def can_accept_job(self) -> bool:
@@ -107,6 +153,7 @@ class ScanWorkerPool:
             for jid in done_keys:
                 self._futures.pop(jid, None)
                 self._cancel_events.pop(jid, None)
+                self._active_agent_jobs.pop(jid, None)
 
             if len(self._futures) >= self.max_pending_jobs:
                 logger.warning(
@@ -126,14 +173,14 @@ class ScanWorkerPool:
 
         1. Set cancellation event.
         2. Attempt to cancel future if still queued in executor.
-        3. Terminate active Nmap subprocess if running.
-        4. Wait for process termination.
+        3. Cancel remote Pi agent job if running.
+        4. Terminate active local Nmap subprocess if running.
         5. Mark the job Cancelled in the database.
-        Never mark a job Cancelled while its Nmap subprocess is still running.
         """
         with self._lock:
             cancel_event = self._cancel_events.get(job_id)
             active_proc = self._active_processes.get(job_id)
+            agent_job_id = self._active_agent_jobs.get(job_id)
             future = self._futures.get(job_id)
 
         if cancel_event:
@@ -144,6 +191,18 @@ class ScanWorkerPool:
             with self._lock:
                 self._futures.pop(job_id, None)
                 self._cancel_events.pop(job_id, None)
+                self._active_agent_jobs.pop(job_id, None)
+
+        # Cancel remote agent job if active
+        if agent_job_id:
+            try:
+                agent_token = os.getenv("NMAP_AGENT_TOKEN", "").strip()
+                agent_url = os.getenv("NMAP_AGENT_URL", "").strip()
+                if agent_token:
+                    NmapAgentClient(base_url=agent_url or None, token=agent_token).cancel_job(agent_job_id)
+                    logger.info("Sent cancellation request for backend job %s to Pi agent job %s", job_id, agent_job_id)
+            except Exception as e:
+                logger.warning(f"Error cancelling Pi agent job {agent_job_id} for backend job {job_id}: {e}")
 
         # Terminate active process if running
         if active_proc is not None:
@@ -213,38 +272,77 @@ class ScanWorkerPool:
             # Retrieve baseline snapshot strictly from the latest successfully completed scan
             baseline_snapshot = DriftDetector.get_baseline_snapshot(db, target, current_job_id=job_id)
 
-            # Stage 1: Host discovery (ping sweep)
-            if check_cancelled():
-                self._handle_cancellation(job, db, job_id)
-                return
+            # Stage 1: Live host discovery
+            # Priority 1: Physical LAN Discovery via Raspberry Pi Agent (L2 ARP visibility)
+            # Priority 2: Multi-Probe Container Discovery Fallback
+            agent_client = None
+            agent_token = os.getenv("NMAP_AGENT_TOKEN", "").strip()
+            agent_url = os.getenv("NMAP_AGENT_URL", "").strip()
+            use_agent = False
+            discovered_hosts_info: List[Dict[str, Any]] = []
 
-            live_hosts = self.pipeline.discover_live_hosts(
-                target=target,
-                process_callback=on_process_created,
-                cancellation_check=check_cancelled,
-            )
+            fallback_reason: Optional[str] = None
+            is_subnet = "/" in target and not target.endswith("/32")
+            configured_cidr = os.getenv("NMAP_NETWORK_CIDR", "192.168.1.0/24").strip()
+            is_agent_target = is_subnet and (target == configured_cidr or target in ("192.168.1.0/24", "auto", "current_lan"))
 
-            with self._lock:
-                self._active_processes.pop(job_id, None)
+            if agent_token and is_agent_target:
+                try:
+                    agent_client = NmapAgentClient(base_url=agent_url or None, token=agent_token)
+                    logger.info("Attempting physical LAN discovery via Raspberry Pi agent on target %s", target)
+                    raw_agent_hosts = agent_client.discover_hosts(target)
+                    if isinstance(raw_agent_hosts, list):
+                        use_agent = True
+                        logger.info(
+                            "Raspberry Pi agent successfully discovered %d hosts on physical LAN for %s",
+                            len(raw_agent_hosts),
+                            target,
+                        )
+                        for h in raw_agent_hosts:
+                            if not isinstance(h, dict):
+                                continue
+                            ip = h.get("ip_address") or h.get("ip")
+                            if not ip or not isinstance(ip, str):
+                                continue
+                            norm = normalize_ip(ip)
+                            if is_special_or_boundary_ip(norm, target):
+                                continue
+                            hostnames = h.get("hostnames") or []
+                            hostname = h.get("hostname") or (hostnames[0] if hostnames else None)
+                            dhcp_meta = get_authorized_dhcp_info(norm)
+                            if not hostname and dhcp_meta:
+                                hostname = dhcp_meta.get("hostname")
+                            device_type = (dhcp_meta.get("device_type") if dhcp_meta else None) or h.get("device_type")
+                            discovered_hosts_info.append({
+                                "ip_address": norm,
+                                "hostname": hostname,
+                                "mac_address": h.get("mac_address") or h.get("mac"),
+                                "vendor": h.get("vendor"),
+                                "operating_system": h.get("operating_system"),
+                                "open_ports": h.get("open_ports") or [],
+                                "discovery_source": "pi_agent_l2",
+                                "device_type": device_type,
+                            })
+                except Exception as agent_exc:
+                    fallback_reason = f"Raspberry Pi agent unavailable: {agent_exc}. Container fallback scan used."
+                    logger.warning(
+                        "Raspberry Pi agent discovery unavailable or failed for target %s: %s. "
+                        "Falling back to container multi-probe discovery.",
+                        target,
+                        agent_exc,
+                    )
+                    use_agent = False
+            elif is_subnet:
+                fallback_reason = "Raspberry Pi agent not configured. Container multi-probe scan used."
 
-            if check_cancelled():
-                self._handle_cancellation(job, db, job_id)
-                return
-
-            job.progress_percent = 30
-            db.commit()
-
-            # Stage 2: Host port scanning & enumeration
-            scan_results: List[Dict[str, Any]] = []
-            total_hosts = len(live_hosts)
-
-            for idx, host_ip in enumerate(live_hosts):
+            if not use_agent:
+                # Stage 1 Fallback: Container multi-probe ping sweep
                 if check_cancelled():
                     self._handle_cancellation(job, db, job_id)
                     return
 
-                host_result = self.pipeline.scan_single_host(
-                    host_ip=host_ip,
+                raw_live_hosts = self.pipeline.discover_live_hosts(
+                    target=target,
                     process_callback=on_process_created,
                     cancellation_check=check_cancelled,
                 )
@@ -256,8 +354,140 @@ class ScanWorkerPool:
                     self._handle_cancellation(job, db, job_id)
                     return
 
-                if host_result:
-                    scan_results.append(host_result)
+                disc_meta = getattr(self.pipeline, "last_discovery_metadata", {}) or {}
+                for host_ip in raw_live_hosts:
+                    norm = normalize_ip(host_ip)
+                    if is_special_or_boundary_ip(norm, target):
+                        continue
+                    meta = disc_meta.get(host_ip, {}) if isinstance(disc_meta, dict) else {}
+                    dhcp_meta = get_authorized_dhcp_info(norm)
+                    hostname = meta.get("hostname") or (dhcp_meta.get("hostname") if dhcp_meta else None)
+                    device_type = dhcp_meta.get("device_type") if dhcp_meta else None
+                    discovered_hosts_info.append({
+                        "ip_address": norm,
+                        "hostname": hostname,
+                        "mac_address": meta.get("mac_address"),
+                        "vendor": meta.get("vendor"),
+                        "operating_system": None,
+                        "open_ports": [],
+                        "discovery_source": "container_fallback_multiprobe",
+                        "device_type": device_type,
+                    })
+
+            if check_cancelled():
+                self._handle_cancellation(job, db, job_id)
+                return
+
+            job.progress_percent = 30
+            db.commit()
+
+            # Stage 2: Host port scanning & enumeration
+            scan_results: List[Dict[str, Any]] = []
+            total_hosts = len(discovered_hosts_info)
+
+            for idx, host_info in enumerate(discovered_hosts_info):
+                if check_cancelled():
+                    self._handle_cancellation(job, db, job_id)
+                    return
+
+                host_ip = host_info["ip_address"]
+                host_result = dict(host_info)
+
+                if use_agent and agent_client:
+                    try:
+                        scan_res = agent_client.scan_host(host_ip)
+                        if isinstance(scan_res, dict):
+                            if scan_res.get("open_ports"):
+                                host_result["open_ports"] = scan_res["open_ports"]
+                            if scan_res.get("operating_system"):
+                                host_result["operating_system"] = scan_res["operating_system"]
+                            if scan_res.get("hostname") and not host_result.get("hostname"):
+                                host_result["hostname"] = scan_res["hostname"]
+                            if scan_res.get("mac_address") and not host_result.get("mac_address"):
+                                host_result["mac_address"] = scan_res["mac_address"]
+                            if scan_res.get("vendor") and not host_result.get("vendor"):
+                                host_result["vendor"] = scan_res["vendor"]
+                            if scan_res.get("cpe"):
+                                host_result["cpe"] = scan_res["cpe"]
+                    except Exception as scan_err:
+                        logger.warning(
+                            "Direct agent port scan failed for host %s: %s. Retaining discovered host in inventory.",
+                            host_ip,
+                            scan_err,
+                        )
+                        # Safe fallback to local pipeline probe if agent errored on this host
+                        try:
+                            local_res = self.pipeline.scan_single_host(
+                                host_ip=host_ip,
+                                process_callback=on_process_created,
+                                cancellation_check=check_cancelled,
+                            )
+                            if isinstance(local_res, dict) and local_res.get("open_ports"):
+                                host_result["open_ports"] = local_res["open_ports"]
+                        except Exception:
+                            pass
+                        finally:
+                            with self._lock:
+                                self._active_processes.pop(job_id, None)
+                else:
+                    # Scan single host locally
+                    try:
+                        local_res = self.pipeline.scan_single_host(
+                            host_ip=host_ip,
+                            process_callback=on_process_created,
+                            cancellation_check=check_cancelled,
+                        )
+                        if isinstance(local_res, dict):
+                            if local_res.get("open_ports"):
+                                host_result["open_ports"] = local_res["open_ports"]
+                            if local_res.get("operating_system"):
+                                host_result["operating_system"] = local_res["operating_system"]
+                            if local_res.get("hostname") and not host_result.get("hostname"):
+                                host_result["hostname"] = local_res["hostname"]
+                            if local_res.get("mac_address") and not host_result.get("mac_address"):
+                                host_result["mac_address"] = local_res["mac_address"]
+                            if local_res.get("vendor") and not host_result.get("vendor"):
+                                host_result["vendor"] = local_res["vendor"]
+                    except Exception as scan_err:
+                        logger.warning(
+                            "[HOST SCAN WARNING] Host %s detailed port scan encountered an error: %s. "
+                            "Retaining discovered host in active asset inventory with 0 open ports.",
+                            host_ip,
+                            scan_err,
+                        )
+                    finally:
+                        with self._lock:
+                            self._active_processes.pop(job_id, None)
+
+                if check_cancelled():
+                    self._handle_cancellation(job, db, job_id)
+                    return
+
+                # Stage 3: OS & Device Identification
+                os_info = identify_os_and_device(host_result)
+                host_result["operating_system"] = os_info.get("operating_system") or host_result.get("operating_system")
+                host_result["os_confidence"] = os_info.get("os_confidence")
+                host_result["os_fingerprint_reason"] = os_info.get("os_fingerprint_reason")
+                if os_info.get("device_type"):
+                    host_result["device_type"] = os_info.get("device_type")
+
+                # Stage 4: Vulnerability & Risk Calculation
+                open_ports = host_result.get("open_ports") or []
+                host_vulns = identify_vulnerabilities(open_ports)
+                host_result["vulnerabilities"] = host_vulns
+
+                # Retrieve existing asset context if in DB (for criticality/exposure weighting)
+                existing_asset, _, _ = find_existing_asset(db, host_result)
+                asset_ctx = {
+                    "criticality": existing_asset.criticality if existing_asset else None,
+                    "exposure": existing_asset.exposure if existing_asset else None,
+                }
+                risk_res = calculate_risk(open_ports=open_ports, vulnerabilities=host_vulns, asset_context=asset_ctx)
+                host_result["risk_result"] = risk_res
+                host_result["assessment_status"] = risk_res.get("assessment_status", "Completed — no findings detected" if not host_vulns else "Findings detected")
+                host_result["scan_coverage"] = f"{len(open_ports)} open port(s) evaluated"
+
+                scan_results.append(host_result)
 
                 # Update incremental progress
                 if total_hosts > 0:
@@ -273,7 +503,7 @@ class ScanWorkerPool:
             )
 
             # Persist Assets, Vulnerabilities, Risks into PostgreSQL
-            existing_db_ips = {normalize_ip(a.ip_address) for a in db.query(models.Asset).all()}
+            existing_db_ips = {normalize_ip(a.ip_address) for a in db.query(models.Asset).filter(models.Asset.status != "deactivated").all()}
             asset_id_map: Dict[str, int] = {}
             total_vulns = 0
 
@@ -281,44 +511,15 @@ class ScanWorkerPool:
                 raw_ip = host_data["ip_address"]
                 norm_ip = normalize_ip(raw_ip)
 
-                asset = db.query(models.Asset).filter(models.Asset.ip_address == norm_ip).first()
-
-                port_str = ", ".join(
-                    f"{p['port']}/{p['service']}" for p in host_data.get("open_ports", [])
-                )
-
                 risk_res = host_data.get("risk_result", {})
 
-                if asset:
-                    # Update existing asset
-                    asset.hostname = host_data.get("hostname") or asset.hostname
-                    asset.mac_address = host_data.get("mac_address") or asset.mac_address
-                    if host_data.get("operating_system"):
-                        asset.operating_system = host_data.get("operating_system")
-                    asset.open_ports = port_str
-                    asset.status = "Active"
-                    asset.risk_score = risk_res.get("risk_score", asset.risk_score)
-                    asset.risk_level = risk_res.get("risk_level", asset.risk_level)
-                    asset.last_seen = datetime.utcnow()
-                else:
-                    # Create NEW unclassified asset
-                    asset = models.Asset(
-                        ip_address=norm_ip,
-                        hostname=host_data.get("hostname"),
-                        mac_address=host_data.get("mac_address"),
-                        operating_system=host_data.get("operating_system"),
-                        open_ports=port_str,
-                        status="Active",
-                        risk_score=risk_res.get("risk_score", 0),
-                        risk_level=risk_res.get("risk_level", "Low"),
-                        criticality=None,  # Unclassified by default
-                        environment=None,
-                        exposure=None,
-                        owner=None,
-                        business_function=None,
-                    )
-                    db.add(asset)
-                    db.flush()
+                # Reconcile or create asset using stable identity hierarchy
+                asset, is_new, match_strat = upsert_discovered_asset(
+                    db=db,
+                    host_data=host_data,
+                    default_criticality=None,
+                    source=host_data.get("discovery_source", "network_scan"),
+                )
 
                 asset_id_map[norm_ip] = asset.id
 
@@ -344,6 +545,9 @@ class ScanWorkerPool:
                         existing_v.cvss_score = v.get("cvss_score") or existing_v.cvss_score
                         existing_v.cvss_version = v.get("cvss_version") or existing_v.cvss_version
                         existing_v.cve_confidence = v.get("cve_confidence") or existing_v.cve_confidence
+                        existing_v.remediation = v.get("remediation") or existing_v.remediation
+                        existing_v.verification_status = v.get("verification_status") or existing_v.verification_status
+                        existing_v.observed_ip_address = norm_ip
                         existing_v.status = "Open"
                         existing_v.updated_at = datetime.utcnow()
                     else:
@@ -360,6 +564,9 @@ class ScanWorkerPool:
                             cvss_score=v.get("cvss_score"),
                             cvss_version=v.get("cvss_version"),
                             cve_confidence=v.get("cve_confidence") or "Unknown",
+                            remediation=v.get("remediation"),
+                            verification_status=v.get("verification_status") or "Potential",
+                            observed_ip_address=norm_ip,
                             status="Open",
                         )
                         db.add(new_v)
@@ -408,6 +615,65 @@ class ScanWorkerPool:
                 # Deterministically recalculate GRC inherent & residual risk scores
                 recalculate_asset_grc_risks(asset)
 
+            # Handle offline assets and router DHCP unverified leases if scanning a subnet
+            scanned_ips = {host_data["ip_address"] for host_data in scan_results}
+
+            if is_subnet:
+                try:
+                    target_net = ipaddress.ip_network(target, strict=False)
+                    for db_asset in db.query(models.Asset).filter(models.Asset.status != "deactivated").all():
+                        try:
+                            a_ip = ipaddress.ip_address(db_asset.ip_address)
+                            if a_ip in target_net and db_asset.ip_address not in scanned_ips:
+                                if db_asset.status == "Active":
+                                    db_asset.status = "Offline"
+                                    db_asset.assessment_status = "Not assessed (Host offline)"
+                                    db_asset.scan_coverage = "Host unreachable in current scan"
+                                    logger.info("Marked asset %s as Offline (not reachable in current scan)", db_asset.ip_address)
+                        except Exception:
+                            pass
+
+                    enable_dhcp_leases = os.getenv("SYNC_ROUTER_DHCP_LEASES", "false").strip().lower() in ("true", "1")
+                    if enable_dhcp_leases:
+                        # Process authorized static router DHCP client registry
+                        for dhcp_ip, dhcp_info in AUTHORIZED_ROUTER_DHCP_CLIENTS.items():
+                            try:
+                                d_addr = ipaddress.ip_address(dhcp_ip)
+                                if d_addr in target_net and dhcp_ip not in scanned_ips:
+                                    dhcp_host_payload = {
+                                        "ip_address": dhcp_ip,
+                                        "hostname": dhcp_info.get("hostname"),
+                                        "device_type": dhcp_info.get("device_type"),
+                                        "discovery_source": "static_dhcp_registry",
+                                        "assessment_status": "Not assessed",
+                                        "scan_coverage": "Static DHCP registry entry; host not responsive to active probes",
+                                    }
+                                    existing_dhcp_asset, _, _ = find_existing_asset(db, dhcp_host_payload)
+                                    if not existing_dhcp_asset:
+                                        new_dhcp_asset = models.Asset(
+                                            ip_address=dhcp_ip,
+                                            hostname=dhcp_info.get("hostname"),
+                                            device_type=dhcp_info.get("device_type"),
+                                            discovery_source="static_dhcp_registry",
+                                            status="lease-only/unverified",
+                                            identity_status="provisional",
+                                            assessment_status="Not assessed",
+                                            risk_score=0,
+                                            risk_level="Low",
+                                            scan_coverage="Static DHCP registry entry; host not responsive to active probes",
+                                            criticality=None,
+                                            environment=None,
+                                            exposure=None,
+                                        )
+                                        db.add(new_dhcp_asset)
+                                        db.flush()
+                                        record_asset_address(db, new_dhcp_asset, dhcp_ip, None, source="static_dhcp_registry")
+                                        logger.info("Added lease-only/unverified asset from static DHCP registry for %s (%s)", dhcp_ip, dhcp_info.get("hostname"))
+                            except Exception:
+                                pass
+                except Exception as subnet_err:
+                    logger.warning("Error processing offline/DHCP assets for subnet %s: %s", target, subnet_err)
+
             db.flush()
 
             # Drift Detection
@@ -438,6 +704,7 @@ class ScanWorkerPool:
             job.discovered_assets_count = len(scan_results)
             job.discovered_vulns_count = total_vulns
             job.completed_at = datetime.utcnow()
+            job.error_message = None
             db.commit()
 
             logger.info(

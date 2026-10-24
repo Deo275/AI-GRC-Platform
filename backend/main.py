@@ -9,6 +9,7 @@ import ipaddress
 import logging
 import time
 import threading
+import requests
 from dotenv import load_dotenv
 
 logger = logging.getLogger("ai_grc.backend")
@@ -19,6 +20,8 @@ if os.path.isfile(_backend_env):
     load_dotenv(dotenv_path=_backend_env, override=_should_override)
 else:
     load_dotenv(override=False)
+
+from sqlalchemy import text
 
 try:
     from database import engine, Base, SessionLocal
@@ -55,11 +58,29 @@ try:
         ScanWorkerPool,
         MonitoringScheduler,
     )
+    from monitoring.scheduler import detect_private_lan
+    from monitoring.asset_identity import (
+        find_existing_asset,
+        upsert_discovered_asset,
+        record_asset_address,
+        reconcile_duplicate_assets,
+        normalize_ip,
+        run_schema_migrations,
+    )
 except ImportError:
     from backend.monitoring import (
         validate_target_network,
         ScanWorkerPool,
         MonitoringScheduler,
+    )
+    from backend.monitoring.scheduler import detect_private_lan
+    from backend.monitoring.asset_identity import (
+        find_existing_asset,
+        upsert_discovered_asset,
+        record_asset_address,
+        reconcile_duplicate_assets,
+        normalize_ip,
+        run_schema_migrations,
     )
 
 try:
@@ -103,6 +124,7 @@ try:
         hash_password,
         verify_password,
         create_access_token,
+        decode_access_token,
         get_jwt_secret_key,
         get_current_user,
         require_roles,
@@ -116,6 +138,7 @@ except ImportError:
         hash_password,
         verify_password,
         create_access_token,
+        decode_access_token,
         get_jwt_secret_key,
         get_current_user,
         require_roles,
@@ -251,17 +274,38 @@ def format_asset(asset: models.Asset) -> dict:
         "ip_address": asset.ip_address,
         "hostname": asset.hostname,
         "mac_address": asset.mac_address,
+        "device_id": getattr(asset, "device_id", None),
+        "identity_status": getattr(asset, "identity_status", "verified"),
+        "mac_vendor": getattr(asset, "mac_vendor", None),
         "operating_system": asset.operating_system,
         "open_ports": asset.open_ports,
         "status": asset.status,
         "risk_score": asset.risk_score,
         "risk_level": asset.risk_level,
         "last_seen": asset.last_seen,
-        "criticality": asset.criticality or "Medium",
-        "environment": asset.environment or "Production",
-        "exposure": asset.exposure or "Internal",
+        "criticality": asset.criticality,
+        "environment": asset.environment,
+        "exposure": asset.exposure,
         "owner": asset.owner,
         "business_function": asset.business_function,
+        "os_confidence": getattr(asset, "os_confidence", None),
+        "os_fingerprint_reason": getattr(asset, "os_fingerprint_reason", None),
+        "device_type": getattr(asset, "device_type", None),
+        "discovery_source": getattr(asset, "discovery_source", None),
+        "assessment_status": getattr(asset, "assessment_status", "Not assessed"),
+        "last_assessed_at": getattr(asset, "last_assessed_at", None),
+        "scan_coverage": getattr(asset, "scan_coverage", None),
+        "address_history": [
+            {
+                "id": h.id,
+                "ip_address": h.ip_address,
+                "mac_address": h.mac_address,
+                "source": h.source,
+                "detected_at": h.detected_at.isoformat() if h.detected_at else None,
+                "last_seen_at": h.last_seen_at.isoformat() if h.last_seen_at else None,
+            }
+            for h in (getattr(asset, "address_history", None) or [])
+        ],
     }
 
 
@@ -488,7 +532,10 @@ async def add_security_headers(request: Request, call_next):
 
     return response
 
-Base.metadata.create_all(bind=engine)
+try:
+    run_schema_migrations(engine)
+except Exception as exc:
+    logger.warning("Database schema initialization notice: %s", exc)
 
 # ---------------------------------------------------------------------------
 # Phase 5: Continuous Monitoring Single-Process Worker Pool & Scheduler
@@ -504,8 +551,13 @@ def on_startup():
     env_name = os.environ.get("ENV", os.environ.get("ENVIRONMENT", "")).strip().lower()
     if env_name in ("production", "prod"):
         get_jwt_secret_key()
+    try:
+        run_schema_migrations(engine)
+    except Exception as exc:
+        logger.warning("Database schema migration check notice: %s", exc)
     monitoring_scheduler.start()
     run_dev_bootstrap()
+
 
 
 
@@ -683,12 +735,78 @@ def get_auth_me(current_user: models.User = Depends(get_current_user)):
     }
 
 
+@app.post("/auth/logout", tags=["Authentication"])
+def logout_endpoint(request: Request):
+    """Gracefully terminates user session and emits an audit event if authenticated."""
+    auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth_header:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1]
+            try:
+                payload = decode_access_token(token)
+                username = payload.get("username")
+                if username:
+                    db = SessionLocal()
+                    try:
+                        user = db.query(models.User).filter(models.User.username == username).first()
+                        if user:
+                            log_audit_event(
+                                db=db,
+                                source="API",
+                                actor=user.username,
+                                action="USER_LOGOUT",
+                                entity_type="User",
+                                entity_id=user.id,
+                                entity_name=user.username,
+                                description=f"User '{user.username}' signed out successfully.",
+                                ip_address=request.client.host if request.client else None,
+                                commit=True,
+                            )
+                    except Exception as exc:
+                        logger.warning("Failed to record logout audit event: %s", exc)
+                    finally:
+                        db.close()
+            except Exception:
+                pass
+    return {"message": "Successfully logged out."}
+
+
+
+
+
+def _network_auto_detection_enabled() -> bool:
+    return os.getenv("NMAP_AUTO_DETECT_NETWORK", "true").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def get_configured_or_detected_network() -> str:
+    """Determine effective LAN network CIDR respecting NMAP_NETWORK_CIDR and auto-detection."""
+    env_cidr = os.getenv("NMAP_NETWORK_CIDR", "").strip()
+    if env_cidr:
+        try:
+            lan = ipaddress.ip_network(env_cidr, strict=False)
+            if isinstance(lan, ipaddress.IPv4Network) and lan.is_private and 24 <= lan.prefixlen <= 31:
+                return str(lan)
+        except ValueError:
+            pass
+
+    detected = detect_private_lan()
+    if detected:
+        return detected
+
+    return "192.168.1.0/24"
 
 
 def validate_and_check_scan_target(target_str: str) -> str:
-    """Validate target string against RFC 1918 private ranges, strictly rejecting loopback and link-local."""
+    """Validate target string against RFC 1918 private ranges, resolving auto sentinels."""
+    clean_target = (target_str or "").strip()
+    if clean_target.lower() in {"auto", "current_lan"}:
+        clean_target = get_configured_or_detected_network()
+
     try:
-        validated_target = validate_target_network(target_str, allow_loopback=False)
+        validated_target = validate_target_network(clean_target, allow_loopback=False)
         return validated_target
     except ValueError as err:
         err_msg = str(err)
@@ -710,7 +828,7 @@ def validate_and_check_scan_target(target_str: str) -> str:
 
 @app.post("/scan")
 def scan_network(
-    target: str = Query("192.168.127.1"),
+    target: str = Query("192.168.1.1"),
     current_user: models.User = Depends(require_analyst),
 ):
 
@@ -791,45 +909,23 @@ def scan_network(
     db = SessionLocal()
 
     try:
-
-        # Check whether this IP already exists
-        asset = db.query(models.Asset).filter(
-            models.Asset.ip_address == target
-        ).first()
-
-        if asset:
-
-            # Update existing asset
-            asset.hostname = result["hostname"]
-            asset.mac_address = result["mac_address"]
-            asset.operating_system = result["operating_system"]
-            asset.open_ports = port_data
-            asset.status = "Active"
-            asset.risk_score = risk_result["risk_score"]
-            asset.risk_level = risk_result["risk_level"]
-            asset.last_seen = models.datetime.utcnow()
-
-        else:
-
-            # Create new asset
-            asset = models.Asset(
-                ip_address=target,
-                hostname=result["hostname"],
-                mac_address=result["mac_address"],
-                operating_system=result["operating_system"],
-                open_ports=port_data,
-                status="Active",
-                risk_score=risk_result["risk_score"],
-                risk_level=risk_result["risk_level"],
-                criticality="Medium",
-                environment="Production",
-                exposure="Internal",
-                owner=None,
-                business_function=None
-            )
-
-            db.add(asset)
-            db.flush()
+        # Reconcile or create asset using stable identity hierarchy
+        host_scan_payload = {
+            "ip_address": target,
+            "hostname": result.get("hostname"),
+            "mac_address": result.get("mac_address"),
+            "operating_system": result.get("operating_system"),
+            "open_ports": result.get("open_ports", []),
+            "risk_result": risk_result,
+        }
+        asset, is_new, strat = upsert_discovered_asset(
+            db,
+            host_scan_payload,
+            default_criticality="Medium",
+            default_environment="Production",
+            default_exposure="Internal",
+            source="single_host_scan",
+        )
 
         # ------------------------------------------------
         # CREATE / UPDATE GRC RISK REGISTER ENTRIES
@@ -1040,6 +1136,7 @@ def scan_network(
                 existing_vulnerability.cve_candidate_count = (
                     vulnerability.get("cve_candidate_count", 0)
                 )
+                existing_vulnerability.observed_ip_address = target
                 existing_vulnerability.status = "Open"
                 existing_vulnerability.updated_at = models.datetime.utcnow()
 
@@ -1058,6 +1155,7 @@ def scan_network(
                     cvss_version=vulnerability.get("cvss_version"),
                     cve_confidence=vulnerability.get("cve_confidence"),
                     cve_candidate_count=vulnerability.get("cve_candidate_count", 0),
+                    observed_ip_address=target,
                     status="Open",
                     discovered_at=models.datetime.utcnow(),
                     updated_at=models.datetime.utcnow()
@@ -1140,9 +1238,11 @@ def scan_network(
 
 @app.post("/discover")
 def discover_network(
-    network: str = Query("192.168.127.0/24"),
+    network: Optional[str] = Query(None),
     current_user: models.User = Depends(require_analyst),
 ):
+    if not network or network.strip().lower() in {"auto", "current_lan"}:
+        network = get_configured_or_detected_network()
 
     if not isinstance(network, str) or "/" not in network:
         raise HTTPException(
@@ -1238,43 +1338,23 @@ def discover_network(
                 for item in result["open_ports"]
             )
 
-            # Check if asset already exists
-            asset = db.query(models.Asset).filter(
-                models.Asset.ip_address == host
-            ).first()
-
-            if asset:
-
-                # Update existing asset
-                asset.hostname = result["hostname"]
-                asset.mac_address = result["mac_address"]
-                asset.operating_system = result["operating_system"]
-                asset.open_ports = port_data
-                asset.status = "Active"
-                asset.risk_score = risk_result["risk_score"]
-                asset.risk_level = risk_result["risk_level"]
-                asset.last_seen = models.datetime.utcnow()
-
-            else:
-
-                # Create new asset
-                asset = models.Asset(
-                    ip_address=host,
-                    hostname=result["hostname"],
-                    mac_address=result["mac_address"],
-                    operating_system=result["operating_system"],
-                    open_ports=port_data,
-                    status="Active",
-                    risk_score=risk_result["risk_score"],
-                    risk_level=risk_result["risk_level"],
-                    criticality="Medium",
-                    environment="Production",
-                    exposure="Internal",
-                    owner=None,
-                    business_function=None
-                )
-
-                db.add(asset)
+            # Reconcile or create asset using stable identity hierarchy
+            host_disc_payload = {
+                "ip_address": host,
+                "hostname": result.get("hostname"),
+                "mac_address": result.get("mac_address"),
+                "operating_system": result.get("operating_system"),
+                "open_ports": result.get("open_ports", []),
+                "risk_result": risk_result,
+            }
+            asset, is_new, strat = upsert_discovered_asset(
+                db,
+                host_disc_payload,
+                default_criticality="Medium",
+                default_environment="Production",
+                default_exposure="Internal",
+                source="network_discovery",
+            )
 
             discovered_assets.append({
                 "ip_address": host,
@@ -1309,15 +1389,51 @@ def discover_network(
 # ASSET INVENTORY & ASSET INTELLIGENCE ENDPOINTS
 # ---------------------------------------------------------------------------
 
+class AssetReconcileRequest(BaseModel):
+    primary_asset_id: int
+    secondary_asset_id: int
+    reason: Optional[str] = "Manual asset identity reconciliation"
+
+
 @app.get("/assets")
-def get_assets(current_user: models.User = Depends(require_analyst)):
+def get_assets(
+    include_deactivated: bool = Query(False, description="Whether to include deactivated/reconciled asset records"),
+    current_user: models.User = Depends(require_analyst),
+):
     db = SessionLocal()
     try:
-        assets = db.query(models.Asset).order_by(models.Asset.id).all()
+        query = db.query(models.Asset)
+        if not include_deactivated:
+            query = query.filter(models.Asset.status != "deactivated")
+        assets = query.order_by(models.Asset.id).all()
         return {
             "count": len(assets),
             "assets": [format_asset(asset) for asset in assets]
         }
+    finally:
+        db.close()
+
+
+@app.post("/assets/reconcile")
+def reconcile_assets_endpoint(
+    payload: AssetReconcileRequest,
+    current_user: models.User = Depends(require_reviewer),
+):
+    db = SessionLocal()
+    try:
+        surviving_asset = reconcile_duplicate_assets(
+            db=db,
+            primary_asset_id=payload.primary_asset_id,
+            secondary_asset_id=payload.secondary_asset_id,
+            operator_name=current_user.username if current_user else "System",
+            reason=payload.reason or "Manual asset identity reconciliation",
+        )
+        return {
+            "message": f"Successfully reconciled asset #{payload.secondary_asset_id} into primary asset #{payload.primary_asset_id}",
+            "primary_asset": format_asset(surviving_asset),
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     finally:
         db.close()
 
@@ -1902,6 +2018,8 @@ def get_vulnerabilities(current_user: models.User = Depends(require_analyst)):
                     "cve_confidence": vulnerability.cve_confidence,
                     "cve_candidate_count": vulnerability.cve_candidate_count,
                     "status": vulnerability.status,
+                    "remediation": getattr(vulnerability, "remediation", None),
+                    "verification_status": getattr(vulnerability, "verification_status", "Potential"),
                     "discovered_at": vulnerability.discovered_at,
                     "updated_at": vulnerability.updated_at
                 }
@@ -2359,6 +2477,60 @@ def get_risk_ai_analysis(
 # ---------------------------------------------------------------------------
 # Phase 5: Continuous Network Monitoring & Drift Detection Endpoints
 # ---------------------------------------------------------------------------
+
+@app.get("/monitoring/network", tags=["Continuous Monitoring"])
+def get_monitoring_network(current_user: models.User = Depends(require_analyst)):
+    """Report the platform's current LAN, auto-detection setting, and Pi agent reachability."""
+    configured_net = get_configured_or_detected_network()
+    agent_url = os.getenv("NMAP_AGENT_URL", "").strip()
+    agent_token = os.getenv("NMAP_AGENT_TOKEN", "").strip()
+
+    agent_healthy = False
+    agent_service = None
+    nmap_available = False
+    fallback_reason = None
+
+    if not agent_token:
+        fallback_reason = "NMAP_AGENT_TOKEN is not configured"
+    else:
+        try:
+            check_url = agent_url or "http://192.168.1.149:9000"
+            resp = requests.get(f"{check_url.rstrip('/')}/healthz", timeout=(1, 2))
+            if resp.ok:
+                data = resp.json()
+                agent_healthy = data.get("status") == "ok"
+                agent_service = data.get("service")
+                nmap_available = data.get("nmap_available") is True
+                if not agent_healthy:
+                    fallback_reason = f"Agent returned unhealthy status: {data.get('status')}"
+                elif not nmap_available:
+                    fallback_reason = "Nmap binary is unavailable on the Raspberry Pi agent"
+            else:
+                fallback_reason = f"Agent health check returned HTTP {resp.status_code}"
+        except Exception as exc:
+            agent_healthy = False
+            fallback_reason = f"Cannot reach agent at {agent_url or 'default LAN address'}: {type(exc).__name__}"
+
+    discovery_executor = (
+        "Raspberry Pi Agent (Physical L2/L3)"
+        if (agent_token and agent_healthy and nmap_available)
+        else "Local Container (Multi-Probe Fallback)"
+    )
+
+    return {
+        "auto_detect_enabled": _network_auto_detection_enabled(),
+        "network": configured_net,
+        "configured_subnet": configured_net,
+        "agent_url_configured": bool(agent_url),
+        "agent_token_configured": bool(agent_token),
+        "agent_healthy": agent_healthy,
+        "nmap_available": nmap_available,
+        "agent_service": agent_service,
+        "discovery_executor": discovery_executor,
+        "fallback_reason": fallback_reason if discovery_executor != "Raspberry Pi Agent (Physical L2/L3)" else None,
+    }
+
+
 
 @app.post("/monitoring/jobs", status_code=202)
 def create_monitoring_job(

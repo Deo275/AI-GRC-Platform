@@ -1034,7 +1034,7 @@ function AuthenticatedDashboard() {
   } = useAuth();
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null);
-  const [target, setTarget] = useState("192.168.127.1");
+  const [target, setTarget] = useState("192.168.1.1");
 
   const [assets, setAssets] = useState([]);
   const [risks, setRisks] = useState([]);
@@ -1164,11 +1164,12 @@ function AuthenticatedDashboard() {
   const [monitoringJobStatusFilter, setMonitoringJobStatusFilter] = useState("All");
 
   // New Scan Job Trigger
-  const [newJobTarget, setNewJobTarget] = useState("192.168.127.0/24");
+  const [newJobTarget, setNewJobTarget] = useState("192.168.1.0/24");
   const [newJobType, setNewJobType] = useState("subnet_discovery");
   const [submittingJob, setSubmittingJob] = useState(false);
   const [jobActionError, setJobActionError] = useState(null);
   const [cancellingJobId, setCancellingJobId] = useState(null);
+  const [networkInfo, setNetworkInfo] = useState(null);
 
   // Schedule Modal / Form
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -1265,7 +1266,7 @@ function AuthenticatedDashboard() {
       const response = await authFetch(`${API_BASE}/assets`);
       if (response.ok) {
         const data = await response.json();
-        setAssets(data.assets || []);
+        setAssets((data.assets || []).filter((a) => a.status !== "deactivated"));
       }
     } catch (error) {
       console.error("Unable to fetch asset inventory:", error);
@@ -1415,6 +1416,22 @@ function AuthenticatedDashboard() {
       setMonitoringJobsLoading(false);
     }
     return [];
+  };
+
+  const fetchMonitoringNetwork = async () => {
+    try {
+      const response = await authFetch(`${API_BASE}/monitoring/network`);
+      if (response.ok) {
+        const data = await response.json();
+        setNetworkInfo(data);
+        if (data.network) {
+          setNewJobTarget((prev) => (prev === "192.168.127.0/24" || !prev ? data.network : prev));
+          setTarget((prev) => (prev === "192.168.127.1" || !prev ? data.network.replace(/\.0\/\d+$/, ".1") : prev));
+        }
+      }
+    } catch {
+      // Background network status query
+    }
   };
 
   const fetchMonitoringSchedules = async () => {
@@ -1811,6 +1828,7 @@ function AuthenticatedDashboard() {
       fetchComplianceRequirements(),
       fetchMonitoringJobs(),
       fetchMonitoringSchedules(),
+      fetchMonitoringNetwork(),
       fetchDriftEvents(driftOffset, driftSeverityFilter, driftTypeFilter),
     ]);
   };
@@ -3020,6 +3038,20 @@ function AuthenticatedDashboard() {
                     </span>
                   </div>
 
+                  <div className="discovery-executor-banner" style={{ margin: "0.5rem 0 0.75rem 0", fontSize: "0.82rem", padding: "0.4rem 0.75rem", borderRadius: "6px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <span style={{ color: networkInfo?.discovery_executor?.includes("Raspberry Pi") || networkInfo?.agent_healthy ? "#10b981" : "#f59e0b", fontSize: "1rem" }}>●</span>
+                      <span>
+                        <strong>Discovery Executor:</strong> {networkInfo?.discovery_executor || (networkInfo?.agent_healthy ? "Raspberry Pi Agent (Physical L2/L3)" : "Local Container (Multi-Probe Fallback)")} on {networkInfo?.configured_subnet || networkInfo?.network || "192.168.1.0/24"}
+                      </span>
+                    </div>
+                    {networkInfo?.fallback_reason && (
+                      <div style={{ fontSize: "0.75rem", color: "#f59e0b", marginLeft: "1.25rem" }}>
+                        ⚠ Fallback notice: {networkInfo.fallback_reason}
+                      </div>
+                    )}
+                  </div>
+
                   <form onSubmit={submitNewJob} className="launcher-form">
                     <div className="launcher-field">
                       <label>Target Scope (RFC 1918 Private, Max /24)</label>
@@ -3790,16 +3822,36 @@ function AuthenticatedDashboard() {
                           <tr key={asset.id}>
                             <td>
                               <div className="ip-cell">
-                                <span className={`status-indicator-dot ${asset.status === "Active" || !asset.status ? "dot-green" : "dot-gray"}`} />
+                                <span className={`status-indicator-dot ${asset.status === "Active" || !asset.status ? "dot-green" : asset.status === "lease-only/unverified" ? "dot-amber" : "dot-gray"}`} />
                                 <div>
                                   <strong className="ip-text">{asset.ip_address}</strong>
-                                  <div className="sub-text">ID #{asset.id}</div>
+                                  <div className="sub-text">
+                                    {asset.status === "lease-only/unverified" ? "Lease Only (Unverified)" : asset.status === "Offline" ? "Offline" : `ID #${asset.id}`}
+                                  </div>
                                 </div>
                               </div>
                             </td>
                             <td>
-                              <div>{asset.hostname || <span className="text-muted">Not Available</span>}</div>
-                              <div className="sub-text">{asset.operating_system || "OS not identified"}</div>
+                              <div>
+                                <strong>{asset.hostname || <span className="text-muted">Not Available</span>}</strong>
+                                {asset.device_type && <span className="device-type-pill">{asset.device_type}</span>}
+                              </div>
+                              <div className="sub-text">
+                                {asset.operating_system ? (
+                                  <span>
+                                    {asset.operating_system}{" "}
+                                    {asset.os_confidence && (
+                                      <span className={`os-conf-badge conf-${asset.os_confidence.toLowerCase()}`} title={asset.os_fingerprint_reason || ""}>
+                                        {asset.os_confidence}
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted" title={asset.os_fingerprint_reason || "OS fingerprint detection inconclusive"}>
+                                    Unknown — detection inconclusive
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td>
                               <span className="badge badge-neutral">
@@ -3852,9 +3904,19 @@ function AuthenticatedDashboard() {
                             <td>
                               <div className="posture-tags-wrap">
                                 <div className="posture-row">
-                                  {assetVulns.length === 0 ? (
-                                    <span className="posture-chip posture-clean">0 Vulns</span>
-                                  ) : (
+                                  {asset.assessment_status === "Not assessed" || asset.assessment_status === "Not assessed (Host offline)" || asset.status === "Offline" ? (
+                                    <span className="posture-chip posture-neutral" title="Host is currently offline or has not undergone detailed vulnerability assessment">
+                                      {asset.status === "Offline" ? "Host offline" : "Not assessed"}
+                                    </span>
+                                  ) : asset.assessment_status === "Completed — no findings detected" ? (
+                                    <span className="posture-chip posture-info" title="Port & service scan complete. No known vulnerability signatures detected on tested ports. (Does not prove host is immune/safe)">
+                                      0 Findings detected
+                                    </span>
+                                  ) : asset.assessment_status === "Completed — hardening advisories only" ? (
+                                    <span className="posture-chip posture-warn" title="Port & service scan complete. Hardening advisories detected; no confirmed CVE vulnerabilities.">
+                                      Advisories only
+                                    </span>
+                                  ) : asset.assessment_status === "Findings detected" || assetVulns.length > 0 ? (
                                     <span
                                       className={`posture-chip ${critHighVulns > 0 ? "posture-danger" : "posture-warn"}`}
                                       title={`${assetVulns.length} vulnerabilities (${critHighVulns} Critical/High)`}
@@ -3862,9 +3924,19 @@ function AuthenticatedDashboard() {
                                       {assetVulns.length} Vuln{assetVulns.length === 1 ? "" : "s"}
                                       {critHighVulns > 0 ? ` (${critHighVulns} C/H)` : ""}
                                     </span>
+                                  ) : asset.assessment_status === "Assessment failed/partial" ? (
+                                    <span className="posture-chip posture-warn" title="Assessment encountered timeouts or partial probe failures">
+                                      Partial / Incomplete
+                                    </span>
+                                  ) : (
+                                    <span className="posture-chip posture-neutral">
+                                      {asset.assessment_status || "Not assessed"}
+                                    </span>
                                   )}
                                   {openRisks.length === 0 ? (
-                                    <span className="posture-chip posture-clean">0 Risks</span>
+                                    asset.assessment_status === "Not assessed" ? null : (
+                                      <span className="posture-chip posture-info">0 Risks</span>
+                                    )
                                   ) : (
                                     <span className="posture-chip posture-risk" title={`${openRisks.length} open risks`}>
                                       {openRisks.length} Risk{openRisks.length === 1 ? "" : "s"}
@@ -7970,23 +8042,113 @@ function AuthenticatedDashboard() {
                   <div className="asset-detail-card-title">🖥️ Identity & Network</div>
                   <div className="kv-row">
                     <span className="kv-label">IP Address</span>
-                    <span className="kv-val font-mono">{viewingAsset.ip_address}</span>
+                    <span className="kv-val font-mono">
+                      {viewingAsset.ip_address}
+                      <span className="badge badge-success text-xs" style={{ marginLeft: "8px", fontSize: "0.7rem", padding: "2px 6px" }}>Current</span>
+                    </span>
                   </div>
+                  {viewingAsset.address_history && viewingAsset.address_history.filter((h) => h.ip_address !== viewingAsset.ip_address).length > 0 && (
+                    <div className="kv-row">
+                      <span className="kv-label">Previous IPs</span>
+                      <span className="kv-val">
+                        {viewingAsset.address_history
+                          .filter((h) => h.ip_address !== viewingAsset.ip_address)
+                          .map((h, idx) => (
+                            <span
+                              key={idx}
+                              className="ip-pill font-mono"
+                              style={{ marginRight: "4px", fontSize: "0.75rem", padding: "2px 6px" }}
+                              title={`Recorded at ${h.detected_at || h.last_seen_at}`}
+                            >
+                              {h.ip_address}
+                            </span>
+                          ))}
+                      </span>
+                    </div>
+                  )}
+                  {viewingAsset.device_id && (
+                    <div className="kv-row">
+                      <span className="kv-label">Device Identifier</span>
+                      <span className="kv-val font-mono">{viewingAsset.device_id}</span>
+                    </div>
+                  )}
+                  {viewingAsset.identity_status && viewingAsset.identity_status !== "verified" && (
+                    <div className="kv-row">
+                      <span className="kv-label">Identity Confidence</span>
+                      <span className="kv-val">
+                        <span className="badge badge-warning" title="Asset identity awaiting confirmation or reconciliation">
+                          {viewingAsset.identity_status === "provisional" ? "Provisional (Awaiting Verification)" : viewingAsset.identity_status}
+                        </span>
+                      </span>
+                    </div>
+                  )}
                   <div className="kv-row">
                     <span className="kv-label">Hostname</span>
                     <span className="kv-val">{viewingAsset.hostname || <span className="text-muted">Not Available</span>}</span>
                   </div>
                   <div className="kv-row">
+                    <span className="kv-label">Device Type</span>
+                    <span className="kv-val">{viewingAsset.device_type || "Generic Network Host"}</span>
+                  </div>
+                  <div className="kv-row">
                     <span className="kv-label">MAC Address</span>
-                    <span className="kv-val font-mono">{viewingAsset.mac_address || <span className="text-muted">Not Available</span>}</span>
+                    <span className="kv-val font-mono">
+                      {viewingAsset.mac_address || <span className="text-muted">Not Available</span>}
+                      {viewingAsset.mac_vendor && <span className="text-muted text-xs" style={{ marginLeft: "6px" }}>({viewingAsset.mac_vendor})</span>}
+                    </span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Discovery Source</span>
+                    <span className="kv-val">
+                      {viewingAsset.discovery_source === "pi_agent_l2"
+                        ? "Raspberry Pi Agent (L2 ARP Physical LAN)"
+                        : viewingAsset.discovery_source === "router_dhcp_lease"
+                        ? "Router DHCP Client Lease"
+                        : viewingAsset.discovery_source || "Network Scan"}
+                    </span>
                   </div>
                   <div className="kv-row">
                     <span className="kv-label">Operating System</span>
-                    <span className="kv-val">{viewingAsset.operating_system || <span className="text-muted">OS not identified</span>}</span>
+                    <span className="kv-val">
+                      {viewingAsset.operating_system ? (
+                        <span>
+                          <strong>{viewingAsset.operating_system}</strong>
+                          {viewingAsset.os_confidence && (
+                            <span className={`os-conf-badge conf-${viewingAsset.os_confidence.toLowerCase()}`} style={{ marginLeft: "8px" }}>
+                              {viewingAsset.os_confidence} Confidence
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-muted">Unknown — detection inconclusive</span>
+                      )}
+                    </span>
                   </div>
+                  {viewingAsset.os_fingerprint_reason && (
+                    <div className="kv-row">
+                      <span className="kv-label">Fingerprint Reason</span>
+                      <span className="kv-val text-muted text-sm">{viewingAsset.os_fingerprint_reason}</span>
+                    </div>
+                  )}
                   <div className="kv-row">
                     <span className="kv-label">Status</span>
                     <span className="kv-val">{viewingAsset.status || "Active"}</span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Assessment Status</span>
+                    <span className="kv-val">
+                      <span className="badge badge-neutral">{viewingAsset.assessment_status || "Not assessed"}</span>
+                    </span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Scan Coverage</span>
+                    <span className="kv-val">{viewingAsset.scan_coverage || "Basic Discovery"}</span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Last Assessed</span>
+                    <span className="kv-val">
+                      {viewingAsset.last_assessed_at ? new Date(viewingAsset.last_assessed_at).toLocaleString() : "Not assessed"}
+                    </span>
                   </div>
                 </div>
 
@@ -8083,7 +8245,9 @@ function AuthenticatedDashboard() {
                             <th>Severity</th>
                             <th>CVE</th>
                             <th>CVSS</th>
+                            <th>Verification</th>
                             <th>Status</th>
+                            <th>Remediation Guidance</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -8094,7 +8258,13 @@ function AuthenticatedDashboard() {
                               <td><span className={`badge ${getRiskClass(v.severity)}`}>{v.severity}</span></td>
                               <td>{v.cve || <span className="text-muted">Not identified</span>}</td>
                               <td>{v.cvss_score != null ? `${v.cvss_score} (${v.cvss_version || "v3.1"})` : "—"}</td>
+                              <td>
+                                <span className={`badge ${v.verification_status === "Confirmed" ? "badge-danger" : "badge-neutral"}`}>
+                                  {v.verification_status || "Potential"}
+                                </span>
+                              </td>
                               <td><span className={`status-pill ${getStatusClass(v.status)}`}>{v.status}</span></td>
+                              <td style={{ fontSize: "11px", maxWidth: "250px" }}>{v.remediation || "Review service exposure and apply security controls."}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -10429,15 +10599,12 @@ function AuthenticatedDashboard() {
 
 function AppShell() {
   const { isAuthenticated, isLoading } = useAuth();
-  const isDocker = import.meta.env.VITE_IS_DOCKER === "true";
 
   if (isLoading) {
     return <AuthLoadingScreen />;
   }
 
-  // Docker mode enforces the LoginPage when unauthenticated.
-  // Non-Docker mode bypasses login directly to the AuthenticatedDashboard.
-  if (isDocker && !isAuthenticated) {
+  if (!isAuthenticated) {
     return <LoginPage />;
   }
 

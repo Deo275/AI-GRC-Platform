@@ -11,6 +11,16 @@ from .drift_detector import (
 )
 from .worker import ScanWorkerPool, MAX_SCAN_WORKERS, recalculate_asset_grc_risks
 from .scheduler import MonitoringScheduler
+from .remote_agent import NmapAgentClient, NmapAgentError
+from .asset_identity import (
+    find_existing_asset,
+    upsert_discovered_asset,
+    record_asset_address,
+    reconcile_duplicate_assets,
+    normalize_mac,
+    is_locally_administered_mac,
+    run_schema_migrations,
+)
 
 __all__ = [
     "validate_target_network",
@@ -25,4 +35,13 @@ __all__ = [
     "MAX_SCAN_WORKERS",
     "recalculate_asset_grc_risks",
     "MonitoringScheduler",
+    "NmapAgentClient",
+    "NmapAgentError",
+    "find_existing_asset",
+    "upsert_discovered_asset",
+    "record_asset_address",
+    "reconcile_duplicate_assets",
+    "normalize_mac",
+    "is_locally_administered_mac",
+    "run_schema_migrations",
 ]

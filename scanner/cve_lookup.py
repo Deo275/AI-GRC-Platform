@@ -1,4 +1,5 @@
 import requests
+from typing import Optional, Any
 from packaging.version import Version, InvalidVersion
 
 
@@ -207,52 +208,68 @@ def extract_version_ranges(configurations):
 
     return ranges
 
+import re
+from typing import Optional
+
+
+def parse_version(ver_str: Any) -> Optional[Version]:
+    """Parse software version string into a comparable Version object.
+
+    Handles portable suffixes (e.g. 10.0p2 -> 10.0), git commits, build tags.
+    """
+    if not ver_str:
+        return None
+    raw = str(ver_str).strip()
+    clean = re.sub(r'^[vV]', '', raw)
+    clean = re.sub(r'p\d+.*$', '', clean)
+    clean = re.sub(r'[-_].*$', '', clean)
+    try:
+        return Version(clean)
+    except Exception:
+        m = re.search(r'\d+(\.\d+)+', raw)
+        if m:
+            try:
+                return Version(m.group(0))
+            except Exception:
+                pass
+        return None
+
+
 def version_matches_range(
     installed_version,
     version_range
 ):
-
-    try:
-        version = Version(installed_version)
-
-    except InvalidVersion:
+    version = parse_version(installed_version)
+    if version is None:
         return False
 
-    start_including = version_range.get(
-        "start_including"
-    )
-
-    start_excluding = version_range.get(
-        "start_excluding"
-    )
-
-    end_including = version_range.get(
-        "end_including"
-    )
-
-    end_excluding = version_range.get(
-        "end_excluding"
-    )
+    start_including = version_range.get("start_including")
+    start_excluding = version_range.get("start_excluding")
+    end_including = version_range.get("end_including")
+    end_excluding = version_range.get("end_excluding")
 
     try:
-
         if start_including:
-            if version < Version(start_including):
+            v_start_inc = parse_version(start_including)
+            if v_start_inc and version < v_start_inc:
                 return False
 
         if start_excluding:
-            if version <= Version(start_excluding):
+            v_start_exc = parse_version(start_excluding)
+            if v_start_exc and version <= v_start_exc:
                 return False
 
         if end_including:
-            if version > Version(end_including):
+            v_end_inc = parse_version(end_including)
+            if v_end_inc and version > v_end_inc:
                 return False
 
         if end_excluding:
-            if version >= Version(end_excluding):
+            v_end_exc = parse_version(end_excluding)
+            if v_end_exc and version >= v_end_exc:
                 return False
 
-    except InvalidVersion:
+    except Exception:
         return False
 
     return True
@@ -370,11 +387,19 @@ def evaluate_cve_configuration(
         )
 
         if not has_range:
-
-            results.append(True)
-
+            criteria_parts = criteria.split(":") if criteria else []
+            if len(criteria_parts) > 5 and criteria_parts[5] not in ("*", "-"):
+                crit_ver = parse_version(criteria_parts[5])
+                inst_ver = parse_version(installed_version)
+                if crit_ver and inst_ver:
+                    results.append(crit_ver == inst_ver)
+                elif installed_version:
+                    results.append(installed_version.strip().lower() == criteria_parts[5].strip().lower())
+                else:
+                    results.append(None)
+            else:
+                results.append(True if installed_version is None else False)
         else:
-
             results.append(
                 version_matches_range(
                     installed_version,

@@ -6,6 +6,7 @@ Provides:
 """
 
 import os
+import time
 import re
 import ipaddress
 import subprocess
@@ -124,30 +125,64 @@ class MonitoringScannerPipeline:
         else:
             self.host_scan_timeout = int(host_scan_timeout_seconds)
 
+        self.max_retries = int(os.getenv("DISCOVERY_MAX_RETRIES", "2"))
+        self.last_discovery_metadata: Dict[str, Dict[str, Any]] = {}
+
     def discover_live_hosts(
         self,
         target: str,
         process_callback=None,
         cancellation_check=None,
     ) -> List[str]:
-        """Stage 1: Fast ping sweep with TCP SYN discovery probes to identify live hosts."""
+        """Stage 1: Multi-probe ping sweep to identify live hosts.
+
+        Combines:
+        - ARP ping (automatically used on local L2 subnet)
+        - ICMP Echo (-PE) & Timestamp (-PP)
+        - TCP SYN ping (-PS) to common services and IoT ports
+        - TCP ACK ping (-PA) to elicit RST responses from stateful firewalls
+        """
+        start_time = time.time()
         normalized_target = validate_target_network(target)
+
+        # Clear previous discovery metadata
+        self.last_discovery_metadata = {}
 
         # If target is a single IP, return it directly for port scanning
         if "/" not in normalized_target or normalized_target.endswith("/32"):
             single_ip = normalized_target.split("/")[0]
+            self.last_discovery_metadata[single_ip] = {
+                "ip_address": single_ip,
+                "hostname": None,
+                "mac_address": None,
+                "vendor": None,
+                "reason": "single_host_target",
+            }
             return [single_ip]
 
-        # TCP SYN discovery probes to common Windows/Linux/service ports for unprivileged scanning
+        syn_ports = os.getenv(
+            "DISCOVERY_TCP_SYN_PORTS",
+            "21,22,23,25,53,80,81,88,110,111,135,137,139,143,443,445,548,554,631,993,995,1025,1433,1723,1900,3000,3306,3389,5000,5001,5228,5357,5432,5900,7000,8000,8008,8080,8081,8443,8888,9000,9100",
+        )
+        ack_ports = os.getenv("DISCOVERY_TCP_ACK_PORTS", "80,443,135,445,3389,8080")
+
+        # Multi-probe command with fallback to unprivileged TCP connect scan if raw sockets not permitted
         command = [
             "nmap",
             "-sn",
-            "-PS22,80,135,443,445,3389,8000,8080",
+            "-PE",
+            "-PP",
+            f"-PS{syn_ports}",
+            f"-PA{ack_ports}",
             "--max-retries",
-            "1",
+            str(self.max_retries),
+            "-oX",
+            "-",
             normalized_target,
         ]
-        logger.info(f"Stage 1 Host Discovery command: {' '.join(command)}")
+        logger.info(
+            f"[HOST DISCOVERY START] Target: {normalized_target} | Method: Multi-Probe (ICMP+SYN+ACK) | Command: {' '.join(command)}"
+        )
 
         proc = subprocess.Popen(
             command,
@@ -164,23 +199,158 @@ class MonitoringScannerPipeline:
             stdout, stderr = proc.communicate(timeout=self.ping_timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.communicate()
+            try:
+                proc.communicate()
+            except Exception:
+                pass
+            logger.error(f"[HOST DISCOVERY TIMEOUT] Stage 1 sweep timed out after {self.ping_timeout}s for {normalized_target}")
             raise TimeoutError(f"Stage 1 ping sweep timed out after {self.ping_timeout}s for {normalized_target}")
 
         if cancellation_check and cancellation_check():
+            logger.info(f"[HOST DISCOVERY CANCELLED] Target: {normalized_target}")
             return []
 
-        if proc.returncode != 0:
-            err = stderr.strip() or stdout.strip() or f"Exit code {proc.returncode}"
-            raise RuntimeError(f"Nmap ping sweep failed: {err}")
+        # If multi-probe command failed (e.g. unprivileged user without raw socket access for -PE/-PA)
+        if proc.returncode != 0 and not (stdout and stdout.strip()):
+            err_msg = (stderr.strip() if stderr else "") or f"Exit code {proc.returncode}"
+            logger.warning(
+                f"[HOST DISCOVERY FALLBACK] Privileged discovery failed ({err_msg}). Retrying with unprivileged TCP connect probes."
+            )
+            fallback_command = [
+                "nmap",
+                "-sn",
+                f"-PS{syn_ports}",
+                "--max-retries",
+                str(self.max_retries),
+                "-oX",
+                "-",
+                normalized_target,
+            ]
+            fallback_proc = subprocess.Popen(
+                fallback_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False,
+            )
+            if process_callback:
+                process_callback(fallback_proc)
+            try:
+                fallback_stdout, fallback_stderr = fallback_proc.communicate(timeout=self.ping_timeout)
+            except subprocess.TimeoutExpired:
+                fallback_proc.kill()
+                try:
+                    fallback_proc.communicate()
+                except Exception:
+                    pass
+                raise TimeoutError(f"Stage 1 fallback ping sweep timed out after {self.ping_timeout}s for {normalized_target}")
+            if fallback_proc.returncode != 0 and not (fallback_stdout and fallback_stdout.strip()):
+                fallback_err = (fallback_stderr.strip() if fallback_stderr else "") or f"Exit code {fallback_proc.returncode}"
+                logger.error(f"[HOST DISCOVERY ERROR] Nmap ping sweep failed: {fallback_err}")
+                raise RuntimeError(f"Nmap ping sweep failed: {fallback_err}")
+            stdout = fallback_stdout
 
+        # Parse discovery results (supports both XML and plaintext fallback)
+        hosts, metadata_map = self._parse_discovery_output(stdout, normalized_target)
+        self.last_discovery_metadata = metadata_map
+
+        duration = time.time() - start_time
+        try:
+            target_net = ipaddress.ip_network(normalized_target, strict=False)
+            total_eval = max(0, target_net.num_addresses - 2) if target_net.num_addresses > 2 else target_net.num_addresses
+        except Exception:
+            total_eval = len(hosts)
+
+        unresponsive = max(0, total_eval - len(hosts))
+        logger.info(
+            f"[HOST DISCOVERY COMPLETE] Target: {normalized_target} | Duration: {duration:.2f}s | "
+            f"Evaluated Subnet Scope: {total_eval} | Active Hosts Discovered: {len(hosts)} | Unresponsive/Silent: {unresponsive}"
+        )
+        for h_ip in hosts:
+            meta = metadata_map.get(h_ip, {})
+            mac_str = f" | MAC: {meta['mac_address']} ({meta.get('vendor') or 'Unknown'})" if meta.get("mac_address") else ""
+            reason_str = f" | Detected via: {meta.get('reason')}" if meta.get("reason") else ""
+            hn_str = f" | Hostname: {meta.get('hostname')}" if meta.get("hostname") else ""
+            logger.info(f"  -> Discovered Host: {h_ip}{hn_str}{mac_str}{reason_str}")
+
+        return hosts
+
+    def _parse_discovery_output(
+        self,
+        output: str,
+        normalized_target: str,
+    ) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+        """Parse Nmap discovery output supporting XML (-oX) and plaintext fallback.
+
+        Filters out subnet network (.0) and broadcast (.255) addresses.
+        Extracts status reason, MAC address, and hostname when available.
+        """
         hosts: List[str] = []
+        metadata_map: Dict[str, Dict[str, Any]] = {}
+
         try:
             target_net = ipaddress.ip_network(normalized_target, strict=False) if "/" in normalized_target else None
         except Exception:
             target_net = None
 
-        for line in stdout.splitlines():
+        if not output or not output.strip():
+            return hosts, metadata_map
+
+        # Check if output is XML
+        is_xml = output.strip().startswith("<") or "<nmaprun" in output or "<host" in output
+
+        if is_xml:
+            try:
+                root = ET.fromstring(output)
+                for host_el in root.findall(".//host"):
+                    status_el = host_el.find("status")
+                    if status_el is not None and status_el.get("state") != "up":
+                        continue
+
+                    ip_addr = None
+                    mac_addr = None
+                    vendor = None
+                    for addr_el in host_el.findall("address"):
+                        addr_type = addr_el.get("addrtype")
+                        if addr_type == "ipv4":
+                            ip_addr = addr_el.get("addr")
+                        elif addr_type == "mac":
+                            mac_addr = addr_el.get("addr")
+                            vendor = addr_el.get("vendor")
+
+                    if not ip_addr:
+                        continue
+
+                    if target_net:
+                        try:
+                            ip_obj = ipaddress.ip_address(ip_addr)
+                            if ip_obj == target_net.network_address or ip_obj == target_net.broadcast_address:
+                                continue
+                        except ValueError:
+                            pass
+
+                    hostname = None
+                    hn_el = host_el.find(".//hostnames/hostname")
+                    if hn_el is not None:
+                        hostname = hn_el.get("name")
+
+                    reason = status_el.get("reason") if status_el is not None else None
+
+                    if ip_addr not in hosts:
+                        hosts.append(ip_addr)
+                    metadata_map[ip_addr] = {
+                        "ip_address": ip_addr,
+                        "hostname": hostname,
+                        "mac_address": mac_addr,
+                        "vendor": vendor,
+                        "reason": reason,
+                    }
+                return hosts, metadata_map
+            except ET.ParseError:
+                pass  # Fall through to plaintext parsing if XML was malformed or truncated
+
+        # Plaintext parsing fallback
+        for line in output.splitlines():
             match = re.search(
                 r"Nmap scan report for (?:[^\s(]+ \()?([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)?",
                 line,
@@ -196,9 +366,16 @@ class MonitoringScannerPipeline:
                         pass
                 if ip not in hosts:
                     hosts.append(ip)
+                if ip not in metadata_map:
+                    metadata_map[ip] = {
+                        "ip_address": ip,
+                        "hostname": None,
+                        "mac_address": None,
+                        "vendor": None,
+                        "reason": "plaintext_match",
+                    }
 
-        logger.info(f"Stage 1 discovered {len(hosts)} live host(s) on {normalized_target}")
-        return hosts
+        return hosts, metadata_map
 
     def scan_single_host(
         self,

@@ -10,6 +10,10 @@ CRITICAL DEPLOYMENT ARCHITECTURE CONSTRAINT:
 - Celery, Redis, RabbitMQ, or external brokers are intentionally not required.
 """
 
+import ipaddress
+import os
+import re
+import subprocess
 import time
 import logging
 import threading
@@ -31,6 +35,102 @@ except ImportError:
 from .worker import ScanWorkerPool
 
 logger = logging.getLogger("ai_grc.monitoring.scheduler")
+
+
+def detect_private_lan() -> Optional[str]:
+    """Return the active private LAN CIDR, with precedence for NMAP_NETWORK_CIDR."""
+    # 1. Direct environment variable override takes highest config precedence
+    env_cidr = os.getenv("NMAP_NETWORK_CIDR", "").strip()
+    if env_cidr:
+        try:
+            lan = ipaddress.ip_network(env_cidr, strict=False)
+            if isinstance(lan, ipaddress.IPv4Network) and lan.is_private and 24 <= lan.prefixlen <= 31:
+                return str(lan)
+        except ValueError:
+            logger.warning("NMAP_NETWORK_CIDR has invalid CIDR syntax: %r", env_cidr)
+
+    # 2. If NMAP_AUTO_DETECT_NETWORK is enabled
+    auto_detect = os.getenv("NMAP_AUTO_DETECT_NETWORK", "true").strip().lower() in {"1", "true", "yes", "on"}
+    if not auto_detect:
+        return None
+
+    try:
+        if os.name == "nt":
+            ps_command = (
+                "$r=Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' "
+                "| Where-Object { $n=Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue; "
+                "$n.Status -eq 'Up' -and $n.HardwareInterface } "
+                "| Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1; "
+                "if($r){$a=Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $r.InterfaceIndex "
+                "-AddressState Preferred | Where-Object { $_.IPAddress -notmatch '^(127\\.|169\\.254\\.)' "
+                "-and $_.PrefixLength -ge 24 -and $_.PrefixLength -le 31 } "
+                "| Select-Object -First 1; if($a){Write-Output \"$($a.IPAddress)/$($a.PrefixLength)\"}}"
+            )
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            interface_cidr = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+            if result.returncode != 0 or not interface_cidr:
+                logger.warning("Could not determine active LAN from Windows routes: %s", result.stderr.strip())
+                return None
+        else:
+            route = subprocess.run(
+                ["ip", "-4", "route", "get", "1.1.1.1"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            source_match = re.search(r"\bsrc\s+(\d+\.\d+\.\d+\.\d+)", route.stdout)
+            if route.returncode != 0 or not source_match:
+                logger.warning("Could not determine active LAN from IPv4 route: %s", route.stderr.strip())
+                return None
+            source_ip = source_match.group(1)
+            addresses = subprocess.run(
+                ["ip", "-o", "-4", "addr", "show"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            interface_cidr = ""
+            for line in addresses.stdout.splitlines():
+                match = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+/\d+)", line)
+                if match and match.group(1).split("/")[0] == source_ip:
+                    interface_cidr = match.group(1)
+                    break
+            if not interface_cidr:
+                return None
+
+        interface = ipaddress.ip_interface(interface_cidr)
+        lan = interface.network
+
+        # If detected network is inside Docker container virtual bridge (e.g. 172.17.0.0/16 or 172.18.0.0/16)
+        # do not substitute it for the user's physical LAN!
+        docker_bridges = ["172.17.0.0/16", "172.18.0.0/16", "172.19.0.0/16", "172.20.0.0/16"]
+        if any(lan.subnet_of(ipaddress.ip_network(b)) for b in docker_bridges):
+            logger.info("Detected IP network %s is a Docker container bridge; ignoring bridge substitution", lan)
+            return None
+
+        private_ranges = (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+        )
+        if (
+            isinstance(lan, ipaddress.IPv4Network)
+            and any(lan.subnet_of(p) for p in private_ranges)
+            and 24 <= lan.prefixlen <= 31
+        ):
+            return str(lan)
+        return None
+    except Exception as exc:
+        logger.warning("Automatic LAN detection failed: %s", exc)
+        return None
 
 
 class MonitoringScheduler:
@@ -99,6 +199,10 @@ class MonitoringScheduler:
         db = SessionLocal()
         try:
             now = datetime.utcnow()
+            auto_detect = os.getenv("NMAP_AUTO_DETECT_NETWORK", "true").strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            detected_lan = detect_private_lan() if auto_detect else None
 
             # Query all active schedules
             schedules = (
@@ -108,6 +212,17 @@ class MonitoringScheduler:
             )
 
             for schedule in schedules:
+                if detected_lan and schedule.target != detected_lan and schedule.target in {"auto", "current_lan"}:
+                    logger.info(
+                        "Network updated for schedule '%s': %s -> %s",
+                        schedule.name,
+                        schedule.target,
+                        detected_lan,
+                    )
+                    schedule.target = detected_lan
+                    schedule.updated_at = now
+                    db.commit()
+
                 # Check if schedule is due
                 if schedule.next_run_at and schedule.next_run_at > now:
                     continue

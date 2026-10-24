@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 import subprocess
 import re
@@ -206,15 +207,29 @@ def scan_host(target: str, enable_os_detection: bool = None):
     }
 
 def discover_hosts(network):
+    """Multi-probe host discovery across authorized network subnet."""
+    start_time = time.time()
+    syn_ports = os.getenv(
+        "DISCOVERY_TCP_SYN_PORTS",
+        "21,22,23,25,53,80,81,88,110,111,135,137,139,143,443,445,548,554,631,993,995,1025,1433,1723,1900,3000,3306,3389,5000,5001,5228,5357,5432,5900,7000,8000,8008,8080,8081,8443,8888,9000,9100",
+    )
+    ack_ports = os.getenv("DISCOVERY_TCP_ACK_PORTS", "80,443,135,445,3389,8080")
+    max_retries = os.getenv("DISCOVERY_MAX_RETRIES", "2")
 
     command = [
         "nmap",
         "-sn",
-        "-PS22,80,135,443,445,3389,8000,8080",
+        "-PE",
+        "-PP",
+        f"-PS{syn_ports}",
+        f"-PA{ack_ports}",
         "--max-retries",
-        "1",
+        str(max_retries),
+        "-oX",
+        "-",
         network
     ]
+    logger.info(f"[NMAP SCANNER DISCOVERY] Command: {' '.join(command)}")
 
     try:
         result = subprocess.run(
@@ -232,13 +247,41 @@ def discover_hosts(network):
             "Nmap executable not found on system PATH."
         )
 
-    if result.returncode != 0:
-        error_detail = result.stderr.strip() or "Unknown error"
-        raise RuntimeError(
-            f"Nmap host discovery failed (exit code {result.returncode}): {error_detail}"
-        )
-
     output = result.stdout
+
+    # Fallback to unprivileged TCP connect ping if raw socket access failed
+    if result.returncode != 0 and not output.strip():
+        logger.warning(
+            f"Privileged discovery failed ({result.stderr.strip()}). Retrying with unprivileged TCP connect probes."
+        )
+        fallback_cmd = [
+            "nmap",
+            "-sn",
+            f"-PS{syn_ports}",
+            "--max-retries",
+            str(max_retries),
+            "-oX",
+            "-",
+            network,
+        ]
+        try:
+            result = subprocess.run(
+                fallback_cmd,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            output = result.stdout
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"Nmap fallback host discovery timed out after 180 seconds on network {network}"
+            )
+
+        if result.returncode != 0 and not output.strip():
+            error_detail = result.stderr.strip() or "Unknown error"
+            raise RuntimeError(
+                f"Nmap host discovery failed (exit code {result.returncode}): {error_detail}"
+            )
 
     hosts = []
     try:
@@ -246,8 +289,35 @@ def discover_hosts(network):
     except Exception:
         target_net = None
 
-    for line in output.splitlines():
+    # Try parsing XML output first
+    if output.strip().startswith("<") or "<nmaprun" in output or "<host" in output:
+        try:
+            root = ET.fromstring(output)
+            for host_el in root.findall(".//host"):
+                status_el = host_el.find("status")
+                if status_el is not None and status_el.get("state") != "up":
+                    continue
 
+                for addr_el in host_el.findall("address"):
+                    if addr_el.get("addrtype") == "ipv4":
+                        ip_addr = addr_el.get("addr")
+                        if target_net:
+                            try:
+                                ip_obj = ipaddress.ip_address(ip_addr)
+                                if ip_obj == target_net.network_address or ip_obj == target_net.broadcast_address:
+                                    continue
+                            except ValueError:
+                                pass
+                        if ip_addr not in hosts:
+                            hosts.append(ip_addr)
+            duration = time.time() - start_time
+            logger.info(f"[NMAP SCANNER DISCOVERY COMPLETE] Network: {network} | Found {len(hosts)} hosts in {duration:.2f}s")
+            return hosts
+        except ET.ParseError:
+            pass
+
+    # Fallback to plaintext regex parsing
+    for line in output.splitlines():
         match = re.search(
             r"Nmap scan report for (?:[^\s(]+ \()?([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)?",
             line
@@ -266,6 +336,8 @@ def discover_hosts(network):
             if ip_address not in hosts:
                 hosts.append(ip_address)
 
+    duration = time.time() - start_time
+    logger.info(f"[NMAP SCANNER DISCOVERY COMPLETE] Network: {network} | Found {len(hosts)} hosts in {duration:.2f}s")
     return hosts
 # -----------------------------
 # Test scanner directly

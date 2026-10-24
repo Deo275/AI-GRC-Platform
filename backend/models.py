@@ -16,6 +16,7 @@ risk_controls = Table(
     Base.metadata,
     Column("risk_id", Integer, ForeignKey("risks.id", ondelete="CASCADE"), primary_key=True),
     Column("control_id", Integer, ForeignKey("controls.id", ondelete="CASCADE"), primary_key=True),
+    extend_existing=True,
 )
 
 
@@ -24,8 +25,11 @@ class Asset(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     hostname = Column(String, nullable=True)
-    ip_address = Column(String, unique=True, nullable=False)
-    mac_address = Column(String, nullable=True)
+    ip_address = Column(String, nullable=False, index=True)
+    mac_address = Column(String, nullable=True, index=True)
+    device_id = Column(String(128), nullable=True, index=True)
+    identity_status = Column(String(50), default="verified", nullable=False)
+    mac_vendor = Column(String(100), nullable=True)
     operating_system = Column(String, nullable=True)
     open_ports = Column(String(1000), nullable=True)
     status = Column(String, default="Active")
@@ -40,8 +44,32 @@ class Asset(Base):
     owner = Column(String, nullable=True)
     business_function = Column(String, nullable=True)
 
+    # Phase 5+: OS & Assessment Telemetry
+    os_confidence = Column(String(50), nullable=True, default=None)
+    os_fingerprint_reason = Column(String(255), nullable=True, default=None)
+    device_type = Column(String(100), nullable=True, default=None)
+    discovery_source = Column(String(100), nullable=True, default=None)
+    assessment_status = Column(String(50), default="Not assessed", nullable=False)
+    last_assessed_at = Column(DateTime, nullable=True, default=None)
+    scan_coverage = Column(String(255), nullable=True, default=None)
+
     risks = relationship("Risk", backref="asset", cascade="all, delete-orphan")
     vulnerabilities = relationship("Vulnerability", backref="asset", cascade="all, delete-orphan")
+    address_history = relationship("AssetAddressHistory", back_populates="asset", cascade="all, delete-orphan", order_by="desc(AssetAddressHistory.last_seen_at)")
+
+
+class AssetAddressHistory(Base):
+    __tablename__ = "asset_address_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    asset_id = Column(ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
+    ip_address = Column(String(50), nullable=False, index=True)
+    mac_address = Column(String(50), nullable=True)
+    source = Column(String(50), nullable=True, default="discovery")
+    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    asset = relationship("Asset", back_populates="address_history")
 
 
 class Risk(Base):
@@ -166,6 +194,23 @@ class Vulnerability(Base):
     status = Column(
         String,
         default="Open"
+    )
+
+    remediation = Column(
+        String(1000),
+        nullable=True,
+        default=None
+    )
+
+    verification_status = Column(
+        String(50),
+        default="Potential",
+        nullable=True
+    )
+
+    observed_ip_address = Column(
+        String(50),
+        nullable=True
     )
 
     discovered_at = Column(

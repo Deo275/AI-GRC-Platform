@@ -9,9 +9,8 @@ import {
   setCurrentUserGetter,
   apiLogin,
   apiDevLogin,
+  apiLogout,
   apiGetMe,
-  isDockerEnv,
-  DEV_ADMIN_USER,
 } from "../api/client";
 
 export const AuthProvider = ({ children }) => {
@@ -24,20 +23,6 @@ export const AuthProvider = ({ children }) => {
   // Wire up centralized callbacks for API client
   useEffect(() => {
     setUnauthorizedHandler((message) => {
-      if (!isDockerEnv()) {
-        apiDevLogin()
-          .then((devData) => {
-            setStoredToken(devData.access_token);
-            setToken(devData.access_token);
-            setUser(devData.user);
-          })
-          .catch(() => {
-            setToken("dev-bypass-token");
-            setUser(DEV_ADMIN_USER);
-          });
-        return;
-      }
-
       removeStoredToken();
       setToken(null);
       setUser(null);
@@ -59,34 +44,6 @@ export const AuthProvider = ({ children }) => {
     let isMounted = true;
 
     const verifySession = async () => {
-      const isDocker = isDockerEnv();
-
-      // Non-Docker mode: bypass login screen and automatically grant Administrator access
-      if (!isDocker) {
-        try {
-          const devData = await apiDevLogin();
-          if (isMounted) {
-            setStoredToken(devData.access_token);
-            setToken(devData.access_token);
-            setUser(devData.user);
-            setAuthError(null);
-            setIsLoading(false);
-          }
-          return;
-        } catch (err) {
-          console.warn("Dev auto-login endpoint unavailable, falling back to local dev admin session:", err);
-          if (isMounted) {
-            const fallbackToken = getStoredToken() || "dev-bypass-token";
-            setToken(fallbackToken);
-            setUser(DEV_ADMIN_USER);
-            setAuthError(null);
-            setIsLoading(false);
-          }
-          return;
-        }
-      }
-
-      // Docker mode: verify stored session
       const stored = getStoredToken();
       if (!stored) {
         if (isMounted) {
@@ -139,27 +96,35 @@ export const AuthProvider = ({ children }) => {
     return userProfile;
   }, []);
 
+  const devLogin = useCallback(async () => {
+    setAuthError(null);
+    const data = await apiDevLogin();
+    const accessToken = data.access_token;
+    const userProfile = data.user;
+
+    setStoredToken(accessToken);
+    setToken(accessToken);
+    setUser(userProfile);
+    return userProfile;
+  }, []);
+
   const logout = useCallback(async () => {
-    if (!isDockerEnv()) {
-      try {
-        const devData = await apiDevLogin();
-        setStoredToken(devData.access_token);
-        setToken(devData.access_token);
-        setUser(devData.user);
-      } catch {
-        setToken("dev-bypass-token");
-        setUser(DEV_ADMIN_USER);
-      }
+    try {
+      await apiLogout();
+    } catch (err) {
+      console.warn("Logout notification error:", err);
+    } finally {
+      removeStoredToken();
+      setToken(null);
+      setUser(null);
       setAuthError(null);
       setPermissionNotice(null);
-      return;
+      try {
+        window.history.replaceState(null, "", window.location.pathname);
+      } catch {
+        // Safe fallback if history API is restricted in the environment
+      }
     }
-
-    removeStoredToken();
-    setToken(null);
-    setUser(null);
-    setAuthError(null);
-    setPermissionNotice(null);
   }, []);
 
   const clearPermissionNotice = useCallback(() => {
@@ -192,6 +157,7 @@ export const AuthProvider = ({ children }) => {
       authError,
       permissionNotice,
       login,
+      devLogin,
       logout,
       clearPermissionNotice,
       clearAuthError,
@@ -206,6 +172,7 @@ export const AuthProvider = ({ children }) => {
       authError,
       permissionNotice,
       login,
+      devLogin,
       logout,
       clearPermissionNotice,
       clearAuthError,
@@ -217,4 +184,3 @@ export const AuthProvider = ({ children }) => {
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
-

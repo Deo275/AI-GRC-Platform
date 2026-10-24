@@ -15,7 +15,7 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_grc}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_grc}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -23,10 +23,10 @@ services:
     # Intentionally do not expose port 5432 to host to prevent host port conflicts
     # Internal communication occurs across default docker bridge network
 
-  # ---------------------------------------------------------------------------
-  # Backend API: FastAPI + Process-Local Scheduler + Nmap Scanner
-  # Single replica only: MonitoringScheduler runs in-process and cannot be duplicated.
-  # ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # Backend API: FastAPI + Process-Local Scheduler + Nmap Scanner
+    # Single replica only: MonitoringScheduler runs in-process and cannot be duplicated.
+    # ---------------------------------------------------------------------------
   backend:
     build:
       context: .
@@ -36,6 +36,10 @@ services:
       db:
         condition: service_healthy
     environment:
+      NMAP_AUTO_DETECT_NETWORK: "${NMAP_AUTO_DETECT_NETWORK:-true}"
+      NMAP_NETWORK_CIDR: "${NMAP_NETWORK_CIDR:-192.168.1.0/24}"
+      NMAP_AGENT_URL: "${NMAP_AGENT_URL:-}"
+      NMAP_AGENT_TOKEN: "${NMAP_AGENT_TOKEN:-}"
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_secure_pass}@db:5432/${POSTGRES_DB:-ai_grc}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       ENV: ${ENV:-production}
@@ -63,7 +67,7 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')" ]
       interval: 10s
       timeout: 5s
       retries: 3

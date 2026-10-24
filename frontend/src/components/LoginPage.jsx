@@ -3,11 +3,12 @@ import { useAuth } from "../context/useAuth";
 import "./LoginPage.css";
 
 export const LoginPage = () => {
-  const { login, authError, clearAuthError } = useAuth();
+  const { login, devLogin, authError, clearAuthError } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [localError, setLocalError] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDevSubmitting, setIsDevSubmitting] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -30,6 +31,24 @@ export const LoginPage = () => {
       }
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleDevLogin = async () => {
+    setLocalError(null);
+    clearAuthError();
+    setIsDevSubmitting(true);
+
+    try {
+      await devLogin();
+    } catch (err) {
+      if (err?.isNetworkError || err?.message?.includes("Unable to connect")) {
+        setLocalError("Unable to connect to the server for dev sign-in.");
+      } else {
+        setLocalError("Development login failed or is disabled in production.");
+      }
+    } finally {
+      setIsDevSubmitting(false);
     }
   };
 
@@ -69,7 +88,7 @@ export const LoginPage = () => {
                 if (localError) setLocalError(null);
               }}
               placeholder="operator@organization.local"
-              disabled={isSubmitting}
+              disabled={isSubmitting || isDevSubmitting}
               required
             />
           </div>
@@ -89,7 +108,7 @@ export const LoginPage = () => {
                 if (localError) setLocalError(null);
               }}
               placeholder="••••••••••••"
-              disabled={isSubmitting}
+              disabled={isSubmitting || isDevSubmitting}
               required
             />
           </div>
@@ -98,7 +117,7 @@ export const LoginPage = () => {
             id="login-submit-button"
             className="login-submit-btn"
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || isDevSubmitting}
           >
             {isSubmitting ? (
               <>
@@ -107,6 +126,24 @@ export const LoginPage = () => {
               </>
             ) : (
               <span>Sign In</span>
+            )}
+          </button>
+
+          <button
+            id="login-dev-button"
+            className="login-dev-btn"
+            type="button"
+            onClick={handleDevLogin}
+            disabled={isSubmitting || isDevSubmitting}
+            title="Fast sign in using development Administrator credentials"
+          >
+            {isDevSubmitting ? (
+              <>
+                <span className="login-spinner" />
+                <span>Signing in as Admin...</span>
+              </>
+            ) : (
+              <span>⚡ Quick Sign In (Administrator)</span>
             )}
           </button>
         </form>

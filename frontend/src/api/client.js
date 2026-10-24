@@ -222,3 +222,21 @@ export const apiGetMe = async (tokenOverride = null) => {
 
   return await response.json();
 };
+
+export const apiLogout = async () => {
+  const token = getStoredToken();
+  if (token) {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+    } catch (err) {
+      console.warn("Backend logout notification warning:", err);
+    }
+  }
+  removeStoredToken();
+};

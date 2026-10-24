@@ -12,9 +12,11 @@ WORKDIR /app
 
 # Install system dependencies
 # Nmap is required by the continuous network scanner
+# libcap2-bin provides setcap so unprivileged appuser can use raw socket capabilities
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         nmap \
+        libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -28,6 +30,9 @@ RUN useradd -m -u 1000 -s /bin/bash appuser
 COPY backend/ ./backend/
 COPY scanner/ ./scanner/
 COPY scripts/ ./scripts/
+
+# Grant Nmap raw socket capabilities for unprivileged execution
+RUN setcap cap_net_raw,cap_net_admin+eip /usr/bin/nmap
 
 # Set ownership to unprivileged user
 RUN chown -R appuser:appuser /app
