@@ -17,6 +17,7 @@ from typing import List, Dict, Any, Optional, Tuple
 try:
     from scanner.vulnerability_scanner import identify_vulnerabilities
     from scanner.risk_engine import calculate_risk
+    from scanner.os_identifier import identify_os_and_device
 except ImportError:
     import sys
     from pathlib import Path
@@ -25,6 +26,7 @@ except ImportError:
         sys.path.insert(0, str(base_dir))
     from scanner.vulnerability_scanner import identify_vulnerabilities
     from scanner.risk_engine import calculate_risk
+    from scanner.os_identifier import identify_os_and_device
 
 logger = logging.getLogger("ai_grc.monitoring.pipeline")
 
@@ -446,15 +448,31 @@ class MonitoringScannerPipeline:
 
         parsed_data = self._parse_nmap_xml(stdout, ip)
 
+        # OS and device identification
+        os_info = identify_os_and_device({
+            "ip_address": ip,
+            "hostname": parsed_data.get("hostname"),
+            "mac_address": parsed_data.get("mac_address"),
+            "operating_system": parsed_data.get("operating_system"),
+            "open_ports": parsed_data.get("open_ports", []),
+        })
+
         # Correlate vulnerabilities and GRC risks using existing engines
         vulnerabilities = identify_vulnerabilities(parsed_data["open_ports"])
-        risk_result = calculate_risk(parsed_data["open_ports"])
+        risk_result = calculate_risk(
+            open_ports=parsed_data["open_ports"],
+            vulnerabilities=vulnerabilities,
+        )
 
         return {
             "ip_address": ip,
             "hostname": parsed_data.get("hostname"),
             "mac_address": parsed_data.get("mac_address"),
-            "operating_system": parsed_data.get("operating_system"),
+            "operating_system": os_info.get("operating_system") or parsed_data.get("operating_system"),
+            "os_confidence": os_info.get("os_confidence"),
+            "os_fingerprint_reason": os_info.get("os_fingerprint_reason"),
+            "os_detection_source": os_info.get("detection_source"),
+            "device_type": os_info.get("device_type"),
             "open_ports": parsed_data.get("open_ports", []),
             "vulnerabilities": vulnerabilities,
             "risk_result": risk_result,

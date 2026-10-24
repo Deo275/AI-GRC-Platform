@@ -132,10 +132,12 @@ def scan_host(target: str, enable_os_detection: bool = None):
         ".//host/os/osmatch"
     )
 
+    os_accuracy = None
     if os_match is not None:
         operating_system = os_match.get(
             "name"
         )
+        os_accuracy = os_match.get("accuracy")
 
     # -----------------------------
     # Open Ports
@@ -203,6 +205,7 @@ def scan_host(target: str, enable_os_detection: bool = None):
         "hostname": hostname,
         "mac_address": mac_address,
         "operating_system": operating_system,
+        "os_accuracy": os_accuracy,
         "open_ports": ports
     }
 

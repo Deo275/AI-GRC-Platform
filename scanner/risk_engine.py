@@ -21,12 +21,14 @@ def calculate_risk(
     """
     # Check for unassessed or failed scan states
     if open_ports is None:
-        failed = bool(asset_context and asset_context.get("scan_failed"))
+        failed = bool(asset_context and (asset_context.get("scan_failed") or asset_context.get("failure_reason")))
+        partial = bool(asset_context and (asset_context.get("scan_partial") or asset_context.get("partial")))
+        status = "Assessment failed/partial" if failed else ("Assessment incomplete" if partial else "Not assessed")
         return {
             "risk_score": 0,
             "risk_level": "Unknown",
             "findings": [],
-            "assessment_status": "Assessment failed/partial" if failed else "Not assessed",
+            "assessment_status": status,
             "risk_factors": ["Asset has not completed port and vulnerability assessment"],
         }
 
@@ -217,14 +219,30 @@ def calculate_risk(
     else:
         risk_level = "Low"
 
-    # 5. Truthful Assessment Status
-    if has_cve:
+    # 5. Truthful Assessment Status & Limitations
+    if asset_context and asset_context.get("scan_failed"):
+        assessment_status = "Assessment failed"
+        risk_factors.append(
+            f"Assessment failed: {asset_context.get('scan_failure_reason') or 'Port scan encountered timeouts or network errors'}"
+        )
+    elif asset_context and asset_context.get("scan_partial"):
+        assessment_status = "Assessment failed/partial"
+        risk_factors.append("Assessment partial: Some target ports or service probes timed out")
+    elif has_cve:
         assessment_status = "Findings detected"
     elif has_advisory or len(findings) > 0:
         assessment_status = "Completed — hardening advisories only"
+    elif len(open_ports or []) == 0:
+        assessment_status = "Completed — no findings detected"
+        risk_factors.append(
+            "Limitation Note: No open listening ports detected on host (host firewall or device isolation may restrict inbound service exposure; does not prove host is free of vulnerabilities)"
+        )
     else:
         # Port scan finished and no vulnerabilities/risky ports detected
         assessment_status = "Completed — no findings detected"
+        risk_factors.append(
+            "Limitation Note: No known vulnerability signatures detected on tested services (does not prove host is immune or free of unpatched flaws)"
+        )
 
     return {
         "risk_score": score,

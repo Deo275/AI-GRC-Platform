@@ -47,6 +47,7 @@ class Asset(Base):
     # Phase 5+: OS & Assessment Telemetry
     os_confidence = Column(String(50), nullable=True, default=None)
     os_fingerprint_reason = Column(String(255), nullable=True, default=None)
+    os_detection_source = Column(String(100), nullable=True, default=None)
     device_type = Column(String(100), nullable=True, default=None)
     discovery_source = Column(String(100), nullable=True, default=None)
     assessment_status = Column(String(50), default="Not assessed", nullable=False)

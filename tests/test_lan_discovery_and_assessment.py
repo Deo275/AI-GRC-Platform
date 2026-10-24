@@ -70,8 +70,9 @@ class TestOSIdentifier(unittest.TestCase):
             "open_ports": [],
         }
         res = identify_os_and_device(host_data)
-        self.assertIsNone(res["operating_system"])
+        self.assertEqual(res["operating_system"], "Unknown")
         self.assertEqual(res["os_confidence"], "Inconclusive")
+        self.assertEqual(res["detection_source"], "inconclusive_probes")
         self.assertIn("No open TCP/UDP ports", res["os_fingerprint_reason"])
 
     def test_mobile_hostname_heuristic(self):

@@ -39,6 +39,7 @@ sys.path.append(
 from scanner.nmap_scanner import scan_host, discover_hosts
 from scanner.risk_engine import calculate_risk
 from scanner.vulnerability_scanner import identify_vulnerabilities
+from scanner.os_identifier import identify_os_and_device
 from scanner.openvas_scanner import get_openvas_status, execute_openvas_scan
 from scanner.grc_engine import (
     criticality_to_impact,
@@ -57,6 +58,7 @@ try:
         validate_target_network,
         ScanWorkerPool,
         MonitoringScheduler,
+        recalculate_asset_grc_risks,
     )
     from monitoring.scheduler import detect_private_lan
     from monitoring.asset_identity import (
@@ -72,6 +74,7 @@ except ImportError:
         validate_target_network,
         ScanWorkerPool,
         MonitoringScheduler,
+        recalculate_asset_grc_risks,
     )
     from backend.monitoring.scheduler import detect_private_lan
     from backend.monitoring.asset_identity import (
@@ -277,7 +280,7 @@ def format_asset(asset: models.Asset) -> dict:
         "device_id": getattr(asset, "device_id", None),
         "identity_status": getattr(asset, "identity_status", "verified"),
         "mac_vendor": getattr(asset, "mac_vendor", None),
-        "operating_system": asset.operating_system,
+        "operating_system": asset.operating_system or "Unknown",
         "open_ports": asset.open_ports,
         "status": asset.status,
         "risk_score": asset.risk_score,
@@ -288,9 +291,11 @@ def format_asset(asset: models.Asset) -> dict:
         "exposure": asset.exposure,
         "owner": asset.owner,
         "business_function": asset.business_function,
-        "os_confidence": getattr(asset, "os_confidence", None),
+        "os_confidence": getattr(asset, "os_confidence", None) or "Inconclusive",
         "os_fingerprint_reason": getattr(asset, "os_fingerprint_reason", None),
-        "device_type": getattr(asset, "device_type", None),
+        "os_detection_source": getattr(asset, "os_detection_source", None) or getattr(asset, "discovery_source", None),
+        "detection_source": getattr(asset, "os_detection_source", None) or getattr(asset, "discovery_source", None),
+        "device_type": getattr(asset, "device_type", None) or "Unknown",
         "discovery_source": getattr(asset, "discovery_source", None),
         "assessment_status": getattr(asset, "assessment_status", "Not assessed"),
         "last_assessed_at": getattr(asset, "last_assessed_at", None),
@@ -890,13 +895,24 @@ def scan_network(
             },
         )
 
-    # Calculate security risk
-    risk_result = calculate_risk(
+    vulnerability_result = identify_vulnerabilities(
         result["open_ports"]
     )
 
-    vulnerability_result = identify_vulnerabilities(
-        result["open_ports"]
+    # OS and device identification
+    os_info = identify_os_and_device({
+        "ip_address": target,
+        "hostname": result.get("hostname"),
+        "mac_address": result.get("mac_address"),
+        "operating_system": result.get("operating_system"),
+        "open_ports": result.get("open_ports", []),
+    })
+
+    # Calculate security risk with vulnerability findings
+    risk_result = calculate_risk(
+        open_ports=result["open_ports"],
+        vulnerabilities=vulnerability_result,
+        asset_context={"criticality": "Medium", "exposure": "Internal"},
     )
 
     # Convert ports into a readable string
@@ -909,14 +925,29 @@ def scan_network(
     db = SessionLocal()
 
     try:
+        open_ports_list = result.get("open_ports", [])
+        if len(open_ports_list) == 0:
+            assessment_status = "Completed — no findings detected"
+            scan_cov = "0 open ports detected across scanned scope (host firewall or device isolation may restrict inbound service exposure)"
+        else:
+            assessment_status = risk_result.get("assessment_status", "Completed — no findings detected" if not vulnerability_result else "Findings detected")
+            scan_cov = f"{len(open_ports_list)} open port(s) evaluated"
+
         # Reconcile or create asset using stable identity hierarchy
         host_scan_payload = {
             "ip_address": target,
-            "hostname": result.get("hostname"),
+            "hostname": result.get("hostname") or os_info.get("hostname"),
             "mac_address": result.get("mac_address"),
-            "operating_system": result.get("operating_system"),
-            "open_ports": result.get("open_ports", []),
+            "operating_system": os_info.get("operating_system") or "Unknown",
+            "os_confidence": os_info.get("os_confidence"),
+            "os_fingerprint_reason": os_info.get("os_fingerprint_reason"),
+            "os_detection_source": os_info.get("detection_source"),
+            "device_type": os_info.get("device_type") or "Unknown",
+            "open_ports": open_ports_list,
+            "vulnerabilities": vulnerability_result,
             "risk_result": risk_result,
+            "assessment_status": assessment_status,
+            "scan_coverage": scan_cov,
         }
         asset, is_new, strat = upsert_discovered_asset(
             db,
@@ -1327,9 +1358,22 @@ def discover_network(
                 logger.warning(f"Scan failed for discovered host {host}: {err}")
                 continue
 
-            # Calculate risk
-            risk_result = calculate_risk(
+            vulnerability_result = identify_vulnerabilities(
                 result["open_ports"]
+            )
+
+            os_info = identify_os_and_device({
+                "ip_address": host,
+                "hostname": result.get("hostname"),
+                "mac_address": result.get("mac_address"),
+                "operating_system": result.get("operating_system"),
+                "open_ports": result.get("open_ports", []),
+            })
+
+            risk_result = calculate_risk(
+                open_ports=result["open_ports"],
+                vulnerabilities=vulnerability_result,
+                asset_context={"criticality": "Medium", "exposure": "Internal"},
             )
 
             # Convert ports into readable string
@@ -1338,14 +1382,29 @@ def discover_network(
                 for item in result["open_ports"]
             )
 
+            open_ports_list = result.get("open_ports", [])
+            if len(open_ports_list) == 0:
+                assessment_status = "Completed — no findings detected"
+                scan_cov = "0 open ports detected across scanned scope (host firewall or device isolation may restrict inbound service exposure)"
+            else:
+                assessment_status = risk_result.get("assessment_status", "Completed — no findings detected" if not vulnerability_result else "Findings detected")
+                scan_cov = f"{len(open_ports_list)} open port(s) evaluated"
+
             # Reconcile or create asset using stable identity hierarchy
             host_disc_payload = {
                 "ip_address": host,
-                "hostname": result.get("hostname"),
+                "hostname": result.get("hostname") or os_info.get("hostname"),
                 "mac_address": result.get("mac_address"),
-                "operating_system": result.get("operating_system"),
-                "open_ports": result.get("open_ports", []),
+                "operating_system": os_info.get("operating_system") or "Unknown",
+                "os_confidence": os_info.get("os_confidence"),
+                "os_fingerprint_reason": os_info.get("os_fingerprint_reason"),
+                "os_detection_source": os_info.get("detection_source"),
+                "device_type": os_info.get("device_type") or "Unknown",
+                "open_ports": open_ports_list,
+                "vulnerabilities": vulnerability_result,
                 "risk_result": risk_result,
+                "assessment_status": assessment_status,
+                "scan_coverage": scan_cov,
             }
             asset, is_new, strat = upsert_discovered_asset(
                 db,
@@ -1356,11 +1415,90 @@ def discover_network(
                 source="network_discovery",
             )
 
+            # Persist vulnerabilities for this asset
+            current_vuln_titles = set()
+            for v in vulnerability_result:
+                v_title = v.get("title")
+                if not v_title:
+                    continue
+                current_vuln_titles.add(v_title)
+                existing_v = (
+                    db.query(models.Vulnerability)
+                    .filter(models.Vulnerability.asset_id == asset.id)
+                    .filter(models.Vulnerability.title == v_title)
+                    .first()
+                )
+                if existing_v:
+                    existing_v.severity = v.get("severity") or existing_v.severity
+                    existing_v.cve = v.get("cve") or existing_v.cve
+                    existing_v.cvss_score = v.get("cvss_score") or existing_v.cvss_score
+                    existing_v.cvss_version = v.get("cvss_version") or existing_v.cvss_version
+                    existing_v.cve_confidence = v.get("cve_confidence") or existing_v.cve_confidence
+                    existing_v.remediation = v.get("remediation") or existing_v.remediation
+                    existing_v.verification_status = v.get("verification_status") or existing_v.verification_status
+                    existing_v.observed_ip_address = host
+                    existing_v.status = "Open"
+                    existing_v.updated_at = models.datetime.utcnow()
+                else:
+                    new_v = models.Vulnerability(
+                        asset_id=asset.id,
+                        port=int(v.get("port")) if v.get("port") else None,
+                        service=v.get("service"),
+                        product=v.get("product"),
+                        version=v.get("version"),
+                        title=v_title,
+                        severity=v.get("severity") or "Medium",
+                        description=v.get("description"),
+                        cve=v.get("cve"),
+                        cvss_score=v.get("cvss_score"),
+                        cvss_version=v.get("cvss_version"),
+                        cve_confidence=v.get("cve_confidence") or "Unknown",
+                        remediation=v.get("remediation"),
+                        verification_status=v.get("verification_status") or "Potential",
+                        observed_ip_address=host,
+                        status="Open",
+                    )
+                    db.add(new_v)
+
+            # Persist GRC Risks for this asset
+            current_findings = set(risk_result.get("findings", []))
+            for finding in current_findings:
+                existing_r = (
+                    db.query(models.Risk)
+                    .filter(models.Risk.asset_id == asset.id)
+                    .filter(models.Risk.title == finding)
+                    .first()
+                )
+                if not existing_r:
+                    comp_ctrl = "PR.AC-4" if any(w in finding for w in ("SMB", "NetBIOS", "RPC", "PostgreSQL", "VMware")) else "PR.IP-1"
+                    new_r = models.Risk(
+                        asset_id=asset.id,
+                        title=finding,
+                        description=finding,
+                        likelihood="Medium",
+                        impact="Medium",
+                        status="Open",
+                        compliance_framework="NIST CSF",
+                        compliance_control=comp_ctrl,
+                        recommendation="Review the exposed service and apply appropriate security controls.",
+                    )
+                    db.add(new_r)
+                else:
+                    existing_r.status = "Open"
+
+            recalculate_asset_grc_risks(asset)
+
             discovered_assets.append({
                 "ip_address": host,
-                "hostname": result["hostname"],
-                "mac_address": result["mac_address"],
-                "operating_system": result["operating_system"],
+                "hostname": asset.hostname,
+                "mac_address": asset.mac_address,
+                "operating_system": asset.operating_system,
+                "os_confidence": asset.os_confidence,
+                "os_fingerprint_reason": asset.os_fingerprint_reason,
+                "device_type": asset.device_type,
+                "detection_source": asset.os_detection_source or asset.discovery_source,
+                "assessment_status": asset.assessment_status,
+                "scan_coverage": asset.scan_coverage,
                 "open_ports": port_data,
                 "risk_score": risk_result["risk_score"],
                 "risk_level": risk_result["risk_level"],

@@ -112,6 +112,20 @@ const calculateJobDuration = (startedAt, completedAt) => {
   }
 };
 
+const formatDetectionSource = (src) => {
+  if (!src) return "Unknown";
+  switch (src) {
+    case "nmap_os_detection": return "Nmap Fingerprint";
+    case "service_banner": return "Service Banner";
+    case "service_banner_cpe": return "Banner CPE";
+    case "authorized_dhcp_metadata": return "DHCP Lease Meta";
+    case "hostname_heuristics": return "Hostname Profile";
+    case "mac_vendor": return "MAC Hardware";
+    case "inconclusive_probes": return "Inconclusive Probes";
+    default: return src.replace(/_/g, " ");
+  }
+};
+
 // ---------------------------------------------------------------------------
 // AIAnalysisPanel — Phase 4B: Pure display component for AI security intelligence
 // Receives pre-fetched analysis data; no API calls, no GRC state mutations.
@@ -3836,21 +3850,28 @@ function AuthenticatedDashboard() {
                                 <strong>{asset.hostname || <span className="text-muted">Not Available</span>}</strong>
                                 {asset.device_type && <span className="device-type-pill">{asset.device_type}</span>}
                               </div>
-                              <div className="sub-text">
-                                {asset.operating_system ? (
-                                  <span>
-                                    {asset.operating_system}{" "}
-                                    {asset.os_confidence && (
-                                      <span className={`os-conf-badge conf-${asset.os_confidence.toLowerCase()}`} title={asset.os_fingerprint_reason || ""}>
-                                        {asset.os_confidence}
-                                      </span>
-                                    )}
+                              <div className="sub-text os-cell-sub">
+                                <span>
+                                  <span className={!asset.operating_system || asset.operating_system === "Unknown" ? "text-muted" : "os-name-strong"}>
+                                    {asset.operating_system || "Unknown"}
                                   </span>
-                                ) : (
-                                  <span className="text-muted" title={asset.os_fingerprint_reason || "OS fingerprint detection inconclusive"}>
-                                    Unknown — detection inconclusive
-                                  </span>
-                                )}
+                                  {asset.os_confidence && (
+                                    <span
+                                      className={`os-conf-badge conf-${(asset.os_confidence || "").toLowerCase()}`}
+                                      title={asset.os_fingerprint_reason || `Confidence: ${asset.os_confidence}`}
+                                    >
+                                      {asset.os_confidence}
+                                    </span>
+                                  )}
+                                  {(asset.os_detection_source || asset.detection_source) && (
+                                    <span
+                                      className="detection-source-badge"
+                                      title={`Detection source: ${formatDetectionSource(asset.os_detection_source || asset.detection_source)}${asset.os_fingerprint_reason ? ` — ${asset.os_fingerprint_reason}` : ""}`}
+                                    >
+                                      {formatDetectionSource(asset.os_detection_source || asset.detection_source)}
+                                    </span>
+                                  )}
+                                </span>
                               </div>
                             </td>
                             <td>
@@ -3909,8 +3930,8 @@ function AuthenticatedDashboard() {
                                       {asset.status === "Offline" ? "Host offline" : "Not assessed"}
                                     </span>
                                   ) : asset.assessment_status === "Completed — no findings detected" ? (
-                                    <span className="posture-chip posture-info" title="Port & service scan complete. No known vulnerability signatures detected on tested ports. (Does not prove host is immune/safe)">
-                                      0 Findings detected
+                                    <span className="posture-chip posture-info" title="Completed checks on scanned ports detected no known vulnerabilities. Note: This does not prove the device is immune or completely secure.">
+                                      No vulnerabilities detected by completed checks
                                     </span>
                                   ) : asset.assessment_status === "Completed — hardening advisories only" ? (
                                     <span className="posture-chip posture-warn" title="Port & service scan complete. Hardening advisories detected; no confirmed CVE vulnerabilities.">
@@ -3924,9 +3945,13 @@ function AuthenticatedDashboard() {
                                       {assetVulns.length} Vuln{assetVulns.length === 1 ? "" : "s"}
                                       {critHighVulns > 0 ? ` (${critHighVulns} C/H)` : ""}
                                     </span>
-                                  ) : asset.assessment_status === "Assessment failed/partial" ? (
+                                  ) : asset.assessment_status === "Assessment failed" ? (
+                                    <span className="posture-chip posture-danger" title={asset.scan_failure_reason || "Assessment failed due to network probe timeouts or host unreachability"}>
+                                      Assessment failed
+                                    </span>
+                                  ) : asset.assessment_status === "Assessment failed/partial" || asset.assessment_status === "Assessment incomplete" ? (
                                     <span className="posture-chip posture-warn" title="Assessment encountered timeouts or partial probe failures">
-                                      Partial / Incomplete
+                                      Assessment incomplete
                                     </span>
                                   ) : (
                                     <span className="posture-chip posture-neutral">
@@ -8110,18 +8135,33 @@ function AuthenticatedDashboard() {
                   <div className="kv-row">
                     <span className="kv-label">Operating System</span>
                     <span className="kv-val">
-                      {viewingAsset.operating_system ? (
+                      {viewingAsset.operating_system && viewingAsset.operating_system !== "Unknown" ? (
                         <span>
                           <strong>{viewingAsset.operating_system}</strong>
                           {viewingAsset.os_confidence && (
-                            <span className={`os-conf-badge conf-${viewingAsset.os_confidence.toLowerCase()}`} style={{ marginLeft: "8px" }}>
+                            <span className={`os-conf-badge conf-${(viewingAsset.os_confidence || "").toLowerCase()}`} style={{ marginLeft: "8px" }}>
                               {viewingAsset.os_confidence} Confidence
                             </span>
                           )}
                         </span>
                       ) : (
-                        <span className="text-muted">Unknown — detection inconclusive</span>
+                        <span>
+                          <strong className="text-muted">Unknown</strong>
+                          {viewingAsset.os_confidence && (
+                            <span className={`os-conf-badge conf-${(viewingAsset.os_confidence || "").toLowerCase()}`} style={{ marginLeft: "8px" }}>
+                              {viewingAsset.os_confidence}
+                            </span>
+                          )}
+                        </span>
                       )}
+                    </span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">OS Detection Source</span>
+                    <span className="kv-val">
+                      <span className="detection-source-badge font-mono">
+                        {formatDetectionSource(viewingAsset.os_detection_source || viewingAsset.detection_source)}
+                      </span>
                     </span>
                   </div>
                   {viewingAsset.os_fingerprint_reason && (
@@ -8137,9 +8177,27 @@ function AuthenticatedDashboard() {
                   <div className="kv-row">
                     <span className="kv-label">Assessment Status</span>
                     <span className="kv-val">
-                      <span className="badge badge-neutral">{viewingAsset.assessment_status || "Not assessed"}</span>
+                      <span className={`badge ${
+                        viewingAsset.assessment_status === "Completed — no findings detected"
+                          ? "badge-info"
+                          : viewingAsset.assessment_status === "Assessment failed"
+                          ? "badge-danger"
+                          : viewingAsset.assessment_status === "Assessment failed/partial" || viewingAsset.assessment_status === "Assessment incomplete"
+                          ? "badge-warning"
+                          : "badge-neutral"
+                      }`}>
+                        {viewingAsset.assessment_status === "Completed — no findings detected"
+                          ? "No vulnerabilities detected by completed checks"
+                          : viewingAsset.assessment_status || "Not assessed"}
+                      </span>
                     </span>
                   </div>
+                  {viewingAsset.scan_failure_reason && (
+                    <div className="kv-row">
+                      <span className="kv-label">Failure Reason</span>
+                      <span className="kv-val text-danger text-sm">{viewingAsset.scan_failure_reason}</span>
+                    </div>
+                  )}
                   <div className="kv-row">
                     <span className="kv-label">Scan Coverage</span>
                     <span className="kv-val">{viewingAsset.scan_coverage || "Basic Discovery"}</span>
@@ -8147,7 +8205,7 @@ function AuthenticatedDashboard() {
                   <div className="kv-row">
                     <span className="kv-label">Last Assessed</span>
                     <span className="kv-val">
-                      {viewingAsset.last_assessed_at ? new Date(viewingAsset.last_assessed_at).toLocaleString() : "Not assessed"}
+                      {viewingAsset.last_assessed_at ? formatDateTime(viewingAsset.last_assessed_at) : "Not assessed"}
                     </span>
                   </div>
                 </div>
@@ -8196,6 +8254,28 @@ function AuthenticatedDashboard() {
                 </div>
               </div>
 
+              {/* Assessment Limitation Notice */}
+              {viewingAsset.assessment_status === "Completed — no findings detected" && (
+                <div className="limitation-notice-box">
+                  <strong>ℹ️ Assessment Limitation Notice:</strong> Completed vulnerability checks on scanned open ports identified no known vulnerability signatures or CVE matches.
+                  <br />
+                  <span style={{ fontSize: "11.5px", opacity: 0.9 }}>
+                    <em>Note:</em> Zero detected network findings does not prove the host or installed operating system/applications are fully secure or immune. Device firewalls (e.g. Windows Defender) or mobile OS sandboxing (iOS/Android) frequently drop unsolicited inbound probes.
+                  </span>
+                </div>
+              )}
+              {viewingAsset.assessment_status === "Assessment failed" && (
+                <div className="limitation-notice-box" style={{ background: "rgba(239, 68, 68, 0.12)", borderColor: "rgba(239, 68, 68, 0.35)", color: "#fca5a5" }}>
+                  <strong>⚠️ Assessment Failed:</strong> Port scan and service assessment encountered network errors or probe timeouts.
+                  {viewingAsset.scan_failure_reason && <div style={{ marginTop: "4px", fontSize: "11.5px" }}>Reason: {viewingAsset.scan_failure_reason}</div>}
+                </div>
+              )}
+              {(viewingAsset.assessment_status === "Assessment failed/partial" || viewingAsset.assessment_status === "Assessment incomplete") && (
+                <div className="limitation-notice-box" style={{ background: "rgba(245, 158, 11, 0.12)", borderColor: "rgba(245, 158, 11, 0.35)", color: "#fde68a" }}>
+                  <strong>⚠️ Assessment Incomplete:</strong> Port scan completed partially; some service probes or OS fingerprint sweeps were inconclusive.
+                </div>
+              )}
+
               {/* Open Ports */}
               <div className="asset-detail-section">
                 <div className="asset-detail-section-header">
@@ -8207,7 +8287,11 @@ function AuthenticatedDashboard() {
                 {(() => {
                   const ports = parsePortsList(viewingAsset.open_ports);
                   if (ports.length === 0) {
-                    return <div className="detail-empty-text">No open ports recorded for this asset.</div>;
+                    return (
+                      <div className="detail-empty-text">
+                        No open TCP ports responded to probe sweeps. Host firewall (e.g. Windows Defender Firewall), mobile OS isolation (iOS/Android), or network filtering may restrict inbound connections.
+                      </div>
+                    );
                   }
                   return (
                     <div className="asset-ports-grid">

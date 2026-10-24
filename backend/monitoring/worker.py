@@ -121,7 +121,9 @@ class ScanWorkerPool:
         self.max_workers = max_workers
         self.max_pending_jobs = max_pending_jobs
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
-        self.pipeline = pipeline or MonitoringScannerPipeline()
+        self.pipeline = pipeline or MonitoringScannerPipeline(
+            enable_os_detection=os.getenv("ENABLE_OS_DETECTION", "true").strip().lower() in ("true", "1", "yes")
+        )
 
         self._lock = threading.Lock()
         self._cancel_events: Dict[int, threading.Event] = {}
@@ -322,6 +324,7 @@ class ScanWorkerPool:
                                 "open_ports": h.get("open_ports") or [],
                                 "discovery_source": "pi_agent_l2",
                                 "device_type": device_type,
+                                "dhcp_info": dhcp_meta,
                             })
                 except Exception as agent_exc:
                     fallback_reason = f"Raspberry Pi agent unavailable: {agent_exc}. Container fallback scan used."
@@ -372,6 +375,7 @@ class ScanWorkerPool:
                         "open_ports": [],
                         "discovery_source": "container_fallback_multiprobe",
                         "device_type": device_type,
+                        "dhcp_info": dhcp_meta,
                     })
 
             if check_cancelled():
@@ -455,6 +459,8 @@ class ScanWorkerPool:
                             host_ip,
                             scan_err,
                         )
+                        host_result["scan_failed"] = True
+                        host_result["scan_failure_reason"] = str(scan_err)
                     finally:
                         with self._lock:
                             self._active_processes.pop(job_id, None)
@@ -465,11 +471,11 @@ class ScanWorkerPool:
 
                 # Stage 3: OS & Device Identification
                 os_info = identify_os_and_device(host_result)
-                host_result["operating_system"] = os_info.get("operating_system") or host_result.get("operating_system")
+                host_result["operating_system"] = os_info.get("operating_system") or "Unknown"
                 host_result["os_confidence"] = os_info.get("os_confidence")
                 host_result["os_fingerprint_reason"] = os_info.get("os_fingerprint_reason")
-                if os_info.get("device_type"):
-                    host_result["device_type"] = os_info.get("device_type")
+                host_result["os_detection_source"] = os_info.get("detection_source")
+                host_result["device_type"] = os_info.get("device_type") or host_result.get("device_type") or "Unknown"
 
                 # Stage 4: Vulnerability & Risk Calculation
                 open_ports = host_result.get("open_ports") or []
@@ -481,11 +487,25 @@ class ScanWorkerPool:
                 asset_ctx = {
                     "criticality": existing_asset.criticality if existing_asset else None,
                     "exposure": existing_asset.exposure if existing_asset else None,
+                    "scan_failed": host_result.get("scan_failed", False),
+                    "scan_failure_reason": host_result.get("scan_failure_reason"),
                 }
-                risk_res = calculate_risk(open_ports=open_ports, vulnerabilities=host_vulns, asset_context=asset_ctx)
+                risk_res = calculate_risk(
+                    open_ports=open_ports if not host_result.get("scan_failed") else None,
+                    vulnerabilities=host_vulns,
+                    asset_context=asset_ctx,
+                )
                 host_result["risk_result"] = risk_res
-                host_result["assessment_status"] = risk_res.get("assessment_status", "Completed — no findings detected" if not host_vulns else "Findings detected")
-                host_result["scan_coverage"] = f"{len(open_ports)} open port(s) evaluated"
+
+                if host_result.get("scan_failed"):
+                    host_result["assessment_status"] = "Assessment failed"
+                    host_result["scan_coverage"] = f"Scan failed: {host_result.get('scan_failure_reason', 'Host probe error')}"
+                elif len(open_ports) == 0:
+                    host_result["assessment_status"] = "Completed — no findings detected"
+                    host_result["scan_coverage"] = "0 open ports detected across scanned scope (host firewall or device isolation may restrict inbound service exposure)"
+                else:
+                    host_result["assessment_status"] = risk_res.get("assessment_status", "Completed — no findings detected" if not host_vulns else "Findings detected")
+                    host_result["scan_coverage"] = f"{len(open_ports)} open port(s) evaluated"
 
                 scan_results.append(host_result)
 

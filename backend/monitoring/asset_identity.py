@@ -406,10 +406,14 @@ def upsert_discovered_asset(
                 matched_asset.mac_vendor = mac_vendor
             if host_data.get("operating_system"):
                 matched_asset.operating_system = host_data["operating_system"]
+            elif not matched_asset.operating_system:
+                matched_asset.operating_system = "Unknown"
             if host_data.get("os_confidence"):
                 matched_asset.os_confidence = host_data["os_confidence"]
             if host_data.get("os_fingerprint_reason"):
                 matched_asset.os_fingerprint_reason = host_data["os_fingerprint_reason"]
+            if host_data.get("os_detection_source") or host_data.get("detection_source"):
+                matched_asset.os_detection_source = host_data.get("os_detection_source") or host_data.get("detection_source")
             if host_data.get("device_type"):
                 matched_asset.device_type = host_data["device_type"]
             if host_data.get("discovery_source"):
@@ -479,10 +483,11 @@ def upsert_discovered_asset(
             device_id=norm_device_id,
             mac_vendor=mac_vendor,
             identity_status=identity_status,
-            operating_system=host_data.get("operating_system"),
-            os_confidence=host_data.get("os_confidence"),
+            operating_system=host_data.get("operating_system") or "Unknown",
+            os_confidence=host_data.get("os_confidence") or "Inconclusive",
             os_fingerprint_reason=host_data.get("os_fingerprint_reason"),
-            device_type=host_data.get("device_type"),
+            os_detection_source=host_data.get("os_detection_source") or host_data.get("detection_source") or "inconclusive_probes",
+            device_type=host_data.get("device_type") or "Unknown",
             discovery_source=host_data.get("discovery_source", source),
             assessment_status=host_data.get("assessment_status", "Not assessed"),
             last_assessed_at=datetime.utcnow(),
@@ -668,6 +673,7 @@ def run_schema_migrations(engine) -> None:
             conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS mac_vendor VARCHAR(100);"))
             conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS os_confidence VARCHAR(50);"))
             conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS os_fingerprint_reason VARCHAR(255);"))
+            conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS os_detection_source VARCHAR(100);"))
             conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS device_type VARCHAR(100);"))
             conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS discovery_source VARCHAR(100);"))
             conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS assessment_status VARCHAR(50) DEFAULT 'Not assessed';"))
@@ -717,6 +723,7 @@ def run_schema_migrations(engine) -> None:
                 ("mac_vendor", "VARCHAR(100)"),
                 ("os_confidence", "VARCHAR(50)"),
                 ("os_fingerprint_reason", "VARCHAR(255)"),
+                ("os_detection_source", "VARCHAR(100)"),
                 ("device_type", "VARCHAR(100)"),
                 ("discovery_source", "VARCHAR(100)"),
                 ("assessment_status", "VARCHAR(50) DEFAULT 'Not assessed'"),
