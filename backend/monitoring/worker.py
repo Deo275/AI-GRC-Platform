@@ -28,6 +28,7 @@ except ImportError:
     import backend.models as models
 
 import ipaddress
+import json
 import os
 
 from scanner.grc_engine import (
@@ -50,7 +51,11 @@ try:
     from scanner.vulnerability_scanner import identify_vulnerabilities
     from scanner.risk_engine import calculate_risk
     from scanner.os_identifier import identify_os_and_device
-    from scanner.router_dhcp import get_authorized_dhcp_info, AUTHORIZED_ROUTER_DHCP_CLIENTS
+    from scanner.router_dhcp import (
+        get_authorized_dhcp_info,
+        get_authorized_dhcp_info_for_host,
+        AUTHORIZED_ROUTER_DHCP_CLIENTS,
+    )
 except ImportError:
     import sys
     from pathlib import Path
@@ -60,7 +65,11 @@ except ImportError:
     from scanner.vulnerability_scanner import identify_vulnerabilities
     from scanner.risk_engine import calculate_risk
     from scanner.os_identifier import identify_os_and_device
-    from scanner.router_dhcp import get_authorized_dhcp_info, AUTHORIZED_ROUTER_DHCP_CLIENTS
+    from scanner.router_dhcp import (
+        get_authorized_dhcp_info,
+        get_authorized_dhcp_info_for_host,
+        AUTHORIZED_ROUTER_DHCP_CLIENTS,
+    )
 
 logger = logging.getLogger("ai_grc.monitoring.worker")
 
@@ -309,22 +318,26 @@ class ScanWorkerPool:
                             norm = normalize_ip(ip)
                             if is_special_or_boundary_ip(norm, target):
                                 continue
+                            mac_addr = normalize_mac(h.get("mac_address") or h.get("mac"))
                             hostnames = h.get("hostnames") or []
                             hostname = h.get("hostname") or (hostnames[0] if hostnames else None)
-                            dhcp_meta = get_authorized_dhcp_info(norm)
-                            if not hostname and dhcp_meta:
-                                hostname = dhcp_meta.get("hostname")
+                            dhcp_meta = get_authorized_dhcp_info_for_host(norm, mac=mac_addr)
+                            dhcp_name = (dhcp_meta.get("client_name") or dhcp_meta.get("hostname")) if dhcp_meta else None
                             device_type = (dhcp_meta.get("device_type") if dhcp_meta else None) or h.get("device_type")
                             discovered_hosts_info.append({
                                 "ip_address": norm,
                                 "hostname": hostname,
-                                "mac_address": h.get("mac_address") or h.get("mac"),
+                                "mac_address": mac_addr,
                                 "vendor": h.get("vendor"),
                                 "operating_system": h.get("operating_system"),
                                 "open_ports": h.get("open_ports") or [],
                                 "discovery_source": "pi_agent_l2",
+                                "network_scope": "physical_lan" if is_agent_target else None,
                                 "device_type": device_type,
                                 "dhcp_info": dhcp_meta,
+                                "dhcp_lease_source": dhcp_meta.get("dhcp_lease_source") if dhcp_meta else "none",
+                                "dhcp_client_name": dhcp_name,
+                                "dhcp_observed_at": datetime.utcnow() if dhcp_meta else None,
                             })
                 except Exception as agent_exc:
                     fallback_reason = f"Raspberry Pi agent unavailable: {agent_exc}. Container fallback scan used."
@@ -363,19 +376,25 @@ class ScanWorkerPool:
                     if is_special_or_boundary_ip(norm, target):
                         continue
                     meta = disc_meta.get(host_ip, {}) if isinstance(disc_meta, dict) else {}
-                    dhcp_meta = get_authorized_dhcp_info(norm)
-                    hostname = meta.get("hostname") or (dhcp_meta.get("hostname") if dhcp_meta else None)
-                    device_type = dhcp_meta.get("device_type") if dhcp_meta else None
+                    mac_addr = normalize_mac(meta.get("mac_address"))
+                    dhcp_meta = get_authorized_dhcp_info_for_host(norm, mac=mac_addr)
+                    dhcp_name = (dhcp_meta.get("client_name") or dhcp_meta.get("hostname")) if dhcp_meta else None
+                    hostname = meta.get("hostname")
+                    device_type = (dhcp_meta.get("device_type") if dhcp_meta else None)
                     discovered_hosts_info.append({
                         "ip_address": norm,
                         "hostname": hostname,
-                        "mac_address": meta.get("mac_address"),
+                        "mac_address": mac_addr,
                         "vendor": meta.get("vendor"),
                         "operating_system": None,
                         "open_ports": [],
                         "discovery_source": "container_fallback_multiprobe",
+                        "network_scope": "physical_lan" if is_agent_target else None,
                         "device_type": device_type,
                         "dhcp_info": dhcp_meta,
+                        "dhcp_lease_source": dhcp_meta.get("dhcp_lease_source") if dhcp_meta else "none",
+                        "dhcp_client_name": dhcp_name,
+                        "dhcp_observed_at": datetime.utcnow() if dhcp_meta else None,
                     })
 
             if check_cancelled():
@@ -543,6 +562,47 @@ class ScanWorkerPool:
 
                 asset_id_map[norm_ip] = asset.id
 
+                # Update live presence if this is a physical LAN discovery sweep
+                if is_agent_target or target == configured_cidr:
+                    if getattr(asset, "network_scope", None) == "physical_lan":
+                        asset.is_present = True
+                        asset.last_present_scan_job_id = job.id
+                        asset.last_successful_scan_at = datetime.utcnow()
+                        asset.consecutive_scan_misses = 0
+
+                # Record ScanObservation for permanent scan history
+                try:
+                    open_ports_val = host_data.get("open_ports") or []
+                    if isinstance(open_ports_val, (list, tuple)):
+                        open_ports_str = json.dumps(open_ports_val)
+                    else:
+                        open_ports_str = str(open_ports_val)
+
+                    vulns_list = host_data.get("vulnerabilities") or []
+                    vulns_summary_list = [v.get("title") for v in vulns_list if isinstance(v, dict) and v.get("title")]
+
+                    obs = models.ScanObservation(
+                        scan_job_id=job.id,
+                        asset_id=asset.id,
+                        ip_address=norm_ip,
+                        mac_address=host_data.get("mac_address"),
+                        hostname=host_data.get("hostname"),
+                        dhcp_client_name=host_data.get("dhcp_client_name") or getattr(asset, "dhcp_client_name", None),
+                        operating_system=host_data.get("operating_system"),
+                        os_confidence=host_data.get("os_confidence"),
+                        device_type=host_data.get("device_type"),
+                        open_ports=open_ports_str,
+                        vulnerabilities_count=len(vulns_list),
+                        vulnerabilities_summary=json.dumps(vulns_summary_list),
+                        assessment_status=host_data.get("assessment_status"),
+                        scan_coverage=host_data.get("scan_coverage"),
+                        network_scope=getattr(asset, "network_scope", "physical_lan") or "physical_lan",
+                        observed_at=datetime.utcnow(),
+                    )
+                    db.add(obs)
+                except Exception as obs_exc:
+                    logger.warning("Error creating ScanObservation for %s: %s", norm_ip, obs_exc)
+
                 # Update vulnerabilities for this asset
                 current_vuln_titles = set()
                 for v in host_data.get("vulnerabilities", []):
@@ -591,11 +651,27 @@ class ScanWorkerPool:
                         )
                         db.add(new_v)
 
-                # Mark resolved vulnerabilities for this asset
-                for old_v in asset.vulnerabilities:
-                    if old_v.title not in current_vuln_titles:
-                        old_v.status = "Resolved"
-                        old_v.updated_at = datetime.utcnow()
+                # Mark resolved vulnerabilities for this asset ONLY if assessment was verified & complete
+                can_resolve_vulns = (
+                    not host_data.get("scan_failed")
+                    and host_data.get("assessment_status") in (
+                        "Completed — no findings detected",
+                        "Completed — hardening advisories only",
+                        "Findings detected",
+                    )
+                )
+                if can_resolve_vulns:
+                    for old_v in asset.vulnerabilities:
+                        if old_v.title not in current_vuln_titles:
+                            old_v.status = "Resolved"
+                            old_v.updated_at = datetime.utcnow()
+                else:
+                    logger.info(
+                        "Preserving existing vulnerabilities for Asset #%s (%s) — assessment was incomplete or unverified (%s)",
+                        asset.id,
+                        asset.ip_address,
+                        host_data.get("assessment_status"),
+                    )
 
                 # Update GRC Risks for this asset
                 current_findings = set(risk_res.get("findings", []))
@@ -626,30 +702,54 @@ class ScanWorkerPool:
                     else:
                         existing_r.status = "Open"
 
-                # Mark missing risks resolved
-                for old_r in asset.risks:
-                    if old_r.title not in current_findings:
-                        old_r.status = "Resolved"
-                        old_r.updated_at = datetime.utcnow()
+                # Mark missing risks resolved ONLY if scan was complete and successful
+                if can_resolve_vulns:
+                    for old_r in asset.risks:
+                        if old_r.title not in current_findings:
+                            old_r.status = "Resolved"
+                            old_r.updated_at = datetime.utcnow()
 
                 # Deterministically recalculate GRC inherent & residual risk scores
                 recalculate_asset_grc_risks(asset)
 
-            # Handle offline assets and router DHCP unverified leases if scanning a subnet
+            # Handle offline assets with consecutive-miss hysteresis
             scanned_ips = {host_data["ip_address"] for host_data in scan_results}
 
+            is_physical_lan_sweep = bool(is_agent_target or target == configured_cidr)
             if is_subnet:
                 try:
                     target_net = ipaddress.ip_network(target, strict=False)
+                    offline_threshold = int(os.getenv("OFFLINE_THRESHOLD_CYCLES", "2"))
                     for db_asset in db.query(models.Asset).filter(models.Asset.status != "deactivated").all():
                         try:
                             a_ip = ipaddress.ip_address(db_asset.ip_address)
                             if a_ip in target_net and db_asset.ip_address not in scanned_ips:
-                                if db_asset.status == "Active":
-                                    db_asset.status = "Offline"
-                                    db_asset.assessment_status = "Not assessed (Host offline)"
-                                    db_asset.scan_coverage = "Host unreachable in current scan"
-                                    logger.info("Marked asset %s as Offline (not reachable in current scan)", db_asset.ip_address)
+                                # In a full physical LAN discovery sweep, any absent device is no longer reachable in the live view
+                                if is_physical_lan_sweep and getattr(db_asset, "network_scope", None) == "physical_lan":
+                                    db_asset.is_present = False
+                                    if db_asset.status == "Active":
+                                        db_asset.status = "Offline"
+                                        db_asset.offline_reason = f"Absent from latest LAN scan (Job #{job_id})"
+
+                                db_asset.consecutive_scan_misses = (db_asset.consecutive_scan_misses or 0) + 1
+                                if db_asset.consecutive_scan_misses >= offline_threshold:
+                                    if db_asset.status == "Active":
+                                        db_asset.status = "Offline"
+                                        db_asset.assessment_status = "Not assessed (Host offline)"
+                                        db_asset.offline_reason = f"Host unreached across {db_asset.consecutive_scan_misses} consecutive scan cycles"
+                                        db_asset.scan_coverage = f"Host unreachable across {db_asset.consecutive_scan_misses} consecutive scan cycles"
+                                        logger.info(
+                                            "Marked asset %s as Offline (unreached across %d consecutive scan cycles)",
+                                            db_asset.ip_address,
+                                            db_asset.consecutive_scan_misses,
+                                        )
+                                else:
+                                    logger.info(
+                                        "Asset %s missed in current scan cycle (%d/%d); retaining Active status per hysteresis policy",
+                                        db_asset.ip_address,
+                                        db_asset.consecutive_scan_misses,
+                                        offline_threshold,
+                                    )
                         except Exception:
                             pass
 
@@ -725,6 +825,8 @@ class ScanWorkerPool:
             job.discovered_vulns_count = total_vulns
             job.completed_at = datetime.utcnow()
             job.error_message = None
+            job.scan_source = "pi_agent_l2" if use_agent else ("container_fallback_multiprobe" if is_subnet else "single_host")
+            job.is_presence_snapshot = is_physical_lan_sweep
             db.commit()
 
             logger.info(

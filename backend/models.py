@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Float, Integer, String, DateTime, ForeignKey, Table, UniqueConstraint, Boolean, Text, Index, text
 from sqlalchemy.orm import relationship
 from datetime import datetime
+from typing import Optional
 
 try:
     from database import Base
@@ -22,6 +23,7 @@ risk_controls = Table(
 
 class Asset(Base):
     __tablename__ = "assets"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True, index=True)
     hostname = Column(String, nullable=True)
@@ -52,7 +54,48 @@ class Asset(Base):
     discovery_source = Column(String(100), nullable=True, default=None)
     assessment_status = Column(String(50), default="Not assessed", nullable=False)
     last_assessed_at = Column(DateTime, nullable=True, default=None)
+    last_successful_scan_at = Column(DateTime, nullable=True, default=None)
     scan_coverage = Column(String(255), nullable=True, default=None)
+
+    # Network Scope, IP Assignment, and Hysteresis Telemetry
+    network_scope = Column(String(50), default="needs_review", nullable=False, index=True)
+    assigned_ip_status = Column(String(50), default="active_assignment", nullable=False, index=True)
+    offline_reason = Column(String(255), nullable=True, default=None)
+    dhcp_lease_source = Column(String(50), default="none", nullable=True)
+    dhcp_client_name = Column(String(100), nullable=True, default=None)
+    dhcp_observed_at = Column(DateTime, nullable=True, default=None)
+    consecutive_scan_misses = Column(Integer, default=0, nullable=False)
+    is_present = Column(Boolean, default=False, nullable=False, index=True)
+    last_present_scan_job_id = Column(Integer, nullable=True, index=True)
+
+    @property
+    def router_client_name(self) -> Optional[str]:
+        return self.dhcp_client_name
+
+    @property
+    def router_name_source(self) -> Optional[str]:
+        return self.dhcp_lease_source
+
+    @property
+    def router_name_observed_at(self) -> Optional[datetime]:
+        return self.dhcp_observed_at
+
+    @property
+    def display_name(self) -> str:
+        if self.dhcp_client_name and self.dhcp_client_name.strip() and self.dhcp_client_name.strip().lower() not in ("none", "unknown", "null", "not available"):
+            return self.dhcp_client_name.strip()
+        if self.hostname and self.hostname.strip() and self.hostname.strip().lower() not in ("none", "unknown", "null"):
+            return self.hostname.strip()
+        if self.ip_address:
+            return f"Host {self.ip_address}"
+        if self.mac_address:
+            return f"Device ({self.mac_address})"
+        return f"Asset #{self.id}"
+
+    @property
+    def preferred_display_name(self) -> str:
+        return self.display_name
+
 
     risks = relationship("Risk", backref="asset", cascade="all, delete-orphan")
     vulnerabilities = relationship("Vulnerability", backref="asset", cascade="all, delete-orphan")
@@ -377,11 +420,39 @@ class ScanJob(Base):
     discovered_assets_count = Column(Integer, default=0)
     discovered_vulns_count = Column(Integer, default=0)
     error_message = Column(String, nullable=True)
+    scan_source = Column(String(50), default="network_sweep", nullable=True)
+    is_presence_snapshot = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
     drift_events = relationship("DriftEvent", back_populates="scan_job", cascade="all, delete-orphan")
+
+
+class ScanObservation(Base):
+    __tablename__ = "scan_observations"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_job_id = Column(ForeignKey("scan_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(ForeignKey("assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    ip_address = Column(String(100), nullable=False, index=True)
+    mac_address = Column(String(50), nullable=True, index=True)
+    hostname = Column(String(200), nullable=True)
+    dhcp_client_name = Column(String(100), nullable=True)
+    operating_system = Column(String(200), nullable=True)
+    os_confidence = Column(String(50), nullable=True)
+    device_type = Column(String(100), nullable=True)
+    open_ports = Column(Text, nullable=True)
+    vulnerabilities_count = Column(Integer, default=0, nullable=False)
+    vulnerabilities_summary = Column(Text, nullable=True)
+    assessment_status = Column(String(100), nullable=True)
+    scan_coverage = Column(String(500), nullable=True)
+    network_scope = Column(String(50), default="physical_lan", nullable=False)
+    observed_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    scan_job = relationship("ScanJob", backref="observations")
+    asset = relationship("Asset", backref="scan_observations")
 
 
 class ScanSchedule(Base):

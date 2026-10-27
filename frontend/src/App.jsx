@@ -126,6 +126,26 @@ const formatDetectionSource = (src) => {
   }
 };
 
+const getAssetDisplayName = (asset) => {
+  if (!asset) return "Unidentified Device";
+  if (asset.preferred_display_name && String(asset.preferred_display_name).trim()) {
+    return String(asset.preferred_display_name).trim();
+  }
+  if (asset.display_name && String(asset.display_name).trim()) {
+    return String(asset.display_name).trim();
+  }
+  const dhcpName = asset.dhcp_client_name || asset.router_client_name;
+  if (dhcpName && String(dhcpName).trim() && !["none", "unknown", "null", "not available"].includes(String(dhcpName).trim().toLowerCase())) {
+    return String(dhcpName).trim();
+  }
+  if (asset.hostname && String(asset.hostname).trim() && !["none", "unknown", "null"].includes(String(asset.hostname).trim().toLowerCase())) {
+    return String(asset.hostname).trim();
+  }
+  if (asset.ip_address) return `Host ${asset.ip_address}`;
+  if (asset.mac_address) return `Device (${asset.mac_address})`;
+  return `Asset #${asset.id || "?"}`;
+};
+
 // ---------------------------------------------------------------------------
 // AIAnalysisPanel — Phase 4B: Pure display component for AI security intelligence
 // Receives pre-fetched analysis data; no API calls, no GRC state mutations.
@@ -1094,6 +1114,9 @@ function AuthenticatedDashboard() {
   const [assetEnvFilter, setAssetEnvFilter] = useState("All");
   const [assetCritFilter, setAssetCritFilter] = useState("All");
   const [assetExpFilter, setAssetExpFilter] = useState("All");
+  const [assetScopeFilter, setAssetScopeFilter] = useState("All");
+  const [assetStatusFilter, setAssetStatusFilter] = useState("All");
+  const [assetSourceFilter, setAssetSourceFilter] = useState("All");
 
   // Phase 4: Vulnerabilities Page Filters, Search & Details Modal
   const [vulnSearchQuery, setVulnSearchQuery] = useState("");
@@ -1271,16 +1294,34 @@ function AuthenticatedDashboard() {
   // ----------------------------------------
   const [activePage, setActivePage] = useState("overview");
 
+  // Stage 15: Presence & Permanent Scan History State
+  const [assetPresenceMode, setAssetPresenceMode] = useState("live");
+  const [assetPresenceSummary, setAssetPresenceSummary] = useState(null);
+
+  const [vulnPresenceMode, setVulnPresenceMode] = useState("live");
+  const [vulnPresenceSummary, setVulnPresenceSummary] = useState(null);
+
+  const [scanHistory, setScanHistory] = useState([]);
+  const [scanHistoryTotal, setScanHistoryTotal] = useState(0);
+  const [scanHistoryLoading, setScanHistoryLoading] = useState(false);
+  const [scanHistoryError, setScanHistoryError] = useState(null);
+  const [selectedScanRun, setSelectedScanRun] = useState(null);
+  const [inspectLoading, setInspectLoading] = useState(false);
+  const [scanInspectTab, setScanInspectTab] = useState("observations");
+
   // ----------------------------------------
   // Data Fetching Functions
   // ----------------------------------------
 
-  const fetchAssets = async () => {
+  const fetchAssets = async (mode = assetPresenceMode) => {
     try {
-      const response = await authFetch(`${API_BASE}/assets`);
+      const response = await authFetch(`${API_BASE}/assets?presence_mode=${mode}`);
       if (response.ok) {
         const data = await response.json();
         setAssets((data.assets || []).filter((a) => a.status !== "deactivated"));
+        if (data.summary) {
+          setAssetPresenceSummary(data.summary);
+        }
       }
     } catch (error) {
       console.error("Unable to fetch asset inventory:", error);
@@ -1311,15 +1352,59 @@ function AuthenticatedDashboard() {
     }
   };
 
-  const fetchVulnerabilities = async () => {
+  const fetchVulnerabilities = async (mode = vulnPresenceMode) => {
     try {
-      const response = await authFetch(`${API_BASE}/vulnerabilities`);
+      const response = await authFetch(`${API_BASE}/vulnerabilities?presence_mode=${mode}`);
       if (response.ok) {
         const data = await response.json();
         setVulnerabilities(data.vulnerabilities || []);
+        if (data.summary) {
+          setVulnPresenceSummary(data.summary);
+        }
       }
     } catch (error) {
       console.error("Unable to fetch vulnerability findings:", error);
+    }
+  };
+
+  const fetchScanHistory = async () => {
+    setScanHistoryLoading(true);
+    setScanHistoryError(null);
+    try {
+      const response = await authFetch(`${API_BASE}/scans/history?limit=50`);
+      if (response.ok) {
+        const data = await response.json();
+        setScanHistory(data.scans || []);
+        setScanHistoryTotal(data.total || 0);
+      } else {
+        const err = await response.json().catch(() => null);
+        setScanHistoryError(formatApiError(err?.detail, "Failed to load scan history"));
+      }
+    } catch (err) {
+      setScanHistoryError(err?.message || "Failed to load scan history");
+    } finally {
+      setScanHistoryLoading(false);
+    }
+  };
+
+  const inspectScanRun = async (jobId) => {
+    setInspectLoading(true);
+    try {
+      const response = await authFetch(`${API_BASE}/scans/history/${jobId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setSelectedScanRun({
+          ...(data.scan || {}),
+          observations: data.observations || [],
+          absent_physical_lan_devices: data.absent_devices || [],
+          drift_events: data.drift_events || [],
+        });
+        setScanInspectTab("observations");
+      }
+    } catch (err) {
+      console.error("Failed to inspect scan run:", err);
+    } finally {
+      setInspectLoading(false);
     }
   };
 
@@ -2489,11 +2574,15 @@ function AuthenticatedDashboard() {
     else if (page === "audit") {
       if (auditLogs.length === 0) fetchAuditLogs(0, auditSourceFilter, auditActionFilter, auditEntityFilter, auditLimit);
     }
+    else if (page === "scan-history") {
+      fetchScanHistory();
+    }
   };
 
   const PAGE_META = {
     overview: { title: "Security Overview", desc: "Executive security posture dashboard" },
-    assets: { title: "Asset Inventory", desc: "Infrastructure discovery and business context management" },
+    assets: { title: "Live Asset Inventory", desc: "Reachable physical LAN infrastructure & posture (192.168.1.0/24)" },
+    "scan-history": { title: "Scan History", desc: "Permanent discovery runs, host evidence, and network observations" },
     vulnerabilities: { title: "Vulnerability Findings", desc: "Technical security findings with CVE/NVD correlation" },
     "risk-management": { title: "Risk Management", desc: "Enterprise risk register, heat map, controls & treatment" },
     compliance: { title: "Compliance", desc: "Framework mapping and implementation tracking" },
@@ -2523,7 +2612,10 @@ function AuthenticatedDashboard() {
             <span className="nav-icon">🏠</span><span className="nav-label">Overview</span>
           </button>
           <button className={`nav-item${activePage === "assets" ? " active" : ""}`} onClick={() => handleNavClick("assets")}>
-            <span className="nav-icon">🖥</span><span className="nav-label">Assets</span>
+            <span className="nav-icon">🖥</span><span className="nav-label">Live Assets</span>
+          </button>
+          <button className={`nav-item${activePage === "scan-history" ? " active" : ""}`} onClick={() => handleNavClick("scan-history")}>
+            <span className="nav-icon">📜</span><span className="nav-label">Scan History</span>
           </button>
           <button className={`nav-item${activePage === "vulnerabilities" ? " active" : ""}`} onClick={() => handleNavClick("vulnerabilities")}>
             <span className="nav-icon">🛡</span><span className="nav-label">Vulnerabilities</span>
@@ -3552,10 +3644,12 @@ function AuthenticatedDashboard() {
             const q = assetSearchQuery.toLowerCase().trim();
             const ip = (asset.ip_address || "").toLowerCase();
             const host = (asset.hostname || "").toLowerCase();
+            const disp = getAssetDisplayName(asset).toLowerCase();
+            const dhcp = (asset.dhcp_client_name || "").toLowerCase();
             const owner = (asset.owner || "").toLowerCase();
             const fn = (asset.business_function || "").toLowerCase();
             const os = (asset.operating_system || "").toLowerCase();
-            if (!ip.includes(q) && !host.includes(q) && !owner.includes(q) && !fn.includes(q) && !os.includes(q)) {
+            if (!ip.includes(q) && !host.includes(q) && !disp.includes(q) && !dhcp.includes(q) && !owner.includes(q) && !fn.includes(q) && !os.includes(q)) {
               return false;
             }
           }
@@ -3584,6 +3678,33 @@ function AuthenticatedDashboard() {
             }
           }
 
+          // Network Scope filter
+          if (assetScopeFilter !== "All") {
+            if ((asset.network_scope || "").toLowerCase() !== assetScopeFilter.toLowerCase()) {
+              return false;
+            }
+          }
+
+          // Status & Displacement filter
+          if (assetStatusFilter !== "All") {
+            if (assetStatusFilter === "historical_lease_displaced") {
+              if (asset.assigned_ip_status !== "historical_lease_displaced") return false;
+            } else if (assetStatusFilter === "Online") {
+              if ((asset.status || "").toLowerCase() !== "online" && (asset.status || "").toLowerCase() !== "active") return false;
+            } else if (assetStatusFilter === "Offline") {
+              if ((asset.status || "").toLowerCase() !== "offline") return false;
+            }
+          }
+
+          // Discovery Source filter
+          if (assetSourceFilter !== "All") {
+            const src = (asset.discovery_source || "").toLowerCase();
+            if (assetSourceFilter === "pi_agent" && !src.includes("pi_agent")) return false;
+            if (assetSourceFilter === "container" && !src.includes("container") && !src.includes("nmap_scan")) return false;
+            if (assetSourceFilter === "single_host" && !src.includes("single_host")) return false;
+            if (assetSourceFilter === "dhcp" && !src.includes("dhcp") && !asset.dhcp_lease_source) return false;
+          }
+
           return true;
         });
 
@@ -3591,17 +3712,88 @@ function AuthenticatedDashboard() {
           assetSearchQuery.trim() !== "" ||
           assetEnvFilter !== "All" ||
           assetCritFilter !== "All" ||
-          assetExpFilter !== "All";
+          assetExpFilter !== "All" ||
+          assetScopeFilter !== "All" ||
+          assetStatusFilter !== "All" ||
+          assetSourceFilter !== "All";
 
         const resetAssetFilters = () => {
           setAssetSearchQuery("");
           setAssetEnvFilter("All");
           setAssetCritFilter("All");
           setAssetExpFilter("All");
+          setAssetScopeFilter("All");
+          setAssetStatusFilter("All");
+          setAssetSourceFilter("All");
         };
 
         return (
           <>
+            {/* 0. PHYSICAL LAN PRESENCE BANNER & MODE SELECTOR */}
+            <div className="presence-banner">
+              <div className="presence-banner-header">
+                <div>
+                  <h3 className="presence-banner-title">
+                    📡 Physical LAN Presence: 192.168.1.0/24
+                  </h3>
+                  <div className="presence-banner-meta">
+                    <span>
+                      Latest Scan:{" "}
+                      <strong>
+                        {assetPresenceSummary?.latest_successful_scan_at
+                          ? new Date(assetPresenceSummary.latest_successful_scan_at).toLocaleString()
+                          : "Not yet completed"}
+                      </strong>
+                    </span>
+                    <span>
+                      Scan Status:{" "}
+                      <span className={`status-pill ${assetPresenceSummary?.latest_scan_status === "completed" ? "status-success" : "status-warning"}`} style={{ fontSize: "11px", padding: "2px 8px" }}>
+                        {assetPresenceSummary?.latest_scan_status || "completed"}
+                      </span>
+                    </span>
+                    {assetPresenceSummary?.is_latest_scan_partial && (
+                      <span className="status-pill status-warning" style={{ fontSize: "11px", padding: "2px 8px" }}>
+                        ⚠️ Incomplete / Partial Scan
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="presence-mode-bar">
+                  <button
+                    type="button"
+                    className={`presence-mode-btn ${assetPresenceMode === "live" ? "active" : ""}`}
+                    onClick={() => {
+                      setAssetPresenceMode("live");
+                      fetchAssets("live");
+                    }}
+                  >
+                    🟢 Live Reachable ({assetPresenceSummary?.live_count ?? (assetPresenceMode === "live" ? totalAssetsCount : "...")})
+                  </button>
+                  <button
+                    type="button"
+                    className={`presence-mode-btn ${assetPresenceMode === "historical" ? "active" : ""}`}
+                    onClick={() => {
+                      setAssetPresenceMode("historical");
+                      fetchAssets("historical");
+                    }}
+                  >
+                    📁 Disconnected & Past Hosts ({assetPresenceSummary?.historical_count ?? "..."})
+                  </button>
+                  <button
+                    type="button"
+                    className={`presence-mode-btn ${assetPresenceMode === "all" ? "active" : ""}`}
+                    onClick={() => {
+                      setAssetPresenceMode("all");
+                      fetchAssets("all");
+                    }}
+                  >
+                    🌐 Complete Asset Repository ({assetPresenceSummary?.total_assets ?? "..."})
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* 1. ASSET SUMMARY: Compact KPI Cards */}
             <section className="cards cards-five">
               <div className="card">
@@ -3762,6 +3954,55 @@ function AuthenticatedDashboard() {
                     </select>
                   </div>
 
+                  <div className="asset-filter-item">
+                    <label htmlFor="asset-scope-filter">Scope:</label>
+                    <select
+                      id="asset-scope-filter"
+                      className="asset-select"
+                      value={assetScopeFilter}
+                      onChange={(e) => setAssetScopeFilter(e.target.value)}
+                    >
+                      <option value="All">All Scopes</option>
+                      <option value="physical_lan">Physical LAN (192.168.1.0/24)</option>
+                      <option value="local_container">Docker Container</option>
+                      <option value="virtual_interface">Virtual Adapter (VMware)</option>
+                      <option value="loopback">Loopback</option>
+                      <option value="authorized_single_host">Single Host Target</option>
+                      <option value="out_of_scope">Out of Scope</option>
+                    </select>
+                  </div>
+
+                  <div className="asset-filter-item">
+                    <label htmlFor="asset-status-filter">Status:</label>
+                    <select
+                      id="asset-status-filter"
+                      className="asset-select"
+                      value={assetStatusFilter}
+                      onChange={(e) => setAssetStatusFilter(e.target.value)}
+                    >
+                      <option value="All">All Statuses</option>
+                      <option value="Online">Online / Active</option>
+                      <option value="Offline">Offline</option>
+                      <option value="historical_lease_displaced">Historical Lease (Displaced)</option>
+                    </select>
+                  </div>
+
+                  <div className="asset-filter-item">
+                    <label htmlFor="asset-source-filter">Source:</label>
+                    <select
+                      id="asset-source-filter"
+                      className="asset-select"
+                      value={assetSourceFilter}
+                      onChange={(e) => setAssetSourceFilter(e.target.value)}
+                    >
+                      <option value="All">All Sources</option>
+                      <option value="pi_agent">Pi Agent (L2 ARP)</option>
+                      <option value="container">Container Fallback</option>
+                      <option value="single_host">Single Host Scan</option>
+                      <option value="dhcp">Static DHCP Reference</option>
+                    </select>
+                  </div>
+
                   {hasActiveAssetFilters && (
                     <button
                       type="button"
@@ -3789,7 +4030,7 @@ function AuthenticatedDashboard() {
                   <thead>
                     <tr>
                       <th>IP Address</th>
-                      <th>Hostname / OS</th>
+                      <th>Device Name / OS</th>
                       <th>Environment</th>
                       <th>Criticality</th>
                       <th>Exposure</th>
@@ -3836,20 +4077,99 @@ function AuthenticatedDashboard() {
                           <tr key={asset.id}>
                             <td>
                               <div className="ip-cell">
-                                <span className={`status-indicator-dot ${asset.status === "Active" || !asset.status ? "dot-green" : asset.status === "lease-only/unverified" ? "dot-amber" : "dot-gray"}`} />
+                                <span
+                                  className={`status-indicator-dot ${
+                                    asset.assigned_ip_status === "historical_lease_displaced"
+                                      ? "dot-amber"
+                                      : (asset.status || "").toLowerCase() === "online" || (asset.status || "").toLowerCase() === "active"
+                                      ? "dot-green"
+                                      : "dot-gray"
+                                  }`}
+                                  title={
+                                    asset.assigned_ip_status === "historical_lease_displaced"
+                                      ? `Historical lease displaced: ${asset.offline_reason || "Reassigned to another device"}`
+                                      : asset.offline_reason || `Status: ${asset.status || "Active"}`
+                                  }
+                                />
                                 <div>
-                                  <strong className="ip-text">{asset.ip_address}</strong>
+                                  <div className="ip-header-row">
+                                    <strong className="ip-text">{asset.ip_address}</strong>
+                                    {asset.is_present !== undefined && (
+                                      <span
+                                        className={`scope-badge ${asset.is_present ? "badge-live-present" : "badge-disconnected"}`}
+                                        title={asset.is_present ? "Confirmed reachable in physical LAN (192.168.1.0/24)" : "Historical / disconnected asset absent from latest physical LAN discovery"}
+                                      >
+                                        {asset.is_present ? "🟢 Live" : "⚪ Disconnected"}
+                                      </span>
+                                    )}
+                                    {asset.assigned_ip_status === "historical_lease_displaced" && (
+                                      <span
+                                        className="scope-badge badge-displaced"
+                                        title={asset.offline_reason || "IP lease reassigned to newer device"}
+                                      >
+                                        Displaced Lease
+                                      </span>
+                                    )}
+                                    {asset.network_scope && (
+                                      <span
+                                        className={`scope-badge scope-${asset.network_scope}`}
+                                        title={`Network Scope: ${asset.network_scope}`}
+                                      >
+                                        {asset.network_scope === "physical_lan"
+                                          ? "Physical LAN"
+                                          : asset.network_scope === "local_container"
+                                          ? "Docker Container"
+                                          : asset.network_scope === "virtual_interface"
+                                          ? "Virtual Adapter"
+                                          : asset.network_scope === "loopback"
+                                          ? "Loopback"
+                                          : asset.network_scope === "authorized_single_host"
+                                          ? "Single Host"
+                                          : asset.network_scope}
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="sub-text">
-                                    {asset.status === "lease-only/unverified" ? "Lease Only (Unverified)" : asset.status === "Offline" ? "Offline" : `ID #${asset.id}`}
+                                    {asset.mac_address ? (
+                                      <span className="mac-address-text" title="Hardware MAC address">
+                                        {asset.mac_address}
+                                        {asset.is_locally_administered_mac ? (
+                                          <span className="mac-type-pill pill-randomized" title="Locally administered (Private/Randomized MAC)">
+                                            Private MAC
+                                          </span>
+                                        ) : (
+                                          <span className="mac-type-pill pill-oui" title="IEEE OUI assigned hardware MAC">
+                                            OUI
+                                          </span>
+                                        )}
+                                      </span>
+                                    ) : (
+                                      asset.status === "Offline" ? "Offline" : `ID #${asset.id}`
+                                    )}
+                                    {asset.last_seen_at && (
+                                      <span className="last-seen-text" title={`Last seen: ${new Date(asset.last_seen_at).toLocaleString()}`} style={{ display: "block", fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
+                                        ⏱ Last seen: {new Date(asset.last_seen_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({new Date(asset.last_seen_at).toLocaleDateString()})
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                               </div>
                             </td>
                             <td>
                               <div>
-                                <strong>{asset.hostname || <span className="text-muted">Not Available</span>}</strong>
-                                {asset.device_type && <span className="device-type-pill">{asset.device_type}</span>}
+                                <strong style={{ fontSize: "14px" }}>{getAssetDisplayName(asset)}</strong>
+                                {asset.device_type && <span className="device-type-pill" style={{ marginLeft: "6px" }}>{asset.device_type}</span>}
                               </div>
+                              {asset.dhcp_client_name && (
+                                <div className="dhcp-reference-pill" title={`Router DHCP Name: ${asset.dhcp_client_name}`}>
+                                  🏷️ Router DHCP: {asset.dhcp_client_name}
+                                </div>
+                              )}
+                              {asset.hostname && asset.hostname !== getAssetDisplayName(asset) && (
+                                <div className="sub-text" style={{ fontSize: "11px", marginTop: "2px" }}>
+                                  OS Host: {asset.hostname}
+                                </div>
+                              )}
                               <div className="sub-text os-cell-sub">
                                 <span>
                                   <span className={!asset.operating_system || asset.operating_system === "Unknown" ? "text-muted" : "os-name-strong"}>
@@ -4004,6 +4324,429 @@ function AuthenticatedDashboard() {
                 </table>
               </div>
             </section>
+          </>
+        );
+      })()}
+
+      {/* -------------------------------- */}
+      {/* PERMANENT SCAN HISTORY (Stage 15) */}
+      {/* -------------------------------- */}
+      {activePage === "scan-history" && (() => {
+        const totalScans = scanHistoryTotal || scanHistory.length;
+        const completedScans = scanHistory.filter((s) => s.status === "completed").length;
+        const piScans = scanHistory.filter((s) => s.scan_source === "pi_agent_l2").length;
+        const presenceSnapshots = scanHistory.filter((s) => s.is_presence_snapshot).length;
+
+        return (
+          <>
+            {/* 1. SCAN HISTORY KPI CARDS */}
+            <section className="cards cards-four">
+              <div className="card">
+                <div className="card-label">Total Scan Runs</div>
+                <div className="card-val">{totalScans}</div>
+                <div className="card-sub">{completedScans} successfully completed</div>
+              </div>
+              <div className="card">
+                <div className="card-label">Pi Agent L2 Runs</div>
+                <div className="card-val highlight-blue">{piScans}</div>
+                <div className="card-sub">Layer-2 ARP authoritative sweeps</div>
+              </div>
+              <div className="card">
+                <div className="card-label">Presence Snapshots</div>
+                <div className="card-val highlight-green">{presenceSnapshots}</div>
+                <div className="card-sub">Active presence updates</div>
+              </div>
+              <div className="card">
+                <div className="card-label">Monitored CIDR</div>
+                <div className="card-val font-mono" style={{ fontSize: "1.2rem" }}>192.168.1.0/24</div>
+                <div className="card-sub">Physical LAN Subnet Scope</div>
+              </div>
+            </section>
+
+            {/* 2. SCAN HISTORY TABLE PANEL */}
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Permanent Scan History & Run Registry</h2>
+                  <p className="panel-desc">
+                    Append-only historical audit of discovery scans, host presence observations, open ports, and detected vulnerabilities.
+                  </p>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={fetchScanHistory}
+                    disabled={scanHistoryLoading}
+                  >
+                    {scanHistoryLoading ? "Loading..." : "↻ Refresh History"}
+                  </button>
+                </div>
+              </div>
+
+              {scanHistoryError && (
+                <div className="alert alert-danger" style={{ margin: "16px" }}>
+                  {scanHistoryError}
+                </div>
+              )}
+
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Run ID</th>
+                      <th>Target Scope</th>
+                      <th>Source & Engine</th>
+                      <th>Run Type</th>
+                      <th>Started / Duration</th>
+                      <th>Observed Hosts</th>
+                      <th>Findings</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scanHistory.length === 0 ? (
+                      <tr>
+                        <td colSpan="9" className="empty-cell">
+                          {scanHistoryLoading ? "Loading scan history..." : "No scan history recorded yet."}
+                        </td>
+                      </tr>
+                    ) : (
+                      scanHistory.map((scan) => {
+                        const isSnapshot = scan.is_presence_snapshot;
+                        const isPi = scan.scan_source === "pi_agent_l2";
+                        return (
+                          <tr key={scan.id}>
+                            <td>
+                              <strong className="font-mono">#{scan.id}</strong>
+                              {isSnapshot && (
+                                <span className="scope-badge badge-live-present" style={{ display: "block", marginTop: "4px", fontSize: "10px" }}>
+                                  Live Snapshot
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <strong className="font-mono">{scan.target_cidr || scan.target || "192.168.1.0/24"}</strong>
+                              <div className="sub-text">Physical LAN</div>
+                            </td>
+                            <td>
+                              <span className={`scan-source-pill ${isPi ? "pill-pi-agent" : "pill-container"}`}>
+                                {isPi ? "🥧 Pi Agent L2 ARP" : "🐳 Container Fallback"}
+                              </span>
+                            </td>
+                            <td>
+                              <span className="badge badge-neutral">
+                                {scan.scan_type || "discovery"}
+                              </span>
+                              <div className="sub-text">{scan.is_scheduled ? "Scheduled Job" : "Manual Trigger"}</div>
+                            </td>
+                            <td>
+                              <div>{scan.created_at ? new Date(scan.created_at).toLocaleString() : "Unknown"}</div>
+                              <div className="sub-text">
+                                Duration: {scan.duration_seconds != null ? `${scan.duration_seconds}s` : "N/A"}
+                              </div>
+                            </td>
+                            <td>
+                              <strong style={{ color: "#38bdf8" }}>
+                                {scan.hosts_observed_count ?? scan.total_hosts_found ?? 0} Observed
+                              </strong>
+                              <div className="sub-text">
+                                {scan.new_hosts_found ? `+${scan.new_hosts_found} new` : "0 new"} · {scan.hosts_offline_count ?? 0} offline
+                              </div>
+                            </td>
+                            <td>
+                              <span className="font-mono font-semibold">
+                                {scan.vulnerabilities_detected_count ?? 0}
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`status-pill ${scan.status === "completed" ? "status-success" : scan.status === "failed" ? "status-danger" : "status-warning"}`}>
+                                {scan.status}
+                              </span>
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn-secondary btn-sm"
+                                onClick={() => inspectScanRun(scan.id)}
+                                disabled={inspectLoading}
+                              >
+                                Inspect Run
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 3. INSPECT RUN MODAL / DRAWER */}
+            {selectedScanRun && (
+              <div className="modal-backdrop" onClick={() => setSelectedScanRun(null)}>
+                <div className="modal-content scan-inspect-modal" onClick={(e) => e.stopPropagation()}>
+                  <div className="modal-header">
+                    <div>
+                      <h3 style={{ margin: 0, color: "#f8fafc" }}>
+                        Scan Run #{selectedScanRun.id} Inspection Details
+                      </h3>
+                      <span className="sub-text">
+                        Target: {selectedScanRun.target_cidr || selectedScanRun.target} · Source: {selectedScanRun.scan_source} · Status: {selectedScanRun.status}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="modal-close-btn"
+                      onClick={() => setSelectedScanRun(null)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="modal-body" style={{ padding: "20px" }}>
+                    {/* Scan summary banner */}
+                    <div className="scan-coverage-callout">
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
+                        <div>
+                          <span className="text-muted" style={{ fontSize: "11px" }}>Execution Time</span>
+                          <div style={{ fontWeight: 600, color: "#f8fafc" }}>
+                            {selectedScanRun.created_at ? new Date(selectedScanRun.created_at).toLocaleString() : "Unknown"}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-muted" style={{ fontSize: "11px" }}>Duration</span>
+                          <div style={{ fontWeight: 600, color: "#f8fafc" }}>
+                            {selectedScanRun.duration_seconds != null ? `${selectedScanRun.duration_seconds} seconds` : "N/A"}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-muted" style={{ fontSize: "11px" }}>Observed Devices</span>
+                          <div style={{ fontWeight: 600, color: "#38bdf8" }}>
+                            {selectedScanRun.observations_count || selectedScanRun.observations?.length || 0} Devices
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-muted" style={{ fontSize: "11px" }}>Presence Snapshot</span>
+                          <div style={{ fontWeight: 600, color: selectedScanRun.is_presence_snapshot ? "#10b981" : "#94a3b8" }}>
+                            {selectedScanRun.is_presence_snapshot ? "Yes (Active Snapshot)" : "No (Historical Run)"}
+                          </div>
+                        </div>
+                      </div>
+                      {selectedScanRun.error_message && (
+                        <div className="alert alert-danger" style={{ marginTop: "10px" }}>
+                          Scan Note / Error: {selectedScanRun.error_message}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Sub-tabs for run inspection */}
+                    <div className="segmented-tabs" style={{ margin: "16px 0" }}>
+                      <button
+                        type="button"
+                        className={`tab-btn ${scanInspectTab === "observations" ? "active" : ""}`}
+                        onClick={() => setScanInspectTab("observations")}
+                      >
+                        Observed Hosts ({selectedScanRun.observations?.length || 0})
+                      </button>
+                      <button
+                        type="button"
+                        className={`tab-btn ${scanInspectTab === "absent" ? "active" : ""}`}
+                        onClick={() => setScanInspectTab("absent")}
+                      >
+                        Absent Physical LAN Hosts ({selectedScanRun.absent_physical_lan_devices?.length || 0})
+                      </button>
+                      <button
+                        type="button"
+                        className={`tab-btn ${scanInspectTab === "drift" ? "active" : ""}`}
+                        onClick={() => setScanInspectTab("drift")}
+                      >
+                        Drift Events ({selectedScanRun.drift_events?.length || 0})
+                      </button>
+                    </div>
+
+                    {/* Tab: Observations */}
+                    {scanInspectTab === "observations" && (
+                      <div className="table-responsive">
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Observed IP / MAC</th>
+                              <th>Device Name</th>
+                              <th>OS Fingerprint & Conf</th>
+                              <th>Ports</th>
+                              <th>Findings</th>
+                              <th>Assessment Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(selectedScanRun.observations || []).length === 0 ? (
+                              <tr>
+                                <td colSpan="6" className="empty-cell">
+                                  No individual host observations recorded for this run.
+                                </td>
+                              </tr>
+                            ) : (
+                              selectedScanRun.observations.map((obs) => (
+                                <tr key={obs.id}>
+                                  <td>
+                                    <strong className="ip-text">{obs.ip_address}</strong>
+                                    <div className="sub-text font-mono">
+                                      {obs.mac_address || "MAC not observed"}
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <div>
+                                      <strong>{getAssetDisplayName(obs)}</strong>
+                                      {obs.device_type && <span className="device-type-pill" style={{ marginLeft: "6px" }}>{obs.device_type}</span>}
+                                    </div>
+                                    {obs.dhcp_client_name && (
+                                      <div className="sub-text" style={{ fontSize: "11px", color: "var(--accent-blue)" }}>
+                                        🏷️ DHCP: {obs.dhcp_client_name}
+                                      </div>
+                                    )}
+                                    {obs.hostname && obs.hostname !== getAssetDisplayName(obs) && (
+                                      <div className="sub-text" style={{ fontSize: "11px" }}>
+                                        OS: {obs.hostname}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <span>{obs.operating_system || "Unknown"}</span>
+                                    {obs.os_confidence && (
+                                      <span className={`os-conf-badge conf-${obs.os_confidence.toLowerCase()}`} style={{ marginLeft: "6px" }}>
+                                        {obs.os_confidence}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <span className="port-count-pill">
+                                      {obs.open_ports ? (Array.isArray(obs.open_ports) ? obs.open_ports.length : obs.open_ports.split(",").length) : 0} Ports
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <span className="badge badge-neutral">
+                                      {obs.vulnerabilities_count || obs.findings_count || 0} findings
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <span className="posture-chip posture-info">
+                                      {obs.assessment_status || "Assessed"}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* Tab: Absent Hosts */}
+                    {scanInspectTab === "absent" && (
+                      <div>
+                        <p className="sub-text" style={{ marginBottom: "12px" }}>
+                          These physical LAN devices were known in the historical repository but were NOT reachable or detected during this specific scan run.
+                        </p>
+                        <div className="table-responsive">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Historical IP</th>
+                                <th>MAC Address</th>
+                                <th>Device Name</th>
+                                <th>Status in Platform</th>
+                                <th>Last Seen</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(selectedScanRun.absent_physical_lan_devices || []).length === 0 ? (
+                                <tr>
+                                  <td colSpan="5" className="empty-cell">
+                                    All known physical LAN devices were observed in this run! No absent devices.
+                                  </td>
+                                </tr>
+                              ) : (
+                                selectedScanRun.absent_physical_lan_devices.map((device) => (
+                                  <tr key={device.id}>
+                                    <td>
+                                      <strong className="ip-text">{device.ip_address}</strong>
+                                    </td>
+                                    <td className="font-mono">{device.mac_address || "None"}</td>
+                                    <td>{getAssetDisplayName(device)}</td>
+                                    <td>
+                                      <span className="scope-badge badge-disconnected">
+                                        {device.status || "Offline"}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      {device.last_seen_at ? new Date(device.last_seen_at).toLocaleString() : "Never"}
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Tab: Drift Events */}
+                    {scanInspectTab === "drift" && (
+                      <div className="table-responsive">
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Event Type</th>
+                              <th>Severity</th>
+                              <th>Target IP</th>
+                              <th>Description / Details</th>
+                              <th>Detected At</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(selectedScanRun.drift_events || []).length === 0 ? (
+                              <tr>
+                                <td colSpan="5" className="empty-cell">
+                                  No drift events recorded for this scan run.
+                                </td>
+                              </tr>
+                            ) : (
+                              selectedScanRun.drift_events.map((drift) => (
+                                <tr key={drift.id}>
+                                  <td>
+                                    <span className="badge badge-neutral">{drift.event_type}</span>
+                                  </td>
+                                  <td>
+                                    <span className={`badge ${getRiskClass(drift.severity)}`}>
+                                      {drift.severity}
+                                    </span>
+                                  </td>
+                                  <td className="font-mono">{drift.ip_address}</td>
+                                  <td>{drift.description}</td>
+                                  <td>{drift.detected_at ? new Date(drift.detected_at).toLocaleString() : "Unknown"}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                  <div className="modal-footer" style={{ padding: "12px 20px", display: "flex", justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => setSelectedScanRun(null)}
+                    >
+                      Close Inspection
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         );
       })()}
@@ -4498,7 +5241,7 @@ function AuthenticatedDashboard() {
                                 </td>
                                 <td>
                                   <span className="ip-pill">{asset ? asset.ip_address : `Asset #${risk.asset_id}`}</span>
-                                  {asset?.hostname && <div className="sub-text font-mono">{asset.hostname}</div>}
+                                  {asset && <div className="sub-text font-mono">{getAssetDisplayName(asset)}</div>}
                                 </td>
                                 <td>
                                   <span className={`badge ${getRiskClass(risk.inherent_risk_level || risk.risk_level)}`}>
@@ -6293,8 +7036,10 @@ function AuthenticatedDashboard() {
             const product = (v.product || "").toLowerCase();
 
             const asset = assets.find((a) => a.id === v.asset_id);
-            const assetIp = (asset?.ip_address || "").toLowerCase();
-            const assetHost = (asset?.hostname || "").toLowerCase();
+            const assetIp = (v.asset_ip || asset?.ip_address || "").toLowerCase();
+            const assetHost = (v.asset_hostname || asset?.hostname || "").toLowerCase();
+            const assetDisp = (v.asset_display_name || (asset ? getAssetDisplayName(asset) : "")).toLowerCase();
+            const assetDhcp = (v.asset_dhcp_client_name || asset?.dhcp_client_name || "").toLowerCase();
 
             if (
               !title.includes(q) &&
@@ -6303,7 +7048,9 @@ function AuthenticatedDashboard() {
               !service.includes(q) &&
               !product.includes(q) &&
               !assetIp.includes(q) &&
-              !assetHost.includes(q)
+              !assetHost.includes(q) &&
+              !assetDisp.includes(q) &&
+              !assetDhcp.includes(q)
             ) {
               return false;
             }
@@ -6573,6 +7320,42 @@ function AuthenticatedDashboard() {
                 </div>
               </div>
 
+              {/* PRESENCE MODE FILTER TABS */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+                <div className="presence-mode-bar">
+                  <button
+                    type="button"
+                    className={`presence-mode-btn ${vulnPresenceMode === "live" ? "active" : ""}`}
+                    onClick={() => {
+                      setVulnPresenceMode("live");
+                      fetchVulnerabilities("live");
+                    }}
+                  >
+                    🟢 Current Live Findings ({vulnPresenceSummary?.live_findings_count ?? (vulnPresenceMode === "live" ? totalVulns : "...")})
+                  </button>
+                  <button
+                    type="button"
+                    className={`presence-mode-btn ${vulnPresenceMode === "historical" ? "active" : ""}`}
+                    onClick={() => {
+                      setVulnPresenceMode("historical");
+                      fetchVulnerabilities("historical");
+                    }}
+                  >
+                    📁 Disconnected Asset Findings ({vulnPresenceSummary?.historical_findings_count ?? "..."})
+                  </button>
+                  <button
+                    type="button"
+                    className={`presence-mode-btn ${vulnPresenceMode === "all" ? "active" : ""}`}
+                    onClick={() => {
+                      setVulnPresenceMode("all");
+                      fetchVulnerabilities("all");
+                    }}
+                  >
+                    🌐 All Historical Findings ({vulnPresenceSummary?.total_findings_count ?? "..."})
+                  </button>
+                </div>
+              </div>
+
               {/* SEARCH & FILTERS TOOLBAR */}
               <div className="asset-toolbar">
                 <div className="asset-search-box">
@@ -6691,7 +7474,17 @@ function AuthenticatedDashboard() {
                         return (
                           <tr key={v.id}>
                             <td>
-                              <div className="font-semibold text-white">{v.title}</div>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                <div className="font-semibold text-white">{v.title}</div>
+                                {v.verification_status && (
+                                  <span
+                                    className={`verification-badge verif-${v.verification_status.toLowerCase()}`}
+                                    title={`Verification status: ${v.verification_status}`}
+                                  >
+                                    {v.verification_status}
+                                  </span>
+                                )}
+                              </div>
                               <div className="sub-text">
                                 ID #{v.id}
                                 {v.product && ` • ${v.product}${v.version ? ` (${v.version})` : ""}`}
@@ -6728,13 +7521,34 @@ function AuthenticatedDashboard() {
                             <td>
                               {asset ? (
                                 <div>
-                                  <strong className="ip-text">{asset.ip_address}</strong>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <strong className="ip-text">{asset.ip_address}</strong>
+                                    {asset.is_present !== undefined && (
+                                      <span
+                                        className={`scope-badge ${asset.is_present ? "badge-live-present" : "badge-disconnected"}`}
+                                        style={{ fontSize: "10px", padding: "1px 6px" }}
+                                        title={asset.is_present ? "Confirmed reachable in physical LAN" : "Disconnected / offline asset"}
+                                      >
+                                        {asset.is_present ? "🟢 Live" : "⚪ Disconnected"}
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="sub-text">
-                                    {asset.hostname || asset.environment || `ID #${asset.id}`}
+                                    {v.asset_display_name || getAssetDisplayName(asset)}
                                   </div>
                                 </div>
                               ) : v.asset_id ? (
-                                <span className="ip-pill">Asset #{v.asset_id}</span>
+                                <div>
+                                  <span className="ip-pill">{v.asset_display_name || `Asset #${v.asset_id}`}</span>
+                                  {v.asset_is_present !== undefined && (
+                                    <span
+                                      className={`scope-badge ${v.asset_is_present ? "badge-live-present" : "badge-disconnected"}`}
+                                      style={{ fontSize: "10px", padding: "1px 6px", marginLeft: "6px" }}
+                                    >
+                                      {v.asset_is_present ? "🟢 Live" : "⚪ Disconnected"}
+                                    </span>
+                                  )}
+                                </div>
                               ) : (
                                 <span className="text-muted">Not Assigned</span>
                               )}
@@ -7192,8 +8006,8 @@ function AuthenticatedDashboard() {
                               <span className="ip-pill">
                                 {asset ? asset.ip_address : (r.asset_id ? `Asset #${r.asset_id}` : "—")}
                               </span>
-                              {asset?.hostname && (
-                                <div className="sub-text">{asset.hostname}</div>
+                              {asset && (
+                                <div className="sub-text">{getAssetDisplayName(asset)}</div>
                               )}
                             </td>
                             <td>
@@ -8108,7 +8922,35 @@ function AuthenticatedDashboard() {
                     </div>
                   )}
                   <div className="kv-row">
-                    <span className="kv-label">Hostname</span>
+                    <span className="kv-label">Display Name</span>
+                    <span className="kv-val"><strong>{getAssetDisplayName(viewingAsset)}</strong></span>
+                  </div>
+                  <div className="kv-row">
+                    <span className="kv-label">Router Client Name</span>
+                    <span className="kv-val">
+                      {viewingAsset.dhcp_client_name || viewingAsset.router_client_name ? (
+                        <span className="dhcp-reference-pill">🏷️ {viewingAsset.dhcp_client_name || viewingAsset.router_client_name}</span>
+                      ) : (
+                        <span className="text-muted">Not reported in DHCP list</span>
+                      )}
+                    </span>
+                  </div>
+                  {(viewingAsset.dhcp_lease_source || viewingAsset.router_name_source) && (
+                    <div className="kv-row">
+                      <span className="kv-label">DHCP Name Source</span>
+                      <span className="kv-val text-xs font-mono">{viewingAsset.dhcp_lease_source || viewingAsset.router_name_source}</span>
+                    </div>
+                  )}
+                  {(viewingAsset.dhcp_observed_at || viewingAsset.router_name_observed_at) && (
+                    <div className="kv-row">
+                      <span className="kv-label">DHCP Observed At</span>
+                      <span className="kv-val text-xs text-slate">
+                        {formatDateTime(viewingAsset.dhcp_observed_at || viewingAsset.router_name_observed_at)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="kv-row">
+                    <span className="kv-label">OS Hostname</span>
                     <span className="kv-val">{viewingAsset.hostname || <span className="text-muted">Not Available</span>}</span>
                   </div>
                   <div className="kv-row">

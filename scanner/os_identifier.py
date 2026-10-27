@@ -171,7 +171,8 @@ def identify_os_and_device(host_data: Dict[str, Any]) -> Dict[str, Any]:
 
     # 3. Authorized DHCP / Router Client Metadata Evidence
     if dhcp_info and isinstance(dhcp_info, dict):
-        if "apple ios" in dhcp_notes or "iphone" in dhcp_notes:
+        dhcp_hn = (dhcp_info.get("hostname") or "").lower()
+        if "apple ios" in dhcp_notes or "iphone" in dhcp_notes or "iphone" in dhcp_hn or "ipad" in dhcp_hn:
             return {
                 "operating_system": "Apple iOS",
                 "os_confidence": "Medium",

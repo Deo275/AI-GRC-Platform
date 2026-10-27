@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, Dict, List, Tuple
 import sys
 import os
+import json
 import ipaddress
 import logging
 import time
@@ -68,6 +69,11 @@ try:
         reconcile_duplicate_assets,
         normalize_ip,
         run_schema_migrations,
+        determine_network_scope,
+        is_locally_administered_mac,
+        get_preferred_display_name,
+        sync_router_dhcp_clients,
+        is_valid_client_name,
     )
 except ImportError:
     from backend.monitoring import (
@@ -84,7 +90,26 @@ except ImportError:
         reconcile_duplicate_assets,
         normalize_ip,
         run_schema_migrations,
+        determine_network_scope,
+        is_locally_administered_mac,
+        get_preferred_display_name,
+        sync_router_dhcp_clients,
+        is_valid_client_name,
     )
+
+try:
+    from scanner.router_dhcp import (
+        get_dhcp_registry_status,
+        import_dhcp_client_list,
+        get_authorized_dhcp_info_for_host,
+    )
+except ImportError:
+    from router_dhcp import (
+        get_dhcp_registry_status,
+        import_dhcp_client_list,
+        get_authorized_dhcp_info_for_host,
+    )
+
 
 try:
     from governance import (
@@ -272,8 +297,11 @@ def get_operator_identity(request: Request = None) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def format_asset(asset: models.Asset) -> dict:
+    pref_display_name = get_preferred_display_name(asset)
     return {
         "id": asset.id,
+        "display_name": pref_display_name,
+        "preferred_display_name": pref_display_name,
         "ip_address": asset.ip_address,
         "hostname": asset.hostname,
         "mac_address": asset.mac_address,
@@ -300,6 +328,22 @@ def format_asset(asset: models.Asset) -> dict:
         "assessment_status": getattr(asset, "assessment_status", "Not assessed"),
         "last_assessed_at": getattr(asset, "last_assessed_at", None),
         "scan_coverage": getattr(asset, "scan_coverage", None),
+        "network_scope": getattr(asset, "network_scope", "physical_lan") or "unknown",
+        "assigned_ip_status": getattr(asset, "assigned_ip_status", "active_assignment") or "active_assignment",
+        "offline_reason": getattr(asset, "offline_reason", None),
+        "dhcp_lease_source": getattr(asset, "dhcp_lease_source", None),
+        "dhcp_client_name": getattr(asset, "dhcp_client_name", None),
+        "dhcp_observed_at": getattr(asset, "dhcp_observed_at", None).isoformat() if getattr(asset, "dhcp_observed_at", None) else None,
+        "router_client_name": getattr(asset, "dhcp_client_name", None),
+        "router_name_source": getattr(asset, "dhcp_lease_source", None),
+        "router_name_observed_at": getattr(asset, "dhcp_observed_at", None).isoformat() if getattr(asset, "dhcp_observed_at", None) else None,
+        "consecutive_scan_misses": getattr(asset, "consecutive_scan_misses", 0) or 0,
+        "last_successful_scan_at": getattr(asset, "last_successful_scan_at", None),
+        "is_present": bool(getattr(asset, "is_present", False)),
+        "last_present_scan_job_id": getattr(asset, "last_present_scan_job_id", None),
+        "vulnerabilities_count": len([v for v in (getattr(asset, "vulnerabilities", None) or []) if getattr(v, "status", None) == "Open"]),
+        "open_vulnerabilities": [v.title for v in (getattr(asset, "vulnerabilities", None) or []) if getattr(v, "status", None) == "Open"],
+        "is_locally_administered_mac": is_locally_administered_mac(getattr(asset, "mac_address", None)),
         "address_history": [
             {
                 "id": h.id,
@@ -312,6 +356,7 @@ def format_asset(asset: models.Asset) -> dict:
             for h in (getattr(asset, "address_history", None) or [])
         ],
     }
+
 
 
 def format_risk(risk: models.Risk) -> dict:
@@ -429,18 +474,65 @@ def format_mapping(m: models.ControlComplianceMapping) -> dict:
 
 
 def format_scan_job(job: models.ScanJob) -> dict:
+    duration = None
+    if job.started_at and job.completed_at:
+        duration = round((job.completed_at - job.started_at).total_seconds(), 1)
     return {
         "id": job.id,
         "target": job.target,
         "scan_type": job.scan_type,
+        "scan_source": getattr(job, "scan_source", "network_sweep") or "network_sweep",
+        "is_presence_snapshot": bool(getattr(job, "is_presence_snapshot", False)),
         "status": job.status,
         "progress_percent": job.progress_percent,
         "discovered_assets_count": job.discovered_assets_count,
         "discovered_vulns_count": job.discovered_vulns_count,
         "error_message": job.error_message,
+        "duration_seconds": duration,
         "created_at": job.created_at,
         "started_at": job.started_at,
         "completed_at": job.completed_at,
+    }
+
+
+def format_scan_observation(obs: models.ScanObservation) -> dict:
+    ports = []
+    if obs.open_ports:
+        try:
+            ports = json.loads(obs.open_ports)
+        except Exception:
+            ports = [p.strip() for p in str(obs.open_ports).split(",") if p.strip()]
+
+    vuln_titles = []
+    if obs.vulnerabilities_summary:
+        try:
+            vuln_titles = json.loads(obs.vulnerabilities_summary)
+        except Exception:
+            vuln_titles = []
+
+    pref_display_name = get_preferred_display_name(obs.asset if obs.asset else obs)
+    dhcp_name = getattr(obs, "dhcp_client_name", None) or (getattr(obs.asset, "dhcp_client_name", None) if getattr(obs, "asset", None) else None)
+
+    return {
+        "id": obs.id,
+        "scan_job_id": obs.scan_job_id,
+        "asset_id": obs.asset_id,
+        "display_name": pref_display_name,
+        "preferred_display_name": pref_display_name,
+        "dhcp_client_name": dhcp_name,
+        "ip_address": obs.ip_address,
+        "mac_address": obs.mac_address,
+        "hostname": obs.hostname,
+        "operating_system": obs.operating_system,
+        "os_confidence": obs.os_confidence,
+        "device_type": obs.device_type,
+        "open_ports": ports,
+        "vulnerabilities_count": obs.vulnerabilities_count,
+        "vulnerabilities_summary": vuln_titles,
+        "assessment_status": obs.assessment_status,
+        "scan_coverage": obs.scan_coverage,
+        "network_scope": obs.network_scope,
+        "observed_at": obs.observed_at,
     }
 
 
@@ -560,8 +652,17 @@ def on_startup():
         run_schema_migrations(engine)
     except Exception as exc:
         logger.warning("Database schema migration check notice: %s", exc)
+    try:
+        db = SessionLocal()
+        try:
+            sync_router_dhcp_clients(db)
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("Startup router DHCP synchronization notice: %s", exc)
     monitoring_scheduler.start()
     run_dev_bootstrap()
+
 
 
 
@@ -933,11 +1034,19 @@ def scan_network(
             assessment_status = risk_result.get("assessment_status", "Completed — no findings detected" if not vulnerability_result else "Findings detected")
             scan_cov = f"{len(open_ports_list)} open port(s) evaluated"
 
+        # Check router DHCP reference data safely (never overriding if MAC mismatch)
+        dhcp_info = get_authorized_dhcp_info_for_host(target, mac=result.get("mac_address"))
+        net_scope = determine_network_scope(target, source="single_host_scan")
+
         # Reconcile or create asset using stable identity hierarchy
         host_scan_payload = {
             "ip_address": target,
-            "hostname": result.get("hostname") or os_info.get("hostname"),
-            "mac_address": result.get("mac_address"),
+            "hostname": result.get("hostname") or (dhcp_info.get("client_name") if dhcp_info else None) or os_info.get("hostname"),
+            "mac_address": result.get("mac_address") or (dhcp_info.get("mac") if dhcp_info else None),
+            "network_scope": net_scope,
+            "assigned_ip_status": "active_assignment",
+            "dhcp_lease_source": dhcp_info.get("lease_source") if dhcp_info else None,
+            "dhcp_client_name": dhcp_info.get("client_name") if dhcp_info else None,
             "operating_system": os_info.get("operating_system") or "Unknown",
             "os_confidence": os_info.get("os_confidence"),
             "os_fingerprint_reason": os_info.get("os_fingerprint_reason"),
@@ -1319,6 +1428,20 @@ def discover_network(
             detail="Network size too large. Maximum allowed size is /24."
         )
 
+    if os.getenv("STRICT_PHYSICAL_LAN_DISCOVERY", "false").strip().lower() in ("true", "1", "yes"):
+        configured_lan_str = os.getenv("NMAP_NETWORK_CIDR", "192.168.1.0/24").strip()
+        try:
+            configured_lan = ipaddress.ip_network(configured_lan_str, strict=False)
+            if str(net) != str(configured_lan) and not net.subnet_of(configured_lan):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Network discovery restricted to configured physical LAN ({configured_lan_str})."
+                )
+        except Exception as exc:
+            if isinstance(exc, HTTPException):
+                raise exc
+
+
     # Discover active hosts
     try:
         hosts = discover_hosts(network)
@@ -1390,11 +1513,19 @@ def discover_network(
                 assessment_status = risk_result.get("assessment_status", "Completed — no findings detected" if not vulnerability_result else "Findings detected")
                 scan_cov = f"{len(open_ports_list)} open port(s) evaluated"
 
+            # Check router DHCP reference data safely
+            dhcp_info = get_authorized_dhcp_info_for_host(host, mac=result.get("mac_address"))
+            net_scope = determine_network_scope(host, source="network_discovery")
+
             # Reconcile or create asset using stable identity hierarchy
             host_disc_payload = {
                 "ip_address": host,
-                "hostname": result.get("hostname") or os_info.get("hostname"),
-                "mac_address": result.get("mac_address"),
+                "hostname": result.get("hostname") or (dhcp_info.get("client_name") if dhcp_info else None) or os_info.get("hostname"),
+                "mac_address": result.get("mac_address") or (dhcp_info.get("mac") if dhcp_info else None),
+                "network_scope": net_scope,
+                "assigned_ip_status": "active_assignment",
+                "dhcp_lease_source": dhcp_info.get("lease_source") if dhcp_info else None,
+                "dhcp_client_name": dhcp_info.get("client_name") if dhcp_info else None,
                 "operating_system": os_info.get("operating_system") or "Unknown",
                 "os_confidence": os_info.get("os_confidence"),
                 "os_fingerprint_reason": os_info.get("os_fingerprint_reason"),
@@ -1535,18 +1666,96 @@ class AssetReconcileRequest(BaseModel):
 
 @app.get("/assets")
 def get_assets(
+    presence_mode: Optional[str] = Query("live", description="Presence mode: 'live' (only currently reachable devices in LAN), 'historical' (disconnected / absent devices), 'all' (all assets)"),
     include_deactivated: bool = Query(False, description="Whether to include deactivated/reconciled asset records"),
+    scope: Optional[str] = Query(None, description="Filter by network scope (e.g. physical_lan, local_container, virtual_interface, loopback, out_of_scope)"),
+    assigned_ip_status: Optional[str] = Query(None, description="Filter by assigned IP status (e.g. active_assignment, historical_lease_displaced, static_reservation, provisional)"),
+    discovery_source: Optional[str] = Query(None, description="Filter by discovery source"),
+    status: Optional[str] = Query(None, description="Filter by asset status (e.g. Online, Offline, deactivated)"),
     current_user: models.User = Depends(require_analyst),
 ):
     db = SessionLocal()
     try:
+        norm_mode = (presence_mode or "live").strip().lower()
         query = db.query(models.Asset)
-        if not include_deactivated:
+        if not include_deactivated and (not status or status.lower() != "deactivated"):
             query = query.filter(models.Asset.status != "deactivated")
+
+        if norm_mode == "live":
+            # Live physical LAN inventory: confirmed reachable on physical LAN
+            if not scope:
+                query = query.filter(models.Asset.network_scope == "physical_lan")
+            query = query.filter(models.Asset.is_present == True)
+        elif norm_mode == "historical":
+            query = query.filter(models.Asset.is_present == False)
+        # If 'all', do not filter by is_present
+
+        if scope:
+            query = query.filter(models.Asset.network_scope == scope.strip().lower())
+        if assigned_ip_status:
+            query = query.filter(models.Asset.assigned_ip_status == assigned_ip_status.strip().lower())
+        if discovery_source:
+            query = query.filter(models.Asset.discovery_source == discovery_source.strip())
+        if status:
+            query = query.filter(models.Asset.status.ilike(status.strip()))
+
         assets = query.order_by(models.Asset.id).all()
+
+        configured_cidr = os.getenv("NMAP_NETWORK_CIDR", "192.168.1.0/24").strip()
+
+        live_count = db.query(models.Asset).filter(
+            models.Asset.network_scope == "physical_lan",
+            models.Asset.is_present == True,
+            models.Asset.status != "deactivated",
+        ).count()
+
+        historical_count = db.query(models.Asset).filter(
+            models.Asset.is_present == False,
+            models.Asset.status != "deactivated",
+        ).count()
+
+        total_active = db.query(models.Asset).filter(
+            models.Asset.status != "deactivated",
+        ).count()
+
+        latest_presence_scan = (
+            db.query(models.ScanJob)
+            .filter(models.ScanJob.is_presence_snapshot == True)
+            .filter(models.ScanJob.status == "Completed")
+            .order_by(models.ScanJob.completed_at.desc(), models.ScanJob.id.desc())
+            .first()
+        )
+        if not latest_presence_scan:
+            latest_presence_scan = (
+                db.query(models.ScanJob)
+                .filter(models.ScanJob.target == configured_cidr)
+                .filter(models.ScanJob.status == "Completed")
+                .order_by(models.ScanJob.completed_at.desc(), models.ScanJob.id.desc())
+                .first()
+            )
+
+        latest_any_scan = (
+            db.query(models.ScanJob)
+            .filter(models.ScanJob.target == configured_cidr)
+            .order_by(models.ScanJob.id.desc())
+            .first()
+        )
+        is_latest_scan_partial = bool(latest_any_scan and latest_any_scan.status in ("Failed", "Cancelled", "Running"))
+
         return {
             "count": len(assets),
-            "assets": [format_asset(asset) for asset in assets]
+            "presence_mode": norm_mode,
+            "summary": {
+                "live_count": live_count,
+                "historical_count": historical_count,
+                "total_assets": total_active,
+                "configured_cidr": configured_cidr,
+                "latest_successful_scan_at": latest_presence_scan.completed_at.isoformat() if latest_presence_scan and latest_presence_scan.completed_at else None,
+                "latest_scan_job_id": latest_presence_scan.id if latest_presence_scan else None,
+                "is_latest_scan_partial": is_latest_scan_partial,
+                "latest_scan_status": latest_any_scan.status if latest_any_scan else None,
+            },
+            "assets": [format_asset(asset) for asset in assets],
         }
     finally:
         db.close()
@@ -1574,6 +1783,61 @@ def reconcile_assets_endpoint(
         raise HTTPException(status_code=400, detail=str(ve))
     finally:
         db.close()
+
+
+class DhcpImportRequest(BaseModel):
+    clients: List[Dict[str, Any]]
+    source: Optional[str] = "manual_admin_import"
+
+
+@app.get("/dhcp/status")
+@app.get("/api/v1/dhcp/status")
+def get_dhcp_status_endpoint(
+    current_user: models.User = Depends(require_analyst),
+):
+    """Return status of the router DHCP client registry and static reference data."""
+    return get_dhcp_registry_status()
+
+
+@app.post("/dhcp/import")
+@app.post("/api/v1/dhcp/import")
+def import_dhcp_endpoint(
+    payload: DhcpImportRequest,
+    current_user: models.User = Depends(require_admin),
+):
+    """Import router DHCP client list records into reference registry."""
+    imported_count = import_dhcp_client_list(payload.clients, source_label=payload.source or "manual_admin_import")
+    db = SessionLocal()
+    sync_result = {}
+    try:
+        sync_result = sync_router_dhcp_clients(db)
+    finally:
+        db.close()
+    return {
+        "message": f"Successfully imported {imported_count} DHCP client reference records",
+        "imported_count": imported_count,
+        "sync_result": sync_result,
+        "status": get_dhcp_registry_status(),
+    }
+
+
+@app.post("/dhcp/sync")
+@app.post("/api/v1/dhcp/sync")
+def sync_dhcp_endpoint(
+    current_user: models.User = Depends(require_reviewer),
+):
+    """Synchronize router DHCP client names and metadata into existing asset inventory."""
+    db = SessionLocal()
+    try:
+        result = sync_router_dhcp_clients(db)
+        return {
+            "message": f"Successfully synchronized DHCP client names ({result.get('synced_count', 0)} assets updated)",
+            **result,
+        }
+    finally:
+        db.close()
+
+
 
 
 @app.get("/assets/{asset_id}")
@@ -2127,22 +2391,69 @@ def detach_control_from_risk(
 # ---------------------------------------------------------------------------
 
 @app.get("/vulnerabilities")
-def get_vulnerabilities(current_user: models.User = Depends(require_analyst)):
+def get_vulnerabilities(
+    presence_mode: Optional[str] = Query("live", description="Presence mode: 'live' (only findings on currently reachable LAN devices), 'historical' (findings on disconnected/past devices), 'all' (all findings)"),
+    status: Optional[str] = Query(None, description="Filter by status (e.g. Open, Resolved)"),
+    severity: Optional[str] = Query(None, description="Filter by severity (e.g. Critical, High, Medium, Low)"),
+    current_user: models.User = Depends(require_analyst),
+):
     db = SessionLocal()
-
     try:
-        vulnerabilities = db.query(
-            models.Vulnerability
-        ).order_by(
-            models.Vulnerability.id
-        ).all()
+        norm_mode = (presence_mode or "live").strip().lower()
+        query = db.query(models.Vulnerability).join(models.Asset, models.Vulnerability.asset_id == models.Asset.id)
+
+        if norm_mode == "live":
+            query = query.filter(
+                models.Asset.is_present == True,
+                models.Asset.network_scope == "physical_lan",
+                models.Asset.status != "deactivated",
+            )
+        elif norm_mode == "historical":
+            query = query.filter(
+                models.Asset.is_present == False,
+                models.Asset.status != "deactivated",
+            )
+        # If 'all', do not filter by is_present
+
+        if status:
+            query = query.filter(models.Vulnerability.status.ilike(status.strip()))
+        if severity:
+            query = query.filter(models.Vulnerability.severity.ilike(severity.strip()))
+
+        vulnerabilities = query.order_by(models.Vulnerability.id).all()
+
+        live_count = db.query(models.Vulnerability).join(models.Asset, models.Vulnerability.asset_id == models.Asset.id).filter(
+            models.Asset.is_present == True,
+            models.Asset.network_scope == "physical_lan",
+            models.Asset.status != "deactivated",
+        ).count()
+
+        historical_count = db.query(models.Vulnerability).join(models.Asset, models.Vulnerability.asset_id == models.Asset.id).filter(
+            models.Asset.is_present == False,
+            models.Asset.status != "deactivated",
+        ).count()
+
+        total_count = db.query(models.Vulnerability).count()
 
         return {
             "count": len(vulnerabilities),
+            "presence_mode": norm_mode,
+            "summary": {
+                "live_findings_count": live_count,
+                "historical_findings_count": historical_count,
+                "total_findings_count": total_count,
+            },
             "vulnerabilities": [
                 {
                     "id": vulnerability.id,
                     "asset_id": vulnerability.asset_id,
+                    "asset_ip": vulnerability.asset.ip_address if vulnerability.asset else None,
+                    "asset_hostname": vulnerability.asset.hostname if vulnerability.asset else None,
+                    "asset_display_name": get_preferred_display_name(vulnerability.asset) if vulnerability.asset else None,
+                    "asset_dhcp_client_name": getattr(vulnerability.asset, "dhcp_client_name", None) if vulnerability.asset else None,
+                    "asset_is_present": getattr(vulnerability.asset, "is_present", False) if vulnerability.asset else False,
+                    "asset_network_scope": getattr(vulnerability.asset, "network_scope", "physical_lan") if vulnerability.asset else "unknown",
+
                     "port": vulnerability.port,
                     "service": vulnerability.service,
                     "product": vulnerability.product,
@@ -2158,13 +2469,13 @@ def get_vulnerabilities(current_user: models.User = Depends(require_analyst)):
                     "status": vulnerability.status,
                     "remediation": getattr(vulnerability, "remediation", None),
                     "verification_status": getattr(vulnerability, "verification_status", "Potential"),
+                    "observed_ip_address": getattr(vulnerability, "observed_ip_address", None),
                     "discovered_at": vulnerability.discovered_at,
                     "updated_at": vulnerability.updated_at
                 }
                 for vulnerability in vulnerabilities
             ]
         }
-
     finally:
         db.close()
 
@@ -2827,6 +3138,118 @@ def cancel_monitoring_job(
         return {
             "message": "Scan job cancellation requested",
             "job_id": job_id,
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Stage 15: Permanent Scan History Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/scans/history")
+def list_scan_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = Query(None),
+    target: Optional[str] = Query(None),
+    scan_source: Optional[str] = Query(None),
+    current_user: models.User = Depends(require_analyst),
+):
+    """Retrieve permanent historical scan runs with execution metadata and summary counts."""
+    db = SessionLocal()
+    try:
+        query = db.query(models.ScanJob)
+        if status:
+            query = query.filter(models.ScanJob.status.ilike(status.strip()))
+        if target:
+            query = query.filter(models.ScanJob.target == target.strip())
+        if scan_source:
+            query = query.filter(models.ScanJob.scan_source == scan_source.strip())
+
+        total = query.count()
+        jobs = query.order_by(models.ScanJob.created_at.desc(), models.ScanJob.id.desc()).offset(offset).limit(limit).all()
+
+        history_items = []
+        for j in jobs:
+            obs_count = db.query(models.ScanObservation).filter(models.ScanObservation.scan_job_id == j.id).count()
+            item = format_scan_job(j)
+            item["observations_count"] = obs_count
+            history_items.append(item)
+
+        return {
+            "total": total,
+            "scans": history_items,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/scans/history/{job_id}")
+def get_scan_history_detail(
+    job_id: int = Path(..., description="The ID of the scan job run to inspect"),
+    current_user: models.User = Depends(require_analyst),
+):
+    """Inspect a past scan run, including all observed hosts, ports, findings, drift, and absent devices."""
+    db = SessionLocal()
+    try:
+        job = db.query(models.ScanJob).filter(models.ScanJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Scan run #{job_id} not found")
+
+        observations = (
+            db.query(models.ScanObservation)
+            .filter(models.ScanObservation.scan_job_id == job_id)
+            .order_by(models.ScanObservation.ip_address)
+            .all()
+        )
+
+        observed_ips = {obs.ip_address for obs in observations}
+
+        # Identify historical physical LAN devices absent from this scan run
+        absent_devices = []
+        if job.target:
+            try:
+                target_net = ipaddress.ip_network(job.target, strict=False)
+                historical_assets = db.query(models.Asset).filter(
+                    models.Asset.network_scope == "physical_lan",
+                    models.Asset.status != "deactivated",
+                ).all()
+
+                for a in historical_assets:
+                    try:
+                        if ipaddress.ip_address(a.ip_address) in target_net and a.ip_address not in observed_ips:
+                            absent_devices.append({
+                                "asset_id": a.id,
+                                "ip_address": a.ip_address,
+                                "mac_address": a.mac_address,
+                                "hostname": a.hostname,
+                                "device_type": a.device_type,
+                                "last_seen": a.last_seen,
+                                "assigned_ip_status": a.assigned_ip_status,
+                                "offline_reason": a.offline_reason,
+                            })
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Drift events for this run
+        drift_events = (
+            db.query(models.DriftEvent)
+            .filter(models.DriftEvent.scan_job_id == job_id)
+            .order_by(models.DriftEvent.id)
+            .all()
+        )
+
+        job_meta = format_scan_job(job)
+        job_meta["observations_count"] = len(observations)
+
+        return {
+            "scan": job_meta,
+            "observations": [format_scan_observation(obs) for obs in observations],
+            "absent_devices": absent_devices,
+            "drift_events": [format_drift_event(de) for de in drift_events],
         }
     finally:
         db.close()

@@ -326,7 +326,13 @@ class MonitoringScannerPipeline:
                     if target_net:
                         try:
                             ip_obj = ipaddress.ip_address(ip_addr)
-                            if ip_obj == target_net.network_address or ip_obj == target_net.broadcast_address:
+                            if (
+                                ip_obj == target_net.network_address
+                                or ip_obj == target_net.broadcast_address
+                                or ip_addr.endswith(".255")
+                                or ip_addr.endswith(".0")
+                                or ip_obj not in target_net
+                            ):
                                 continue
                         except ValueError:
                             pass
@@ -362,7 +368,13 @@ class MonitoringScannerPipeline:
                 if target_net:
                     try:
                         ip_obj = ipaddress.ip_address(ip)
-                        if ip_obj == target_net.network_address or ip_obj == target_net.broadcast_address:
+                        if (
+                            ip_obj == target_net.network_address
+                            or ip_obj == target_net.broadcast_address
+                            or ip.endswith(".255")
+                            or ip.endswith(".0")
+                            or ip_obj not in target_net
+                        ):
                             continue
                     except ValueError:
                         pass
