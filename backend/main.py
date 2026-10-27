@@ -1041,7 +1041,7 @@ def scan_network(
         # Reconcile or create asset using stable identity hierarchy
         host_scan_payload = {
             "ip_address": target,
-            "hostname": result.get("hostname") or (dhcp_info.get("client_name") if dhcp_info else None) or os_info.get("hostname"),
+            "hostname": result.get("hostname") or os_info.get("hostname"),
             "mac_address": result.get("mac_address") or (dhcp_info.get("mac") if dhcp_info else None),
             "network_scope": net_scope,
             "assigned_ip_status": "active_assignment",
@@ -1520,7 +1520,7 @@ def discover_network(
             # Reconcile or create asset using stable identity hierarchy
             host_disc_payload = {
                 "ip_address": host,
-                "hostname": result.get("hostname") or (dhcp_info.get("client_name") if dhcp_info else None) or os_info.get("hostname"),
+                "hostname": result.get("hostname") or os_info.get("hostname"),
                 "mac_address": result.get("mac_address") or (dhcp_info.get("mac") if dhcp_info else None),
                 "network_scope": net_scope,
                 "assigned_ip_status": "active_assignment",

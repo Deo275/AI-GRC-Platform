@@ -276,27 +276,46 @@ def _infer_device_type(
     ip: str,
     dhcp_device_type: Optional[str] = None,
 ) -> str:
-    """Infer device category conservatively from evidence."""
+    """Infer device category conservatively from evidence.
+
+    Precedence:
+    1. Reliable OS & Protocol Evidence (Highest priority: Windows, Linux Server, Router, Mobile OS)
+    2. Advisory DHCP Device Type (Used only if it does not contradict conclusive OS evidence)
+    3. Hostname & Vendor Heuristics (Fallback only when OS is unknown or inconclusive)
+    """
+    os_lower = (os_name or "").lower()
+    ports = {int(p.get("port") or 0) for p in open_ports}
+    hn = (hostname or "").lower()
+
+    # Priority 1: Conclusive Windows OS or Windows RPC/SMB core protocol evidence
+    # A Windows machine is ALWAYS a Workstation / Laptop (or Server), NEVER a Mobile / Smartphone,
+    # regardless of router DHCP client names or mobile string patterns in hostnames.
+    if "windows" in os_lower or 135 in ports or 445 in ports:
+        if 88 in ports or 389 in ports or 3268 in ports or "server" in os_lower or "server" in hn:
+            return "Server / Appliance"
+        return "Workstation / Laptop"
+
+    # Priority 2: Conclusive Router / Gateway infrastructure
+    if ip.endswith(".1") or "router" in os_lower or "gateway" in hn:
+        return "Router / Gateway"
+
+    # Priority 3: Conclusive Mobile Operating Systems
+    if "ios" in os_lower or "android" in os_lower or 62078 in ports:
+        return "Mobile / Smartphone"
+
+    # Priority 4: Conclusive Server / Linux Infrastructure
+    if "server" in os_lower or 5432 in ports or 3306 in ports or "raspberry" in (vendor or "").lower():
+        return "Server / Appliance"
+
+    # Priority 5: Advisory DHCP Device Type (when not in conflict with OS evidence)
     if dhcp_device_type:
         return dhcp_device_type
 
-    hn = (hostname or "").lower()
-    os_lower = (os_name or "").lower()
-    ports = {int(p.get("port") or 0) for p in open_ports}
-
-    if ip.endswith(".1") or "router" in hn or "router" in os_lower or "gateway" in hn:
-        return "Router / Gateway"
-
+    # Priority 6: Fallback Hostname & Vendor Heuristics (only when OS is inconclusive)
     if any(k in hn for k in ("iphone", "phone", "android", "realme", "galaxy", "ipad", "pixel", "redmi", "mobile")):
         return "Mobile / Smartphone"
 
-    if "ios" in os_lower or "android" in os_lower:
-        return "Mobile / Smartphone"
-
-    if "raspberry" in (vendor or "").lower() or "server" in hn or 5432 in ports or 3306 in ports or hn == "grc":
-        return "Server / Appliance"
-
-    if "windows" in os_lower or 135 in ports or 445 in ports or "laptop" in hn or "desktop" in hn:
+    if "laptop" in hn or "desktop" in hn or hn.startswith("win-"):
         return "Workstation / Laptop"
 
     if "linux" in os_lower:
@@ -306,3 +325,4 @@ def _infer_device_type(
         return "Unknown"
 
     return "IoT / Embedded"
+

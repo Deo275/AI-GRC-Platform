@@ -39,7 +39,8 @@ KNOWN_ROUTER_DHCP_MACS: Dict[str, str] = {
     "192.168.1.124": "02:EA:2F:FA:3C:B3",
     "192.168.1.127": "E0:C2:64:2A:B4:08",
     "192.168.1.133": "EE:37:8A:B3:BF:95",
-    "192.168.1.142": "C6:8C:01:87:9D:3B",
+    "192.168.1.140": "C6:8C:01:87:9D:3B",
+    "192.168.1.142": "2C:3B:70:0F:76:D2",
 }
 
 # Static authorized router DHCP client registry for the configured LAN
@@ -60,10 +61,11 @@ AUTHORIZED_ROUTER_DHCP_CLIENTS: Dict[str, Dict[str, Any]] = {
     },
     "192.168.1.101": {
         "hostname": "FLEMSIS",
+        "client_name": "FLEMSIS",
         "device_type": "Workstation / Laptop",
         "mac_address": "3C:6A:A7:8D:EA:87",
-        "notes": "Authorized client lease (Host Workstation)",
-        "lease_type": "dynamic_lease",
+        "notes": "Historical reservation (reassigned to 192.168.1.142)",
+        "lease_type": "historical_lease",
     },
     "192.168.1.102": {
         "hostname": "Joshua",
@@ -141,11 +143,20 @@ AUTHORIZED_ROUTER_DHCP_CLIENTS: Dict[str, Dict[str, Any]] = {
         "notes": "Authorized client lease (Windows Laptop)",
         "lease_type": "dynamic_lease",
     },
-    "192.168.1.142": {
+    "192.168.1.140": {
         "hostname": "realme-12-5G",
+        "client_name": "realme-12-5G",
         "device_type": "Mobile / Smartphone",
         "mac_address": "C6:8C:01:87:9D:3B",
-        "notes": "Authorized client lease (Android OS)",
+        "notes": "Historical authorized client lease (Android OS, displaced from 192.168.1.142)",
+        "lease_type": "historical_lease",
+    },
+    "192.168.1.142": {
+        "hostname": "FLEMSIS",
+        "client_name": "FLEMSIS",
+        "device_type": "Workstation / Laptop",
+        "mac_address": "2C:3B:70:0F:76:D2",
+        "notes": "Authorized client lease (Windows Laptop - FLEMSIS)",
         "lease_type": "dynamic_lease",
     },
     "192.168.1.149": {
@@ -224,6 +235,8 @@ def find_router_dhcp_entry(mac: Optional[str] = None, ip: Optional[str] = None) 
     if clean_ip:
         entry = AUTHORIZED_ROUTER_DHCP_CLIENTS.get(clean_ip)
         if entry:
+            if entry.get("lease_type") == "historical_lease":
+                return None
             entry_mac = normalize_mac_address(entry.get("mac_address") or KNOWN_ROUTER_DHCP_MACS.get(clean_ip))
             if clean_mac and entry_mac and clean_mac != entry_mac:
                 logger.info(

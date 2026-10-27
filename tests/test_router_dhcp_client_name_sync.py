@@ -80,7 +80,8 @@ SAMPLE_DEVICES = [
     ("192.168.1.123", "2A:0C:FC:C4:4C:3D", "Nothing-Phone-2a"),
     ("192.168.1.124", "02:EA:2F:FA:3C:B3", "Jack-s-A35"),
     ("192.168.1.127", "E0:C2:64:2A:B4:08", "Joshua"),
-    ("192.168.1.142", "C6:8C:01:87:9D:3B", "realme-12-5G"),
+    ("192.168.1.140", "C6:8C:01:87:9D:3B", "realme-12-5G"),
+    ("192.168.1.142", "2C:3B:70:0F:76:D2", "FLEMSIS"),
 ]
 
 
@@ -148,7 +149,7 @@ def test_primary_mac_match_overrules_changed_ip(in_memory_db):
 
 def test_ip_fallback_matching_when_mac_absent(in_memory_db):
     """When candidate asset has no MAC, controlled IP fallback succeeds."""
-    entry = find_router_dhcp_entry(mac=None, ip="192.168.1.101")
+    entry = find_router_dhcp_entry(mac=None, ip="192.168.1.142")
     assert entry is not None
     assert entry["client_name"] == "FLEMSIS"
     assert entry["matched_by"] == "ip_address"
@@ -348,3 +349,68 @@ def test_router_registry_provenance_labeling():
     assert "static_reference" in status["integration_type"]
     assert "TP-Link TL-WR840N" in status["live_sync_reason"]
     assert status["total_clients"] >= 9
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Regression Test for FLEMSIS Windows Laptop vs Stale Phone Label
+# ---------------------------------------------------------------------------
+
+def test_flemsis_windows_laptop_conflict_resolution(in_memory_db):
+    """Verify that a Windows laptop at 192.168.1.142 (MAC 2C:3B:70:0F:76:D2):
+    1. Correctly maps to router DHCP client name 'FLEMSIS'
+    2. Uses 'FLEMSIS' as preferred display name
+    3. Reconciles device type to 'Workstation / Laptop' (NEVER 'Mobile / Smartphone')
+    4. Prioritizes reliable Windows OS evidence over stale phone hostname strings
+    5. Preserves existing asset record without duplicating or resetting findings
+    """
+    from scanner.os_identifier import identify_os_and_device
+
+    # 1. Simulate an asset that was previously polluted by a stale mobile phone lease
+    # (e.g. Asset had hostname 'realme-12-5G' and device_type 'Mobile / Smartphone' in DB)
+    polluted_asset = models.Asset(
+        ip_address="192.168.1.142",
+        mac_address="2C:3B:70:0F:76:D2",
+        hostname="realme-12-5G",
+        operating_system="Microsoft Windows",
+        os_confidence="High",
+        device_type="Mobile / Smartphone",  # Incorrect classification previously applied
+        open_ports="135/msrpc, 139/netbios-ssn, 445/microsoft-ds",
+        status="Active",
+    )
+    in_memory_db.add(polluted_asset)
+    in_memory_db.commit()
+    asset_id = polluted_asset.id
+
+    # 2. Verify OS & Device identifier logic prioritizes Windows evidence over the stale name
+    os_result = identify_os_and_device({
+        "ip_address": "192.168.1.142",
+        "mac_address": "2C:3B:70:0F:76:D2",
+        "hostname": "realme-12-5G",  # Stale hostname string
+        "open_ports": [
+            {"port": 135, "service": "msrpc"},
+            {"port": 139, "service": "netbios-ssn"},
+            {"port": 445, "service": "microsoft-ds"},
+        ],
+        "dhcp_info": {
+            "hostname": "realme-12-5G",
+            "device_type": "Mobile / Smartphone",  # Stale advisory hint
+        },
+    })
+    assert os_result["operating_system"] == "Microsoft Windows"
+    assert os_result["device_type"] == "Workstation / Laptop"  # Overrides stale phone hint!
+
+    # 3. Synchronize router DHCP clients
+    sync_res = sync_router_dhcp_clients(in_memory_db)
+    assert sync_res["status"] == "success"
+
+    # 4. Refresh asset and verify reconciliation
+    in_memory_db.refresh(polluted_asset)
+    assert polluted_asset.id == asset_id  # Asset ID preserved!
+    assert polluted_asset.dhcp_client_name == "FLEMSIS"
+    assert polluted_asset.display_name == "FLEMSIS"
+    assert polluted_asset.preferred_display_name == "FLEMSIS"
+    assert get_preferred_display_name(polluted_asset) == "FLEMSIS"
+    assert polluted_asset.device_type == "Workstation / Laptop"  # Corrected!
+    assert polluted_asset.hostname != "realme-12-5G"  # Polluted mobile name cleaned up!
+    assert polluted_asset.operating_system == "Microsoft Windows"
+

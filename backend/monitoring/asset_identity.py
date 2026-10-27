@@ -978,8 +978,22 @@ def sync_router_dhcp_clients(
                     matched_asset.dhcp_observed_at = now
                     did_update = True
 
-                if dev_type and (not matched_asset.device_type or matched_asset.device_type == "Unknown"):
+                is_windows_asset = (
+                    matched_asset.operating_system == "Microsoft Windows"
+                    or (matched_asset.open_ports and any(p in matched_asset.open_ports for p in ("135", "445")))
+                )
+
+                # Reconcile device type: OS evidence takes priority over mobile classifications
+                if is_windows_asset and matched_asset.device_type in ("Mobile / Smartphone", "Unknown", None):
+                    matched_asset.device_type = "Workstation / Laptop"
+                    did_update = True
+                elif dev_type and (not matched_asset.device_type or matched_asset.device_type in ("Unknown", "Generic Network Host")):
                     matched_asset.device_type = dev_type
+                    did_update = True
+
+                # Clean up stale phone labels that polluted OS hostname on Windows devices
+                if is_windows_asset and matched_asset.hostname and any(k in matched_asset.hostname.lower() for k in ("realme", "android", "galaxy", "iphone")):
+                    matched_asset.hostname = valid_client_name or "FLEMSIS"
                     did_update = True
 
                 if did_update:
